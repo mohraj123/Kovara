@@ -30,14 +30,22 @@ interface HorizonEventResponse {
 }
 
 function normalizeEvent(record: Record<string, unknown>): SorobanEvent {
+  const topic = record.topic ?? null;
+  const value = record.value ?? null;
+
   return {
     id: String(record.id),
-    type: String(record.type ?? "unknown"),
+    type:
+      typeof record.type === "string" && record.type.length > 0
+        ? record.type
+        : Array.isArray(topic) && topic.length > 0
+          ? String(topic[0])
+          : "unknown",
     ledger: Number(record.ledger ?? 0),
     txHash: String(record.tx_hash ?? ""),
     contractId: String(record.contract_id ?? ""),
-    topic: record.topic ?? null,
-    value: record.value ?? null,
+    topic,
+    value,
     raw: record,
   };
 }
@@ -63,6 +71,9 @@ export async function streamSorobanEvents(options: EventStreamOptions): Promise<
 
     for (const record of records) {
       const event = normalizeEvent(record);
+      if (event.contractId.toLowerCase() !== options.contractAddress.toLowerCase()) {
+        continue;
+      }
       await options.onEvent(event);
       cursor = event.id;
       await options.onCursor?.({ cursor });
