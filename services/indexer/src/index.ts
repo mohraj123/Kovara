@@ -17,12 +17,23 @@ if (!contractAddress) {
 }
 
 function getEventType(event: { type: string; topic: unknown }): string {
+  const normalize = (value: string): string => {
+    const cleaned = value.replace(/^symbol:/i, "");
+    if (cleaned.toLowerCase() === "follow") {
+      return "FollowEvent";
+    }
+    if (cleaned.toLowerCase() === "unfollow") {
+      return "UnfollowEvent";
+    }
+    return cleaned;
+  };
+
   if (event.type && event.type !== "unknown") {
-    return event.type;
+    return normalize(event.type);
   }
 
   if (Array.isArray(event.topic) && event.topic.length > 0) {
-    return String(event.topic[0]);
+    return normalize(String(event.topic[0]));
   }
 
   return "unknown";
