@@ -383,6 +383,22 @@ impl LinkoraContract {
         ProfileSetEvent { user, username }.publish(&env);
     }
 
+    pub fn delete_profile(env: Env, user: Address) {
+        user.require_auth();
+        let key = StorageKey::Profile(user.clone());
+        let existing_profile: Profile = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("profile does not exist");
+
+        env.storage().persistent().remove(&key);
+        env.storage()
+            .persistent()
+            .remove(&username_lookup_key(&existing_profile.username));
+        Self::decrement_profile_count(&env);
+    }
+
     pub fn get_profile(env: Env, user: Address) -> Option<Profile> {
         let key = StorageKey::Profile(user);
         let result: Option<Profile> = env.storage().persistent().get(&key);
@@ -1041,6 +1057,13 @@ impl LinkoraContract {
             .get(&ADMIN)
             .expect("not initialized");
         admin.require_auth();
+    }
+
+    fn decrement_profile_count(env: &Env) {
+        let count: u64 = env.storage().instance().get(&PROFILE_CT).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&PROFILE_CT, &count.saturating_sub(1));
     }
 
     /// Extend the TTL of a persistent entry after every write and on every
