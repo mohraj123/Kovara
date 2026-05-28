@@ -10,6 +10,7 @@ Set the following variables before running the service:
 - `SOROBAN_RPC_URL` - Soroban/Horizon endpoint used for event streaming
 - `LINKORA_CONTRACT_ADDRESS` - Contract address to index
 - `SOROBAN_POLL_INTERVAL_MS` - Optional polling interval in milliseconds (default: `3000`)
+- `SOROBAN_START_CURSOR` - Optional initial cursor (`now` by default)
 - `PGSSLMODE` - Optional; set to `disable` to skip TLS
 
 ## Run

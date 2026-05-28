@@ -7,6 +7,7 @@ import { streamSorobanEvents } from "./stream";
 const rpcUrl = process.env.SOROBAN_RPC_URL;
 const contractAddress = process.env.LINKORA_CONTRACT_ADDRESS;
 const pollIntervalMs = Number(process.env.SOROBAN_POLL_INTERVAL_MS ?? "3000");
+const startCursor = process.env.SOROBAN_START_CURSOR;
 
 if (!rpcUrl) {
   throw new Error("SOROBAN_RPC_URL is required");
@@ -53,6 +54,7 @@ async function start(): Promise<void> {
   await streamSorobanEvents({
     rpcUrl,
     contractAddress,
+    startCursor,
     pollIntervalMs,
     signal: shutdownController.signal,
     onEvent: async (event) => {
@@ -67,6 +69,9 @@ async function start(): Promise<void> {
         rawEvent: event.raw,
       });
       await routeFollowGraphEvent(pool as unknown as PgPool, eventType, event.value);
+    },
+    onCursor: ({ cursor }) => {
+      console.log(`Advanced event cursor to ${cursor}`);
     },
   });
 }
