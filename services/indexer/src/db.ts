@@ -1,3 +1,5 @@
+import { Pool as PgPool } from "pg";
+
 /**
  * Database interface for the Linkora indexer.
  *
@@ -89,4 +91,76 @@ export interface Database {
   listPosts(filters: { author?: string; limit: number; offset: number }): Promise<{ posts: Post[]; total: number }>;
   getFollowers(address: string, limit: number, offset: number): Promise<{ followers: string[]; total: number }>;
   getFollowing(address: string, limit: number, offset: number): Promise<{ following: string[]; total: number }>;
+}
+
+export interface RawSorobanEvent {
+  contractAddress: string;
+  eventType: string;
+  txHash: string;
+  ledger: number;
+  topic: unknown;
+  value: unknown;
+  rawEvent: unknown;
+}
+
+export interface FollowEdge {
+  follower: string;
+  followee: string;
+  createdAt?: Date;
+}
+
+export function createPgPoolFromEnv(): PgPool {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error("DATABASE_URL is required");
+  }
+
+  return new PgPool({
+    connectionString,
+    ssl: process.env.PGSSLMODE === "disable" ? false : { rejectUnauthorized: false },
+  });
+}
+
+export async function insertRawEvent(pool: PgPool, event: RawSorobanEvent): Promise<void> {
+  await pool.query(
+    `
+      INSERT INTO events (
+        contract_address,
+        event_type,
+        tx_hash,
+        ledger,
+        topic,
+        value,
+        raw_event
+      ) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb)
+      ON CONFLICT (tx_hash, ledger, event_type) DO NOTHING
+    `,
+    [
+      event.contractAddress,
+      event.eventType,
+      event.txHash,
+      event.ledger,
+      JSON.stringify(event.topic ?? null),
+      JSON.stringify(event.value ?? null),
+      JSON.stringify(event.rawEvent ?? null),
+    ]
+  );
+}
+
+export async function upsertFollowEdge(pool: PgPool, edge: FollowEdge): Promise<void> {
+  await pool.query(
+    `
+      INSERT INTO follows (follower, followee, created_at)
+      VALUES ($1, $2, COALESCE($3, NOW()))
+      ON CONFLICT (follower, followee) DO NOTHING
+    `,
+    [edge.follower, edge.followee, edge.createdAt ?? null]
+  );
+}
+
+export async function deleteFollowEdge(pool: PgPool, edge: FollowEdge): Promise<void> {
+  await pool.query("DELETE FROM follows WHERE follower = $1 AND followee = $2", [
+    edge.follower,
+    edge.followee,
+  ]);
 }
