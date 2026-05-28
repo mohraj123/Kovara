@@ -1249,3 +1249,384 @@ fn test_get_followers_bumps_followers_key() {
         "get_followers must not create or bump the Following(alice) key"
     );
 }
+
+// ── Issue #346: get_following / get_followers pagination edge cases ───────────
+
+#[test]
+fn test_get_following_offset_beyond_list_length_returns_empty() {
+    // offset beyond list length must return an empty vec
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.follow(&alice, &bob);
+
+    // alice follows 1 person; offset=100 is way beyond the list
+    let page = client.get_following(&alice, &100, &10);
+    assert_eq!(page.len(), 0, "offset beyond list length must return empty vec");
+}
+
+#[test]
+fn test_get_following_limit_50_returns_at_most_50() {
+    // limit of 50 must return at most 50 results
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    // Follow 60 people
+    for _ in 0..60 {
+        let followee = Address::generate(&env);
+        client.follow(&alice, &followee);
+    }
+
+    let page = client.get_following(&alice, &0, &50);
+    assert!(page.len() <= 50, "limit=50 must return at most 50 results");
+    assert_eq!(page.len(), 50);
+}
+
+#[test]
+#[should_panic(expected = "limit must be between 1 and 50")]
+fn test_get_following_limit_51_panics() {
+    // limit of 51 must panic with "limit must be between 1 and 50"
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.follow(&alice, &bob);
+
+    client.get_following(&alice, &0, &51);
+}
+
+#[test]
+fn test_get_following_mid_list_offset_returns_correct_page() {
+    // correct page returned for a mid-list offset
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let mut followees = soroban_sdk::vec![&env];
+    for _ in 0..20 {
+        let f = Address::generate(&env);
+        followees.push_back(f.clone());
+        client.follow(&alice, &f);
+    }
+
+    // Request page starting at offset 10, limit 5
+    let page = client.get_following(&alice, &10, &5);
+    assert_eq!(page.len(), 5);
+    for i in 0..5u32 {
+        assert_eq!(
+            page.get(i).unwrap(),
+            followees.get(10 + i).unwrap(),
+            "mid-list page item {} mismatch",
+            i
+        );
+    }
+}
+
+#[test]
+fn test_get_followers_offset_beyond_list_length_returns_empty() {
+    // offset beyond list length must return an empty vec
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.follow(&bob, &alice); // bob follows alice → alice has 1 follower
+
+    let page = client.get_followers(&alice, &100, &10);
+    assert_eq!(page.len(), 0, "offset beyond list length must return empty vec");
+}
+
+#[test]
+fn test_get_followers_limit_50_returns_at_most_50() {
+    // limit of 50 must return at most 50 results
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    // 60 people follow alice
+    for _ in 0..60 {
+        let follower = Address::generate(&env);
+        client.follow(&follower, &alice);
+    }
+
+    let page = client.get_followers(&alice, &0, &50);
+    assert!(page.len() <= 50, "limit=50 must return at most 50 results");
+    assert_eq!(page.len(), 50);
+}
+
+#[test]
+#[should_panic(expected = "limit exceeded")]
+fn test_get_followers_limit_51_panics() {
+    // limit of 51 must panic with "limit exceeded"
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.follow(&bob, &alice);
+
+    client.get_followers(&alice, &0, &51);
+}
+
+#[test]
+fn test_get_followers_mid_list_offset_returns_correct_page() {
+    // correct page returned for a mid-list offset
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let mut followers = soroban_sdk::vec![&env];
+    for _ in 0..20 {
+        let f = Address::generate(&env);
+        followers.push_back(f.clone());
+        client.follow(&f, &alice);
+    }
+
+    // Request page starting at offset 10, limit 5
+    let page = client.get_followers(&alice, &10, &5);
+    assert_eq!(page.len(), 5);
+    for i in 0..5u32 {
+        assert_eq!(
+            page.get(i).unwrap(),
+            followers.get(10 + i).unwrap(),
+            "mid-list page item {} mismatch",
+            i
+        );
+    }
+}
+
+// ── Issue #345: create_post content length fuzz / boundary tests ──────────────
+
+#[test]
+fn test_create_post_content_1_char_succeeds() {
+    // content of 1 character must succeed
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author = Address::generate(&env);
+    let post_id = client.create_post(&author, &String::from_str(&env, "x"));
+    let post = client.get_post(&post_id).unwrap();
+    assert_eq!(post.content, String::from_str(&env, "x"));
+    assert_eq!(post.author, author);
+}
+
+#[test]
+fn test_create_post_content_280_chars_succeeds() {
+    // content of exactly 280 characters must succeed
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author = Address::generate(&env);
+    let content_str = "a".repeat(280);
+    let content = String::from_str(&env, &content_str);
+    assert_eq!(content.len(), 280);
+
+    let post_id = client.create_post(&author, &content);
+    let post = client.get_post(&post_id).unwrap();
+    assert_eq!(post.content.len(), 280);
+}
+
+#[test]
+#[should_panic(expected = "empty content")]
+fn test_create_post_empty_content_panics() {
+    // empty content must panic with a descriptive error
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author = Address::generate(&env);
+    client.create_post(&author, &String::from_str(&env, ""));
+}
+
+#[test]
+#[should_panic(expected = "content too long")]
+fn test_create_post_content_281_chars_panics() {
+    // content of 281 characters must panic with a descriptive error
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author = Address::generate(&env);
+    let content_str = "a".repeat(281);
+    let content = String::from_str(&env, &content_str);
+    assert_eq!(content.len(), 281);
+    client.create_post(&author, &content);
+}
+
+// ── Issue #343: full tip flow integration tests ───────────────────────────────
+
+#[test]
+fn test_tip_full_flow_no_fee() {
+    // fee_bps = 0: entire tip goes to author, treasury receives nothing
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let author = Address::generate(&env);
+    let tipper = Address::generate(&env);
+
+    // Initialize with fee_bps = 0 (no fee)
+    client.initialize(&admin, &treasury, &0);
+
+    let token = setup_token(&env, &tipper);
+    let post_id = client.create_post(&author, &String::from_str(&env, "No-fee tip test"));
+
+    let tip_amount: i128 = 1000;
+    client.tip(&tipper, &post_id, &token, &tip_amount);
+
+    // With fee_bps = 0: fee = 0, author gets full amount
+    let author_balance = TokenClient::new(&env, &token).balance(&author);
+    let treasury_balance = TokenClient::new(&env, &token).balance(&treasury);
+
+    assert_eq!(author_balance, tip_amount, "author must receive full tip when fee_bps=0");
+    assert_eq!(treasury_balance, 0, "treasury must receive nothing when fee_bps=0");
+
+    // tip_total on the post must be incremented correctly
+    let post = client.get_post(&post_id).unwrap();
+    assert_eq!(post.tip_total, tip_amount, "tip_total must equal the gross tip amount");
+}
+
+#[test]
+fn test_tip_full_flow_with_5_percent_fee() {
+    // fee_bps = 500 (5%): verify author and treasury balances and tip_total
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let author = Address::generate(&env);
+    let tipper = Address::generate(&env);
+
+    // Initialize with fee_bps = 500 (5%)
+    client.initialize(&admin, &treasury, &500);
+
+    let token = setup_token(&env, &tipper);
+    let post_id = client.create_post(&author, &String::from_str(&env, "5% fee tip test"));
+
+    let tip_amount: i128 = 1000;
+    client.tip(&tipper, &post_id, &token, &tip_amount);
+
+    // fee = 1000 * 500 / 10_000 = 50
+    // author gets 1000 - 50 = 950
+    let expected_fee: i128 = 50;
+    let expected_author: i128 = 950;
+
+    let author_balance = TokenClient::new(&env, &token).balance(&author);
+    let treasury_balance = TokenClient::new(&env, &token).balance(&treasury);
+
+    assert_eq!(
+        treasury_balance, expected_fee,
+        "treasury must receive fee = tip * fee_bps / 10_000"
+    );
+    assert_eq!(
+        author_balance, expected_author,
+        "author must receive tip minus fee"
+    );
+
+    // tip_total must reflect the gross tip amount
+    let post = client.get_post(&post_id).unwrap();
+    assert_eq!(
+        post.tip_total, tip_amount,
+        "tip_total must equal the gross tip amount regardless of fee"
+    );
+}
+
+#[test]
+fn test_tip_total_increments_across_multiple_tips() {
+    // tip_total accumulates correctly across multiple tips
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let author = Address::generate(&env);
+    let tipper1 = Address::generate(&env);
+    let tipper2 = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &500);
+
+    let token = setup_token(&env, &tipper1);
+    // Mint tokens for tipper2 as well
+    StellarAssetClient::new(&env, &token).mint(&tipper2, &5000);
+
+    let post_id = client.create_post(&author, &String::from_str(&env, "Multi-tip test"));
+
+    // First tip from tipper1 (advance ledger to bypass cooldown)
+    client.tip(&tipper1, &post_id, &token, &400);
+
+    // Second tip from tipper2 (different tipper, no cooldown issue)
+    client.tip(&tipper2, &post_id, &token, &600);
+
+    let post = client.get_post(&post_id).unwrap();
+    assert_eq!(
+        post.tip_total, 1000,
+        "tip_total must be the sum of all gross tips"
+    );
+}
+
+#[test]
+fn test_tip_fee_split_matches_fee_bps_config() {
+    // fee split must match fee_bps configuration precisely
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let author = Address::generate(&env);
+    let tipper = Address::generate(&env);
+
+    // Use 250 bps (2.5%)
+    client.initialize(&admin, &treasury, &250);
+
+    let token = setup_token(&env, &tipper);
+    let post_id = client.create_post(&author, &String::from_str(&env, "Fee split config test"));
+
+    let tip_amount: i128 = 2000;
+    client.tip(&tipper, &post_id, &token, &tip_amount);
+
+    // fee = 2000 * 250 / 10_000 = 50
+    // author gets 2000 - 50 = 1950
+    let expected_fee: i128 = 50;
+    let expected_author: i128 = 1950;
+
+    assert_eq!(TokenClient::new(&env, &token).balance(&treasury), expected_fee);
+    assert_eq!(TokenClient::new(&env, &token).balance(&author), expected_author);
+
+    let post = client.get_post(&post_id).unwrap();
+    assert_eq!(post.tip_total, tip_amount);
+}
