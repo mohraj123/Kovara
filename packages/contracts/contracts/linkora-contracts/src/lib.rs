@@ -242,6 +242,20 @@ pub struct ProposalExecutedEvent {
     pub recipient: Address,
 }
 
+#[contractevent]
+#[derive(Clone)]
+pub struct FeeUpdatedEvent {
+    pub old_fee_bps: u32,
+    pub new_fee_bps: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct TreasuryUpdatedEvent {
+    pub old_treasury: Address,
+    pub new_treasury: Address,
+}
+
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
