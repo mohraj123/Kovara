@@ -493,6 +493,21 @@ fn test_delete_profile_decrements_profile_count() {
 }
 
 #[test]
+fn test_delete_nonexistent_profile_keeps_count_at_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let missing_user = Address::generate(&env);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.delete_profile(&missing_user);
+    }));
+
+    assert!(result.is_err());
+    assert_eq!(client.get_profile_count(), 0);
+}
+
+#[test]
 fn test_post_count() {
     let env = Env::default();
     env.mock_all_auths();
