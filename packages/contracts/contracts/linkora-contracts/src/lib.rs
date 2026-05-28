@@ -980,7 +980,13 @@ impl LinkoraContract {
     pub fn set_fee(env: Env, fee_bps: u32) {
         Self::require_admin(&env);
         assert!(fee_bps <= 10_000, "invalid fee");
+        let old_fee_bps = Self::get_fee_bps(env.clone());
         env.storage().instance().set(&FEE_BPS, &fee_bps);
+        FeeUpdatedEvent {
+            old_fee_bps,
+            new_fee_bps: fee_bps,
+        }
+        .publish(&env);
     }
 
     pub fn set_treasury(env: Env, treasury: Address) {
