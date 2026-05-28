@@ -11,7 +11,7 @@
     "@stellar/stellar-sdk": "^12.3.0"
   },
   "devDependencies": {
-    "typedoc": "^0.26.11",
+    "typedoc": "^0.28.19",
     "typescript": "^5.8.3"
   }
 }
