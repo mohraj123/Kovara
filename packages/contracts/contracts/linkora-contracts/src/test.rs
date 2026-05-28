@@ -508,6 +508,23 @@ fn test_delete_nonexistent_profile_keeps_count_at_zero() {
 }
 
 #[test]
+fn test_profile_replace_then_delete_updates_count_once() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.set_profile(&user, &String::from_str(&env, "alice"), &token);
+    client.set_profile(&user, &String::from_str(&env, "alice_updated"), &token);
+    assert_eq!(client.get_profile_count(), 1);
+
+    client.delete_profile(&user);
+    assert_eq!(client.get_profile_count(), 0);
+}
+
+#[test]
 fn test_post_count() {
     let env = Env::default();
     env.mock_all_auths();
