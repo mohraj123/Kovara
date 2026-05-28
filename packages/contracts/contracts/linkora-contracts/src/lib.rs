@@ -242,6 +242,20 @@ pub struct ProposalExecutedEvent {
     pub recipient: Address,
 }
 
+#[contractevent]
+#[derive(Clone)]
+pub struct FeeUpdatedEvent {
+    pub old_fee_bps: u32,
+    pub new_fee_bps: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct TreasuryUpdatedEvent {
+    pub old_treasury: Address,
+    pub new_treasury: Address,
+}
+
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -350,8 +364,7 @@ impl LinkoraContract {
         }
 
         if !env.storage().persistent().has(&key) {
-            let count: u64 = env.storage().instance().get(&PROFILE_CT).unwrap_or(0);
-            env.storage().instance().set(&PROFILE_CT, &(count + 1));
+            Self::increment_profile_count(&env);
         }
 
         // Write profile.
@@ -367,6 +380,22 @@ impl LinkoraContract {
         Self::bump(&env, &key);
         Self::bump(&env, &username_index_key);
         ProfileSetEvent { user, username }.publish(&env);
+    }
+
+    pub fn delete_profile(env: Env, user: Address) {
+        user.require_auth();
+        let key = StorageKey::Profile(user.clone());
+        let existing_profile: Profile = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("profile does not exist");
+
+        env.storage().persistent().remove(&key);
+        env.storage()
+            .persistent()
+            .remove(&username_lookup_key(&existing_profile.username));
+        Self::decrement_profile_count(&env);
     }
 
     pub fn get_profile(env: Env, user: Address) -> Option<Profile> {
@@ -966,12 +995,24 @@ impl LinkoraContract {
     pub fn set_fee(env: Env, fee_bps: u32) {
         Self::require_admin(&env);
         assert!(fee_bps <= 10_000, "invalid fee");
+        let old_fee_bps = Self::get_fee_bps(env.clone());
         env.storage().instance().set(&FEE_BPS, &fee_bps);
+        FeeUpdatedEvent {
+            old_fee_bps,
+            new_fee_bps: fee_bps,
+        }
+        .publish(&env);
     }
 
     pub fn set_treasury(env: Env, treasury: Address) {
         Self::require_admin(&env);
+        let old_treasury = Self::get_treasury(env.clone()).expect("treasury not set");
         env.storage().instance().set(&TREASURY, &treasury);
+        TreasuryUpdatedEvent {
+            old_treasury,
+            new_treasury: treasury,
+        }
+        .publish(&env);
     }
 
     pub fn get_fee_bps(env: Env) -> u32 {
@@ -1015,6 +1056,18 @@ impl LinkoraContract {
             .get(&ADMIN)
             .expect("not initialized");
         admin.require_auth();
+    }
+
+    fn decrement_profile_count(env: &Env) {
+        let count: u64 = env.storage().instance().get(&PROFILE_CT).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&PROFILE_CT, &count.saturating_sub(1));
+    }
+
+    fn increment_profile_count(env: &Env) {
+        let count: u64 = env.storage().instance().get(&PROFILE_CT).unwrap_or(0);
+        env.storage().instance().set(&PROFILE_CT, &(count + 1));
     }
 
     /// Extend the TTL of a persistent entry after every write and on every

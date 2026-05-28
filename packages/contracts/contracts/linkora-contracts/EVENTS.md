@@ -138,6 +138,26 @@ Emitted when tokens are withdrawn from a community pool.
   - `pool_id`: `Symbol`
   - `amount`: `i128`
 
+### FeeUpdated
+Emitted when protocol fee basis points are updated by the admin.
+
+- **Topic 0**: `Linkora`
+- **Topic 1**: `fee_upd`
+- **Topic 2**: `v1`
+- **Data Payload**: `FeeUpdatedEvent`
+  - `old_fee_bps`: `u32`
+  - `new_fee_bps`: `u32`
+
+### TreasuryUpdated
+Emitted when protocol treasury address is updated by the admin.
+
+- **Topic 0**: `Linkora`
+- **Topic 1**: `treasury`
+- **Topic 2**: `v1`
+- **Data Payload**: `TreasuryUpdatedEvent`
+  - `old_treasury`: `Address`
+  - `new_treasury`: `Address`
+
 ## Querying and Decoding
 
 ### Using Stellar CLI

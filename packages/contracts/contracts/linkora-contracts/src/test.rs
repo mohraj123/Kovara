@@ -476,6 +476,55 @@ fn test_profile_count() {
 }
 
 #[test]
+fn test_delete_profile_decrements_profile_count() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.set_profile(&user, &String::from_str(&env, "alice"), &token);
+    assert_eq!(client.get_profile_count(), 1);
+
+    client.delete_profile(&user);
+    assert_eq!(client.get_profile_count(), 0);
+    assert!(client.get_profile(&user).is_none());
+}
+
+#[test]
+fn test_delete_nonexistent_profile_keeps_count_at_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let missing_user = Address::generate(&env);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.delete_profile(&missing_user);
+    }));
+
+    assert!(result.is_err());
+    assert_eq!(client.get_profile_count(), 0);
+}
+
+#[test]
+fn test_profile_replace_then_delete_updates_count_once() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.set_profile(&user, &String::from_str(&env, "alice"), &token);
+    client.set_profile(&user, &String::from_str(&env, "alice_updated"), &token);
+    assert_eq!(client.get_profile_count(), 1);
+
+    client.delete_profile(&user);
+    assert_eq!(client.get_profile_count(), 0);
+}
+
+#[test]
 fn test_post_count() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1001,6 +1050,36 @@ fn test_set_fee_zero_valid() {
     // Set fee to 0 should succeed
     client.set_fee(&0);
     assert_eq!(client.get_fee_bps(), 0);
+}
+
+#[test]
+fn test_set_fee_emits_fee_updated_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _) = setup_contract(&env);
+
+    let before_events = env.events().all().events().len();
+    client.set_fee(&150);
+    let after_events = env.events().all().events().len();
+
+    assert!(after_events > before_events, "set_fee should emit an event");
+}
+
+#[test]
+fn test_set_treasury_emits_treasury_updated_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _) = setup_contract(&env);
+
+    let new_treasury = Address::generate(&env);
+    let before_events = env.events().all().events().len();
+    client.set_treasury(&new_treasury);
+    let after_events = env.events().all().events().len();
+
+    assert!(
+        after_events > before_events,
+        "set_treasury should emit an event"
+    );
 }
 
 #[test]
