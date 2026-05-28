@@ -991,7 +991,13 @@ impl LinkoraContract {
 
     pub fn set_treasury(env: Env, treasury: Address) {
         Self::require_admin(&env);
+        let old_treasury = Self::get_treasury(env.clone()).expect("treasury not set");
         env.storage().instance().set(&TREASURY, &treasury);
+        TreasuryUpdatedEvent {
+            old_treasury,
+            new_treasury: treasury,
+        }
+        .publish(&env);
     }
 
     pub fn get_fee_bps(env: Env) -> u32 {
