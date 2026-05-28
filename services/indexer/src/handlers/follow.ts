@@ -69,6 +69,22 @@ interface FollowGraphPayload {
   created_at?: string;
 }
 
+function readString(input: unknown): string | undefined {
+  if (typeof input === "string") {
+    return input;
+  }
+  if (input && typeof input === "object") {
+    const rec = input as Record<string, unknown>;
+    if (typeof rec.address === "string") {
+      return rec.address;
+    }
+    if (typeof rec.value === "string") {
+      return rec.value;
+    }
+  }
+  return undefined;
+}
+
 function parseFollowGraphPayload(value: unknown): FollowGraphPayload | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -76,8 +92,8 @@ function parseFollowGraphPayload(value: unknown): FollowGraphPayload | null {
 
   const payload = value as Record<string, unknown>;
   return {
-    follower: typeof payload.follower === "string" ? payload.follower : undefined,
-    followee: typeof payload.followee === "string" ? payload.followee : undefined,
+    follower: readString(payload.follower),
+    followee: readString(payload.followee),
     created_at: typeof payload.created_at === "string" ? payload.created_at : undefined,
   };
 }
