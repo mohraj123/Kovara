@@ -27,6 +27,13 @@ The service will:
 3. Insert raw events into the `events` table
 4. Apply follow/unfollow events to the `follows` table
 
+## Follow graph behavior
+
+- `FollowEvent` inserts `(follower, followee)` into `follows`
+- `UnfollowEvent` deletes `(follower, followee)` from `follows`
+- Follow inserts are idempotent through `ON CONFLICT DO NOTHING`
+- Unfollow deletes are idempotent because deleting a missing row is a no-op
+
 ## Migrations
 
 Apply SQL files in `migrations/` in order:
