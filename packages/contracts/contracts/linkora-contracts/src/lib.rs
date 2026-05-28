@@ -364,8 +364,7 @@ impl LinkoraContract {
         }
 
         if !env.storage().persistent().has(&key) {
-            let count: u64 = env.storage().instance().get(&PROFILE_CT).unwrap_or(0);
-            env.storage().instance().set(&PROFILE_CT, &(count + 1));
+            Self::increment_profile_count(&env);
         }
 
         // Write profile.
@@ -1064,6 +1063,11 @@ impl LinkoraContract {
         env.storage()
             .instance()
             .set(&PROFILE_CT, &count.saturating_sub(1));
+    }
+
+    fn increment_profile_count(env: &Env) {
+        let count: u64 = env.storage().instance().get(&PROFILE_CT).unwrap_or(0);
+        env.storage().instance().set(&PROFILE_CT, &(count + 1));
     }
 
     /// Extend the TTL of a persistent entry after every write and on every
