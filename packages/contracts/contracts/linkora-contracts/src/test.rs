@@ -476,6 +476,23 @@ fn test_profile_count() {
 }
 
 #[test]
+fn test_delete_profile_decrements_profile_count() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.set_profile(&user, &String::from_str(&env, "alice"), &token);
+    assert_eq!(client.get_profile_count(), 1);
+
+    client.delete_profile(&user);
+    assert_eq!(client.get_profile_count(), 0);
+    assert!(client.get_profile(&user).is_none());
+}
+
+#[test]
 fn test_post_count() {
     let env = Env::default();
     env.mock_all_auths();
