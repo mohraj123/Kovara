@@ -18,7 +18,7 @@
     },
     "dependencies": {
         "@stellar/wallet-kit": "^1.0.0",
-        "expo-secure-store": "^12.0.0",
+        "expo-secure-store": "^56.0.4",
         "react": "^18.2.0",
         "react-native": "^0.72.0"
     }
