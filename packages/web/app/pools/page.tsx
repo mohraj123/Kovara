@@ -38,7 +38,7 @@ export default function PoolsPage() {
           >
             {state === "loading" ? "⏳" : "↻"} Refresh
           </button>
-          <Link href="/pools/new" style={styles.createBtn}>
+          <Link href="/pools/new" style={styles.createBtn} aria-label="Create new pool">
             + Create Pool
           </Link>
         </div>

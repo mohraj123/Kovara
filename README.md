@@ -277,6 +277,46 @@ pnpm test:integration
 
 See `tests/README.md` for setup details and CI guidance.
 
+## Frontend Features
+
+### Accessibility
+All core flows (Feed, Profile, Pools, Explore) have undergone a comprehensive accessibility audit.
+- Implemented `axe-core` and `jest-axe` for automated CI checks.
+- Zero critical or serious accessibility violations.
+- Key improvements include ARIA labeling, improved keyboard navigation, focus trapping, and semantic HTML structure.
+
+### Playwright Testing
+We use Playwright for end-to-end (E2E) testing of critical user flows. Tests are located in `packages/web/tests/e2e/`.
+- **Feed Flow**: Wallet connection and post creation verification.
+- **Profile Flow**: Profile navigation and user follow interactions.
+- **Pool Flow**: Pool details and transaction mock flows.
+
+Tests run automatically on PRs affecting the `packages/web` directory via the `.github/workflows/frontend-e2e.yml` GitHub action. To run tests locally:
+```bash
+cd packages/web
+pnpm test:e2e
+```
+
+### SDK Client Usage
+The `packages/sdk` module provides a fully typed `LinkoraClient` for both browser and Node.js environments. It exposes strongly-typed methods aligned with the smart contract ABI (e.g. `getProfile`, `getPost`, `getFollowing`).
+```typescript
+import { LinkoraClient } from "sdk";
+
+const client = new LinkoraClient({
+  contractId: process.env.NEXT_PUBLIC_CONTRACT_ID,
+  rpcUrl: process.env.NEXT_PUBLIC_SOROBAN_RPC_URL,
+});
+
+const profile = await client.getProfile("GABC...");
+```
+
+### Transaction Notifications
+A global context-driven notification system is available in `packages/web`. It handles transaction states seamlessly with:
+- Pending status with spinners.
+- Success and Error states with auto-dismiss after 4 seconds.
+- Integrated Stellar Expert transaction links.
+- Full ARIA live region support for accessibility.
+
 ## Documentation
 
 - [Event Schema](packages/contracts/contracts/linkora-contracts/EVENTS.md) — canonical event definitions for indexers and clients

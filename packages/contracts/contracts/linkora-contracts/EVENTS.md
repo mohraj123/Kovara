@@ -150,6 +150,18 @@ Emitted when tokens are withdrawn from a community pool.
   - `pool_id`: `Symbol`
   - `amount`: `i128`
 
+### PoolCreated
+Emitted when a new community pool is created.
+
+- **Topic 0**: `Linkora`
+- **Topic 1**: `pool_created`
+- **Topic 2**: `v1`
+- **Data Payload**: `PoolCreatedEvent`
+  - `pool_id`: `Symbol`
+  - `token`: `Address`
+  - `admins`: `Address[]`
+  - `threshold`: `u32`
+
 ### PoolAdminAdded
 
 Emitted when a new admin is added to a pool.
@@ -170,7 +182,7 @@ Emitted when an admin is removed from a pool.
 - **Topic 2**: `v1`
 - **Data Payload**: `PoolAdminRemovedEvent`
   - `pool_id`: `Symbol`
-  - `admin`: `Address`
+  - `removed_admin`: `Address`
 
 ### PoolThresholdUpdated
 
@@ -183,6 +195,28 @@ Emitted when a pool's signature threshold is updated.
   - `pool_id`: `Symbol`
   - `old_threshold`: `u32`
   - `new_threshold`: `u32`
+
+### FeeUpdated
+
+Emitted when the admin updates the protocol fee.
+
+- **Topic 0**: `Linkora`
+- **Topic 1**: `fee_updated_event`
+- **Topic 2**: `v1`
+- **Data Payload**: `FeeUpdatedEvent`
+  - `old_fee_bps`: `u32`
+  - `new_fee_bps`: `u32`
+
+### TreasuryUpdated
+
+Emitted when the admin updates the protocol treasury address.
+
+- **Topic 0**: `Linkora`
+- **Topic 1**: `treasury_updated_event`
+- **Topic 2**: `v1`
+- **Data Payload**: `TreasuryUpdatedEvent`
+  - `old_treasury`: `Address`
+  - `new_treasury`: `Address`
 
 ## Querying and Decoding
 

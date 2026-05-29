@@ -1,0 +1,196 @@
+# Publishes the SDK package to npm and creates a GitHub Release.
+#
+# Trigger: push of any tag matching sdk/v* (e.g. sdk/v0.2.0).
+#
+# Required repository secrets:
+#   NPM_TOKEN  – npm automation token with publish rights to the package.
+#
+# The workflow will:
+#   1. Run contract unit tests (cargo test) – fails loudly on any error.
+#   2. Install JS dependencies and type-check the SDK.
+#   3. Build the SDK (tsc).
+#   4. Publish to npm (removes `"private": true` so npm accepts the publish).
+#   5. Extract the matching changelog section and create a GitHub Release.
+
+name: Publish SDK
+
+on:
+  push:
+    tags:
+      - "sdk/v*"
+
+permissions:
+  contents: write  # needed to create GitHub Releases
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # Job 1 – Contract unit tests (must pass before anything ships)
+  # ─────────────────────────────────────────────────────────────
+  test-contracts:
+    name: Contract Unit Tests
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: packages/contracts
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('packages/contracts/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/contracts
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy (deny warnings)
+        run: cargo clippy -- -D warnings
+
+      - name: Run unit tests
+        run: cargo test
+
+  # ─────────────────────────────────────────────────────────────
+  # Job 2 – SDK type-check, build, publish, and release
+  # ─────────────────────────────────────────────────────────────
+  publish:
+    name: Build, Publish & Release
+    runs-on: ubuntu-latest
+    needs: test-contracts   # Never publish if tests fail
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # ── Derive the semver string from the tag (sdk/v1.2.3 → 1.2.3) ──
+      - name: Parse version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"          # e.g. sdk/v0.2.0
+          VERSION="${TAG#sdk/v}"            # strip the sdk/v prefix
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "TAG_NAME=${TAG}"    >> "$GITHUB_OUTPUT"
+
+      # ── Ensure package.json version matches the pushed tag ────────────
+      - name: Validate package.json version matches tag
+        working-directory: packages/sdk
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${{ steps.version.outputs.VERSION }}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::package.json version ($PKG_VERSION) does not match tag ($TAG_VERSION)."
+            echo "::error::Bump the version in packages/sdk/package.json before tagging."
+            exit 1
+          fi
+
+      # ── Type-check the SDK ─────────────────────────────────────────────
+      - name: Type-check SDK
+        working-directory: packages/sdk
+        run: pnpm exec tsc --noEmit --strict
+
+      # ── Build the SDK (tsc → dist/) ───────────────────────────────────
+      - name: Build SDK
+        working-directory: packages/sdk
+        run: |
+          pnpm exec tsc \
+            --outDir dist \
+            --declaration \
+            --declarationMap \
+            --sourceMap \
+            --module commonjs \
+            --target ES2020 \
+            --moduleResolution node \
+            --esModuleInterop \
+            --skipLibCheck
+
+      # ── Publish to npm ────────────────────────────────────────────────
+      # The workspace package.json has "private": true so we strip it
+      # in-place before publishing; the working copy is ephemeral in CI.
+      - name: Publish SDK to npm
+        working-directory: packages/sdk
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # Remove "private" field so npm allows the publish
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            delete pkg.private;
+            pkg.main = './dist/index.js';
+            pkg.types = './dist/index.d.ts';
+            pkg.files = ['dist'];
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          npm publish --access public
+
+      # ── Extract changelog section for this version ───────────────────
+      - name: Extract changelog entry
+        id: changelog
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          NOTES=$(node -e "
+            const fs = require('fs');
+            const content = fs.readFileSync('CHANGELOG.md', 'utf8');
+            const lines = content.split('\n');
+            const version = '$VERSION';
+            const headerRe = new RegExp('^##\\\\s*\\\\[' + version.replace(/\\\./g, '\\\\.') + '\\\\]');
+            let start = -1;
+            for (let i = 0; i < lines.length; i++) {
+              if (headerRe.test(lines[i])) { start = i; break; }
+            }
+            if (start === -1) {
+              process.stdout.write('Release ' + version);
+            } else {
+              let end = lines.length;
+              for (let i = start + 1; i < lines.length; i++) {
+                if (/^##\s+/.test(lines[i])) { end = i; break; }
+              }
+              process.stdout.write(lines.slice(start + 1, end).join('\n').trim());
+            }
+          ")
+          # Store multi-line output safely via GITHUB_OUTPUT delimiter
+          {
+            echo "NOTES<<EOF"
+            echo "$NOTES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # ── Create GitHub Release ─────────────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.TAG_NAME }}
+          name: "SDK v${{ steps.version.outputs.VERSION }}"
+          body: ${{ steps.changelog.outputs.NOTES }}
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.VERSION, '-') }}

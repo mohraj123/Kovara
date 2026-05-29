@@ -667,6 +667,30 @@ fn test_pool_authorization() {
 }
 
 #[test]
+fn test_create_pool_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin);
+
+    let pool_id = symbol_short!("pool_evt");
+
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin.clone()],
+        &1,
+    );
+    assert!(
+        !env.events().all().events().is_empty(),
+        "PoolCreatedEvent should be emitted"
+    );
+}
+
+#[test]
 #[should_panic(expected = "insufficient signers")]
 fn test_pool_withdraw_insufficient_signers() {
     let env = Env::default();
@@ -1001,6 +1025,44 @@ fn test_set_fee_zero_valid() {
     // Set fee to 0 should succeed
     client.set_fee(&0);
     assert_eq!(client.get_fee_bps(), 0);
+}
+
+#[test]
+fn test_set_fee_emits_fee_updated_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _) = setup_contract(&env);
+
+    let event_count_before = env.events().all().events().len();
+
+    client.set_fee(&250);
+
+    assert_eq!(client.get_fee_bps(), 250);
+    assert_eq!(
+        env.events().all().events().len(),
+        event_count_before + 1,
+        "FeeUpdatedEvent should be emitted"
+    );
+}
+
+#[test]
+fn test_set_treasury_emits_treasury_updated_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, old_treasury) = setup_contract(&env);
+    let new_treasury = Address::generate(&env);
+
+    let event_count_before = env.events().all().events().len();
+
+    client.set_treasury(&new_treasury);
+
+    assert_eq!(client.get_treasury(), Some(new_treasury));
+    assert_eq!(
+        env.events().all().events().len(),
+        event_count_before + 1,
+        "TreasuryUpdatedEvent should be emitted"
+    );
+    assert_ne!(client.get_treasury(), Some(old_treasury));
 }
 
 #[test]
@@ -1953,8 +2015,11 @@ fn test_pool_admin_added_event() {
     );
 
     // Verify event was emitted
-    assert!(!env.events().all().events().is_empty(), "PoolAdminAddedEvent should be emitted");
-    
+    assert!(
+        !env.events().all().events().is_empty(),
+        "PoolAdminAddedEvent should be emitted"
+    );
+
     // Verify admin was added
     let pool = client.get_pool(&pool_id).unwrap();
     assert_eq!(pool.admins.len(), 3);
@@ -1977,7 +2042,12 @@ fn test_pool_admin_removed_event() {
         &admin,
         &pool_id,
         &token,
-        &vec![&env, pool_admin1.clone(), pool_admin2.clone(), pool_admin3.clone()],
+        &vec![
+            &env,
+            pool_admin1.clone(),
+            pool_admin2.clone(),
+            pool_admin3.clone(),
+        ],
         &2,
     );
 
@@ -1988,8 +2058,11 @@ fn test_pool_admin_removed_event() {
     );
 
     // Verify event was emitted
-    assert!(!env.events().all().events().is_empty(), "PoolAdminRemovedEvent should be emitted");
-    
+    assert!(
+        !env.events().all().events().is_empty(),
+        "PoolAdminRemovedEvent should be emitted"
+    );
+
     // Verify admin was removed
     let pool = client.get_pool(&pool_id).unwrap();
     assert_eq!(pool.admins.len(), 2);
@@ -2022,8 +2095,11 @@ fn test_pool_threshold_updated_event() {
     );
 
     // Verify event was emitted
-    assert!(!env.events().all().events().is_empty(), "PoolThresholdUpdatedEvent should be emitted");
-    
+    assert!(
+        !env.events().all().events().is_empty(),
+        "PoolThresholdUpdatedEvent should be emitted"
+    );
+
     // Verify threshold was updated
     let pool = client.get_pool(&pool_id).unwrap();
     assert_eq!(pool.threshold, 1);

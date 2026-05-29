@@ -187,6 +187,16 @@ pub struct PoolWithdrawEvent {
 
 #[contractevent]
 #[derive(Clone)]
+pub struct PoolCreatedEvent {
+    #[topic]
+    pub pool_id: Symbol,
+    pub token: Address,
+    pub admins: Vec<Address>,
+    pub threshold: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
 pub struct LikePostEvent {
     #[topic]
     pub user: Address,
@@ -265,6 +275,20 @@ pub struct PoolThresholdUpdatedEvent {
     pub pool_id: Symbol,
     pub old_threshold: u32,
     pub new_threshold: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct FeeUpdatedEvent {
+    pub old_fee_bps: u32,
+    pub new_fee_bps: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct TreasuryUpdatedEvent {
+    pub old_treasury: Address,
+    pub new_treasury: Address,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -780,12 +804,16 @@ impl LinkoraContract {
     ) {
         admin.require_auth();
         Self::require_admin(&env);
-        let key = StorageKey::Pool(pool_id);
+        let key = StorageKey::Pool(pool_id.clone());
         assert!(!env.storage().persistent().has(&key), "pool exists");
         assert!(
             threshold > 0 && threshold <= initial_admins.len(),
             "invalid threshold"
         );
+
+        // Clone admins for event payload before moving into storage
+        let admins_for_event = initial_admins.clone();
+        let token_copy = token.clone();
         env.storage().persistent().set(
             &key,
             &Pool {
@@ -796,6 +824,14 @@ impl LinkoraContract {
             },
         );
         Self::bump(&env, &key);
+
+        PoolCreatedEvent {
+            pool_id,
+            token: token_copy,
+            admins: admins_for_event,
+            threshold,
+        }
+        .publish(&env);
     }
 
     pub fn pool_deposit(
@@ -921,11 +957,7 @@ impl LinkoraContract {
         env.storage().persistent().set(&key, &pool);
         Self::bump(&env, &key);
 
-        PoolAdminAddedEvent {
-            pool_id,
-            new_admin,
-        }
-        .publish(&env);
+        PoolAdminAddedEvent { pool_id, new_admin }.publish(&env);
     }
 
     pub fn remove_pool_admin(env: Env, signers: Vec<Address>, pool_id: Symbol, admin: Address) {
@@ -963,11 +995,7 @@ impl LinkoraContract {
         env.storage().persistent().set(&key, &pool);
         Self::bump(&env, &key);
 
-        PoolAdminRemovedEvent {
-            pool_id,
-            admin,
-        }
-        .publish(&env);
+        PoolAdminRemovedEvent { pool_id, admin }.publish(&env);
     }
 
     pub fn update_pool_threshold(env: Env, signers: Vec<Address>, pool_id: Symbol, threshold: u32) {
@@ -1011,12 +1039,24 @@ impl LinkoraContract {
     pub fn set_fee(env: Env, fee_bps: u32) {
         Self::require_admin(&env);
         assert!(fee_bps <= 10_000, "invalid fee");
+        let old_fee_bps = Self::get_fee_bps(env.clone());
         env.storage().instance().set(&FEE_BPS, &fee_bps);
+        FeeUpdatedEvent {
+            old_fee_bps,
+            new_fee_bps: fee_bps,
+        }
+        .publish(&env);
     }
 
     pub fn set_treasury(env: Env, treasury: Address) {
         Self::require_admin(&env);
+        let old_treasury = Self::get_treasury(env.clone()).expect("treasury not set");
         env.storage().instance().set(&TREASURY, &treasury);
+        TreasuryUpdatedEvent {
+            old_treasury,
+            new_treasury: treasury,
+        }
+        .publish(&env);
     }
 
     pub fn get_fee_bps(env: Env) -> u32 {

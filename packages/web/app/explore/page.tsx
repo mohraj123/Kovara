@@ -72,7 +72,7 @@ export default function ExplorePage() {
 
         {!searchResult && !searching && (
           <div style={styles.noResults}>
-            <span style={styles.noResultsIcon}>🔍</span>
+            <span style={styles.noResultsIcon} aria-hidden="true">🔍</span>
             <p>Search for a username to find profiles</p>
           </div>
         )}

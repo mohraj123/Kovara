@@ -92,7 +92,7 @@ export default function FeedPage() {
     <main style={styles.main}>
       <header style={styles.header}>
         <h1 style={styles.title}>Following Feed</h1>
-        <Link href="/new" style={styles.newPostButton}>
+        <Link href="/new" style={styles.newPostButton} aria-label="Create new post">
           + New Post
         </Link>
       </header>
@@ -130,7 +130,7 @@ export default function FeedPage() {
 
         {posts.length === 0 && !loading && !error && (
           <div style={styles.emptyState}>
-            <div style={styles.emptyIcon}>👥</div>
+            <div style={styles.emptyIcon} aria-hidden="true">👥</div>
             <h3 style={styles.emptyTitle}>No posts yet</h3>
             <p style={styles.emptyText}>
               Follow some accounts to see their posts here

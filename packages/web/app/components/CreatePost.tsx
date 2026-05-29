@@ -80,7 +80,7 @@ export function CreatePost({ onSuccess, compact = false }: CreatePostProps) {
     return (
       <div style={compact ? styles.compactContainer : styles.container}>
         <div style={styles.walletPrompt}>
-          <span style={styles.walletIcon}>👛</span>
+          <span style={styles.walletIcon} aria-hidden="true">👛</span>
           <p style={styles.walletText}>Connect wallet to create a post</p>
         </div>
       </div>
@@ -92,7 +92,7 @@ export function CreatePost({ onSuccess, compact = false }: CreatePostProps) {
     return (
       <div style={compact ? styles.compactContainer : styles.container}>
         <div style={styles.successState}>
-          <div style={styles.successIcon}>✅</div>
+          <div style={styles.successIcon} aria-hidden="true">✅</div>
           <p style={styles.successText}>Post published!</p>
           <div style={styles.successActions}>
             <Link href={`/posts/${postId}`} style={styles.viewPostLink}>
@@ -124,6 +124,7 @@ export function CreatePost({ onSuccess, compact = false }: CreatePostProps) {
           value={content}
           onChange={handleContentChange}
           placeholder="What's happening?"
+          aria-label="Post content"
           maxLength={MAX_CONTENT_LENGTH}
           style={{
             ...styles.textarea,
@@ -171,7 +172,7 @@ export function CreatePost({ onSuccess, compact = false }: CreatePostProps) {
       {/* Fee info and actions row */}
       <div style={styles.footer}>
         <div style={styles.feeInfo}>
-          <span style={styles.feeIcon}>⛽</span>
+          <span style={styles.feeIcon} aria-hidden="true">⛽</span>
           <span style={styles.feeText}>{TRANSACTION_FEE_ESTIMATE}</span>
         </div>
 
