@@ -226,3 +226,77 @@ textarea:focus {
   border-color: var(--color-primary) !important;
   box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.15);
 }
+
+/* ── Universal Viewport Safety & Layout Safety ──────────────────────────────── */
+
+html, body {
+  overflow-x: hidden;
+  width: 100%;
+  max-width: 100%;
+}
+
+main {
+  width: 100%;
+  max-width: 100vw;
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+
+/* Standardize 44x44px min touch targets for access and accessibility */
+button,
+a,
+input,
+select,
+textarea {
+  min-height: 44px;
+  box-sizing: border-box;
+}
+
+/* ── Navbar responsiveness classes ─────────────────────────────────────────── */
+
+.desktop-links {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.hamburger-btn {
+  display: none;
+  flex-direction: column;
+  justify-content: space-between;
+  width: 24px;
+  height: 18px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  z-index: 101;
+}
+
+@media (max-width: 767px) {
+  .desktop-links {
+    display: none !important;
+  }
+  .hamburger-btn {
+    display: flex !important;
+  }
+}
+
+/* ── Animations ───────────────────────────────────────────────────────────── */
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+

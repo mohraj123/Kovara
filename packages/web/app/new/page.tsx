@@ -18,7 +18,7 @@ interface PublishState {
 }
 
 export default function NewPostPage() {
-  const { publicKey, isConnected } = useWallet();
+  const { publicKey, isConnected, isConnecting } = useWallet();
   const router = useRouter();
   const [content, setContent] = useState("");
   const [publishState, setPublishState] = useState<PublishState>({

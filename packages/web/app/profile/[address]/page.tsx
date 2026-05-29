@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { PostCard, Post } from "../../components/PostCard";
+import { TipModal } from "../../components/TipModal";
 
 // In a real app this comes from a wallet context / auth hook.
 const MOCK_CURRENT_USER = "";
@@ -108,6 +109,7 @@ export default function ProfilePage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
   const [likedPosts, setLikedPosts] = useState<Set<number>>(new Set());
+  const [tippingPost, setTippingPost] = useState<{ id: number; author: string } | null>(null);
   const [followState, setFollowState] = useState<FollowState>("not_following");
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -267,11 +269,24 @@ export default function ProfilePage() {
               key={post.id}
               post={post}
               onLike={handleLike}
+              onTip={(postId) => {
+                const p = posts.find((item) => item.id === postId);
+                if (p) {
+                  setTippingPost({ id: p.id, author: p.username || p.author });
+                }
+              }}
               isLiked={likedPosts.has(post.id)}
             />
           ))
         )}
       </section>
+      {tippingPost && (
+        <TipModal
+          postId={tippingPost.id}
+          authorName={tippingPost.author}
+          onClose={() => setTippingPost(null)}
+        />
+      )}
     </main>
   );
 }

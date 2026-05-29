@@ -34,39 +34,3 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     </html>
   );
 }
-
-const navStyles: React.CSSProperties = {
-  background: "var(--color-bg)",
-  borderBottom: "1px solid var(--color-border)",
-  padding: "var(--spacing-md) var(--spacing-lg)",
-  position: "sticky",
-  top: 0,
-  zIndex: 100,
-};
-
-const navContainer: React.CSSProperties = {
-  maxWidth: "1200px",
-  margin: "0 auto",
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-};
-
-const logo: React.CSSProperties = {
-  fontSize: "1.5rem",
-  fontWeight: 700,
-  color: "var(--color-primary)",
-  textDecoration: "none",
-};
-
-const navLinks: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: "var(--spacing-lg)",
-};
-
-const navLink: React.CSSProperties = {
-  color: "var(--color-text)",
-  textDecoration: "none",
-  fontWeight: 500,
-};

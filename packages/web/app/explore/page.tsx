@@ -4,10 +4,12 @@ import { useState } from "react";
 import { SearchBar } from "../components/SearchBar";
 import { ProfileCard } from "../components/ProfileCard";
 import { PostCard, Post } from "../components/PostCard";
+import { TipModal } from "../components/TipModal";
 
 export default function ExplorePage() {
   const [searchResult, setSearchResult] = useState<any>(null);
   const [searching, setSearching] = useState(false);
+  const [tippingPost, setTippingPost] = useState<{ id: number; author: string } | null>(null);
   const [trendingPosts] = useState<Post[]>([
     {
       id: 3,
@@ -78,7 +80,16 @@ export default function ExplorePage() {
         <section style={styles.section}>
           <h2 style={styles.sectionTitle}>Trending Posts</h2>
           {trendingPosts.map((post) => (
-            <PostCard key={post.id} post={post} />
+            <PostCard
+              key={post.id}
+              post={post}
+              onTip={(postId) => {
+                const p = trendingPosts.find((item) => item.id === postId);
+                if (p) {
+                  setTippingPost({ id: p.id, author: p.username || p.author });
+                }
+              }}
+            />
           ))}
         </section>
 
@@ -92,6 +103,13 @@ export default function ExplorePage() {
             />
           ))}
         </section>
+        {tippingPost && (
+          <TipModal
+            postId={tippingPost.id}
+            authorName={tippingPost.author}
+            onClose={() => setTippingPost(null)}
+          />
+        )}
       </div>
     </main>
   );

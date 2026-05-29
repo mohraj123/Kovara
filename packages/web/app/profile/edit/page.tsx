@@ -189,7 +189,7 @@ export default function ProfileEditPage() {
               disabled={submitting}
             />
             <p style={styles.helperText}>
-              SEP-41 token address (pass your own address if you haven't deployed a token)
+              SEP-41 token address (pass your own address if you haven&apos;t deployed a token)
             </p>
           </div>
 

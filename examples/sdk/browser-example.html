@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Linkora Social - Browser SDK Integration Example</title>
+  <style>
+    :root {
+      --color-primary: #8b5cf6;
+      --color-primary-hover: #7c3aed;
+      --color-bg: #0f172a;
+      --color-card: rgba(30, 41, 59, 0.7);
+      --color-text: #f8fafc;
+      --color-text-secondary: #94a3b8;
+      --color-border: rgba(255, 255, 255, 0.08);
+      --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+    }
+
+    body {
+      background: radial-gradient(circle at top, #1e1b4b 0%, var(--color-bg) 60%);
+      color: var(--color-text);
+      font-family: var(--font-sans);
+      margin: 0;
+      padding: 40px 20px;
+      min-height: 100vh;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 580px;
+      background: var(--color-card);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--color-border);
+      border-radius: 24px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+      padding: 32px;
+      box-sizing: border-box;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 1.8rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, #a78bfa 0%, #8b5cf6 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    p {
+      margin: 0;
+      font-size: 0.95rem;
+      color: var(--color-text-secondary);
+      line-height: 1.5;
+    }
+
+    .status-badge {
+      display: inline-block;
+      padding: 6px 12px;
+      border-radius: 99px;
+      font-size: 0.8rem;
+      fontWeight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 24px;
+      text-align: center;
+    }
+
+    .badge-disconnected {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.25);
+    }
+
+    .badge-connected {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.25);
+    }
+
+    .section {
+      background: rgba(15, 23, 42, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.03);
+      border-radius: 16px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+
+    .section-title {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: var(--color-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-top: 0;
+      margin-bottom: 12px;
+    }
+
+    .data-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+      font-size: 0.9rem;
+    }
+
+    .data-row:last-child {
+      margin-bottom: 0;
+    }
+
+    .data-label {
+      color: var(--color-text-secondary);
+    }
+
+    .data-value {
+      font-weight: 600;
+      font-family: monospace;
+      color: #e2e8f0;
+    }
+
+    .btn {
+      width: 100%;
+      min-height: 48px;
+      background: var(--color-primary);
+      color: var(--color-text);
+      border: none;
+      border-radius: 12px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.2s;
+    }
+
+    .btn:hover {
+      background: var(--color-primary-hover);
+    }
+
+    .btn:disabled {
+      background: #334155;
+      color: #64748b;
+      cursor: not-allowed;
+    }
+
+    .post-card {
+      background: rgba(30, 41, 59, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 20px;
+    }
+
+    .post-content {
+      font-size: 0.95rem;
+      line-height: 1.5;
+      margin-bottom: 12px;
+    }
+
+    .post-actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .like-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      color: var(--color-text);
+      padding: 6px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 36px;
+      transition: all 0.2s;
+    }
+
+    .like-btn:hover {
+      background: rgba(239, 68, 68, 0.15);
+      color: #ef4444;
+      border-color: rgba(239, 68, 68, 0.25);
+    }
+
+    .log-box {
+      background: #090d16;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      border-radius: 12px;
+      padding: 14px;
+      font-family: monospace;
+      font-size: 0.82rem;
+      max-height: 140px;
+      overflow-y: auto;
+      color: #38bdf8;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <h1>Linkora SDK Browser Demo</h1>
+      <p>Demonstrating Freighter Wallet Signature Integrations</p>
+    </header>
+
+    <center>
+      <div id="statusBadge" class="status-badge badge-disconnected">Disconnected</div>
+    </center>
+
+    <!-- Post Interactions -->
+    <div class="post-card">
+      <div class="post-content">
+        "Linkora Social brings secure M-of-N multisig creator pools to Stellar's Soroban network. Fund development, distribute grants, and build together!"
+      </div>
+      <div class="post-actions">
+        <button id="likeBtn" class="like-btn" disabled>
+          <span>🤍</span> <span id="likeCount">42</span> Likes
+        </button>
+        <span style="font-size: 0.8rem; color: var(--color-text-secondary)">Post ID #109</span>
+      </div>
+    </div>
+
+    <!-- wallet state -->
+    <section class="section">
+      <h3 class="section-title">Wallet Information</h3>
+      <div class="data-row">
+        <span class="data-label">Address</span>
+        <span id="walletAddress" class="data-value">Not Connected</span>
+      </div>
+      <div class="data-row" style="margin-top: 12px;">
+        <button id="connectBtn" class="btn">Connect Wallet</button>
+      </div>
+    </section>
+
+    <!-- logs -->
+    <section class="section" style="margin-bottom: 0;">
+      <h3 class="section-title">Transaction Console Logs</h3>
+      <div id="logBox" class="log-box">Initializing browser environment...
+Ready to connect wallet.</div>
+    </section>
+  </div>
+
+  <!-- Script setup linking to freighter and simulating standard client flow -->
+  <script>
+    const connectBtn = document.getElementById("connectBtn");
+    const likeBtn = document.getElementById("likeBtn");
+    const walletAddressText = document.getElementById("walletAddress");
+    const statusBadge = document.getElementById("statusBadge");
+    const logBox = document.getElementById("logBox");
+    const likeCountSpan = document.getElementById("likeCount");
+
+    let userAddress = null;
+
+    function log(message) {
+      logBox.innerHTML += `\n[${new Date().toLocaleTimeString()}] ${message}`;
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    // Connect wallet handler
+    connectBtn.addEventListener("click", async () => {
+      log("Checking for Freighter browser extension...");
+      
+      // Freighter API validation
+      if (typeof window.freighter === "undefined") {
+        log("✕ Error: Freighter wallet extension is not installed.");
+        alert("Please install the Freighter browser extension from freighter.app to run this browser example.");
+        return;
+      }
+
+      log("Awaiting connection approval in Freighter popup...");
+      try {
+        const publicKey = await window.freighter.getPublicKey();
+        userAddress = publicKey;
+        
+        walletAddressText.textContent = `${publicKey.slice(0, 6)}...${publicKey.slice(-4)}`;
+        
+        statusBadge.textContent = "Connected";
+        statusBadge.className = "status-badge badge-connected";
+        connectBtn.textContent = "Wallet Connected";
+        connectBtn.disabled = true;
+        likeBtn.disabled = false;
+
+        log(`✓ Connected successfully! User Address: ${publicKey}`);
+      } catch (err) {
+        log(`✕ Connection rejected: ${err.message || err}`);
+      }
+    });
+
+    // Like post handler (Signs contract write call using Freighter)
+    likeBtn.addEventListener("click", async () => {
+      if (!userAddress) return;
+
+      log("Initiating 'likePost' transaction build...");
+      log("Building invoke envelope: client.likePost({ user, postId: 109n })");
+
+      // Simulating the contract prepare steps
+      log("Preparing transaction fee & resource bounds on-chain...");
+      await new Promise(r => setTimeout(r, 600));
+
+      log("⏳ Awaiting transaction signature in Freighter window...");
+      try {
+        // Mocking freighter signature on built XDR
+        // Live integration: window.freighter.signTransaction(txXdr, { networkPassphrase })
+        await new Promise(r => setTimeout(r, 1200));
+        
+        log("✓ Signature captured successfully!");
+        log("Submitting transaction to Stellar Testnet...");
+        await new Promise(r => setTimeout(r, 1000));
+
+        const mockHash = "like_tx_" + Math.random().toString(36).substring(2, 11);
+        log(`✓ Transaction confirmed! Ledger: 12345683`);
+        log(`Tx Hash: ${mockHash}`);
+
+        // Update UI
+        likeCountSpan.textContent = "43";
+        likeBtn.innerHTML = "❤️ 43 Likes";
+        likeBtn.disabled = true;
+        likeBtn.style.color = "#ef4444";
+        likeBtn.style.background = "rgba(239, 68, 68, 0.15)";
+      } catch (signErr) {
+        log(`✕ Signature error: ${signErr.message || signErr}`);
+      }
+    });
+  </script>
+</body>
+</html>
