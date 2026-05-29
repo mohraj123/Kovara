@@ -184,6 +184,28 @@ Emitted when a pool's signature threshold is updated.
   - `old_threshold`: `u32`
   - `new_threshold`: `u32`
 
+### FeeUpdated
+
+Emitted when the admin updates the protocol fee.
+
+- **Topic 0**: `Linkora`
+- **Topic 1**: `fee_updated_event`
+- **Topic 2**: `v1`
+- **Data Payload**: `FeeUpdatedEvent`
+  - `old_fee_bps`: `u32`
+  - `new_fee_bps`: `u32`
+
+### TreasuryUpdated
+
+Emitted when the admin updates the protocol treasury address.
+
+- **Topic 0**: `Linkora`
+- **Topic 1**: `treasury_updated_event`
+- **Topic 2**: `v1`
+- **Data Payload**: `TreasuryUpdatedEvent`
+  - `old_treasury`: `Address`
+  - `new_treasury`: `Address`
+
 ## Querying and Decoding
 
 ### Using Stellar CLI

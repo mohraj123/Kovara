@@ -267,6 +267,20 @@ pub struct PoolThresholdUpdatedEvent {
     pub new_threshold: u32,
 }
 
+#[contractevent]
+#[derive(Clone)]
+pub struct FeeUpdatedEvent {
+    pub old_fee_bps: u32,
+    pub new_fee_bps: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct TreasuryUpdatedEvent {
+    pub old_treasury: Address,
+    pub new_treasury: Address,
+}
+
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -1011,12 +1025,24 @@ impl LinkoraContract {
     pub fn set_fee(env: Env, fee_bps: u32) {
         Self::require_admin(&env);
         assert!(fee_bps <= 10_000, "invalid fee");
+        let old_fee_bps = Self::get_fee_bps(env.clone());
         env.storage().instance().set(&FEE_BPS, &fee_bps);
+        FeeUpdatedEvent {
+            old_fee_bps,
+            new_fee_bps: fee_bps,
+        }
+        .publish(&env);
     }
 
     pub fn set_treasury(env: Env, treasury: Address) {
         Self::require_admin(&env);
+        let old_treasury = Self::get_treasury(env.clone()).expect("treasury not set");
         env.storage().instance().set(&TREASURY, &treasury);
+        TreasuryUpdatedEvent {
+            old_treasury,
+            new_treasury: treasury,
+        }
+        .publish(&env);
     }
 
     pub fn get_fee_bps(env: Env) -> u32 {

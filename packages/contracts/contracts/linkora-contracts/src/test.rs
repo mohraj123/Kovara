@@ -1004,6 +1004,44 @@ fn test_set_fee_zero_valid() {
 }
 
 #[test]
+fn test_set_fee_emits_fee_updated_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _) = setup_contract(&env);
+
+    let event_count_before = env.events().all().events().len();
+
+    client.set_fee(&250);
+
+    assert_eq!(client.get_fee_bps(), 250);
+    assert_eq!(
+        env.events().all().events().len(),
+        event_count_before + 1,
+        "FeeUpdatedEvent should be emitted"
+    );
+}
+
+#[test]
+fn test_set_treasury_emits_treasury_updated_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, old_treasury) = setup_contract(&env);
+    let new_treasury = Address::generate(&env);
+
+    let event_count_before = env.events().all().events().len();
+
+    client.set_treasury(&new_treasury);
+
+    assert_eq!(client.get_treasury(), Some(new_treasury));
+    assert_eq!(
+        env.events().all().events().len(),
+        event_count_before + 1,
+        "TreasuryUpdatedEvent should be emitted"
+    );
+    assert_ne!(client.get_treasury(), Some(old_treasury));
+}
+
+#[test]
 #[should_panic]
 fn test_set_fee_non_admin_panics() {
     let env = Env::default();
