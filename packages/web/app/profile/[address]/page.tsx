@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { PostCard, Post } from "../../components/PostCard";
+import { ProfileHeader } from "../../components/ProfileHeader";
 
 // In a real app this comes from a wallet context / auth hook.
 const MOCK_CURRENT_USER = "";
@@ -205,49 +206,17 @@ export default function ProfilePage() {
 
   return (
     <main style={styles.page}>
-      {/* ── Profile header ─────────────────────────────────────────────── */}
-      <section style={styles.header}>
-        <div style={styles.avatarLg} aria-hidden="true" />
-
-        <div style={styles.meta}>
-          <div style={styles.usernameRow}>
-            <h1 style={styles.username}>@{profile.username}</h1>
-            {isOwnProfile && (
-              <a href={`/profile/${address}/edit`} style={styles.editLink}>
-                Edit profile
-              </a>
-            )}
-          </div>
-
-          <div style={styles.addressRow}>
-            <code style={styles.address}>{formatAddress(profile.address)}</code>
-            <CopyButton text={profile.address} />
-          </div>
-
-          <CreatorTokenBadge token={profile.creator_token} />
-
-          <div style={styles.statsRow}>
-            <span style={styles.stat}>
-              <strong>{profile.follower_count}</strong>
-              <span style={styles.statLabel}> Followers</span>
-            </span>
-            <span style={styles.stat}>
-              <strong>{profile.following_count}</strong>
-              <span style={styles.statLabel}> Following</span>
-            </span>
-          </div>
-        </div>
-
-        {!isOwnProfile && (
-          <div style={styles.actions}>
-            <FollowButton
-              state={followState}
-              onFollow={handleFollow}
-              onUnfollow={handleUnfollow}
-            />
-          </div>
-        )}
-      </section>
+      <ProfileHeader
+        address={profile.address}
+        username={profile.username}
+        creatorToken={profile.creator_token}
+        followerCount={profile.follower_count}
+        followingCount={profile.following_count}
+        isOwnProfile={isOwnProfile}
+        followState={followState}
+        onFollow={handleFollow}
+        onUnfollow={handleUnfollow}
+      />
 
       {/* ── Post list ──────────────────────────────────────────────────── */}
       <section>

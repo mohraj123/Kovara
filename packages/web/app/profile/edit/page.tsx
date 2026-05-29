@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 
 interface FormData {
   username: string;
@@ -13,6 +14,7 @@ interface ProfileData {
 }
 
 export default function ProfileEditPage() {
+  const router = useRouter();
   const [formData, setFormData] = useState<FormData>({
     username: "",
     creatorToken: "",
@@ -88,15 +90,16 @@ export default function ProfileEditPage() {
       }
 
       // TODO: Call set_profile(userAddress, username, creatorToken) via contract SDK
-      // Wait for contract interaction
+      // Simulate signing + submitting the transaction
       await new Promise((resolve) => setTimeout(resolve, 1000));
 
       setSuccess(true);
       setError(null);
 
+      // Redirect to the user's profile page on success
       setTimeout(() => {
-        setSuccess(false);
-      }, 3000);
+        router.push(`/profile/${userAddress}`);
+      }, 1000);
     } catch (err) {
       console.error("Failed to update profile:", err);
       setError(
