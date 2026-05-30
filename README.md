@@ -81,7 +81,10 @@ The primary contract is `LinkoraContract`.
 | `initialize(admin, treasury, fee_bps)` | One-time contract setup. Panics if called more than once. | `admin` | `admin: Address` — contract administrator<br>`treasury: Address` — fee recipient<br>`fee_bps: u32` — protocol fee in basis points (0–10 000) | `()` |
 | `set_profile(user, username, creator_token)` | Register or update a creator profile. | `user` | `user: Address` — account being registered<br>`username: String` — display name (3–32 alphanumeric or `_` characters)<br>`creator_token: Address` — SEP-41 token the creator has deployed (pass own address if none) | `()` |
 | `get_profile(user)` | Fetch a profile by address. | None | `user: Address` | `Option<Profile>` |
-| `get_profile_count()` | Return the total number of registered profiles. | None | None | `u64` |
+| `get_profile_count()` | Return the total number of profiles ever created. This counter is never decremented — it tracks total unique registrations, not currently active profiles. | None | None | `u64` |
+| `get_address_by_username(username)` | Resolve a username to the owner's address using the reverse index. Returns `None` if the username is not registered. | None | `username: String` | `Option<Address>` |
+| `set_tip_cooldown_window(cooldown_ledgers)` | Set the per-tipper-per-post tip cooldown in ledgers. Only callable by the contract admin. | contract `admin` | `cooldown_ledgers: u32` — number of ledgers (must be > 0) | `()` |
+| `get_tip_cooldown_window()` | Return the current tip cooldown window in ledgers. | None | None | `u32` |
 | `follow(follower, followee)` | Record a follow relationship. Duplicate follows are ignored. Panics if `followee` has blocked `follower`. | `follower` | `follower: Address` — account initiating the follow<br>`followee: Address` — account being followed | `()` |
 | `unfollow(follower, followee)` | Remove a follow relationship. No-op if the relationship does not exist. | `follower` | `follower: Address` — account removing the follow<br>`followee: Address` — account being unfollowed | `()` |
 | `get_following(user, offset, limit)` | Return a page of accounts followed by a user. `limit` is capped at 50; panics with "limit exceeded" if violated. Returns an empty vec when `offset` is beyond the list length. | None | `user: Address`<br>`offset: u32` — zero-based start index<br>`limit: u32` — page size (max 50) | `Vec<Address>` |
@@ -126,14 +129,16 @@ Linkora-socials uses Soroban's state storage to manage its data. All persistent 
 ```rust
 #[contracttype]
 pub enum StorageKey {
-    Post(u64),
-    Profile(Address),
-    Following(Address),
-    Followers(Address),
-    Pool(Symbol),
-    Like(u64, Address),
-    AuthorPosts(Address),
-    Blocks(Address),
+    Post(u64),              // persistent: post_id -> Post
+    Profile(Address),       // persistent: user -> Profile
+    Following(Address),     // persistent: user -> Vec<Address> they follow
+    Followers(Address),     // persistent: user -> Vec<Address> following them
+    Pool(Symbol),           // persistent: pool_id -> Pool
+    Like(u64, Address),     // persistent: (post_id, user) -> bool
+    AuthorPosts(Address),   // persistent: author -> Vec<u64> of post IDs
+    Blocks(Address),        // persistent: blocker -> Map<Address, ()>
+    UsernameIndex(String),  // persistent: username -> owner Address
+    TipCooldown(u64, Address), // temporary: (post_id, tipper) -> last-tip ledger
 }
 ```
 
@@ -141,20 +146,22 @@ pub enum StorageKey {
 
 | Key | StorageKey variant | Namespace | Purpose |
 |---|---|---|---|
-| `PROFILES` | `(Symbol("PROFILES"), Address)` | Persistent | Stores user `Profile` data. |
-| `UNAMES` | `(Symbol("UNAMES"), String)` | Persistent | Maps each username to the owning `Address` so usernames stay unique. |
-| `PROF_CT` | `Symbol("PROF_CT")` | Instance | Tracks the total number of registered profiles. |
+| Profile | `StorageKey::Profile(Address)` | Persistent | Stores user `Profile` data keyed by the owner's address. |
+| UsernameIndex | `StorageKey::UsernameIndex(String)` | Persistent | Reverse index — maps each username to its owner `Address`, enforcing uniqueness. |
 | Following | `StorageKey::Following(Address)` | Persistent | Stores a `Vec<Address>` of accounts that the given address follows. |
 | Followers | `StorageKey::Followers(Address)` | Persistent | Stores a `Vec<Address>` of accounts following the given address. |
 | Blocks | `StorageKey::Blocks(Address)` | Persistent | Stores a `Map<Address, ()>` of accounts blocked by the given address. |
 | Post | `StorageKey::Post(u64)` | Persistent | Stores individual `Post` objects by their incremental ID. |
-| `POST_CT` | `Symbol("POST_CT")` | Instance | Tracks the total number of posts created (used for ID generation). |
-| Pool | `StorageKey::Pool(Symbol)` | Persistent | Stores `Pool` data for named community pools. |
 | Like | `StorageKey::Like(u64, Address)` | Persistent | Records whether a specific user has liked a specific post. |
 | AuthorPosts | `StorageKey::AuthorPosts(Address)` | Persistent | Stores a `Vec<u64>` of post IDs created by the given author. |
+| Pool | `StorageKey::Pool(Symbol)` | Persistent | Stores `Pool` data for named community pools. |
+| TipCooldown | `StorageKey::TipCooldown(u64, Address)` | Temporary | Records the last-tip ledger sequence for `(post_id, tipper)`, enforcing the per-tipper-per-post cooldown window. Expires automatically. |
+| `PROF_CT` | `Symbol("PROF_CT")` | Instance | Tracks the **total** profiles ever created (never decremented). See `get_profile_count`. |
+| `POST_CT` | `Symbol("POST_CT")` | Instance | Tracks the total posts ever created (used for ID generation, never decremented). |
 | `ADMIN` | `Symbol("ADMIN")` | Instance | Stores the contract administrator's address. |
 | `TREASURY` | `Symbol("TREASURY")` | Instance | Stores the treasury address that receives protocol fees. |
 | `FEE_BPS` | `Symbol("FEE_BPS")` | Instance | Stores the protocol fee in basis points (0–10 000). |
+| `TIP_CD_W` | `Symbol("TIP_CD_W")` | Instance | Configurable tip cooldown window in ledgers (default ≈ 1 day). |
 | `INIT` | `Symbol("INIT")` | Instance | Boolean flag indicating if the contract has been initialized. |
 
 > [!NOTE]

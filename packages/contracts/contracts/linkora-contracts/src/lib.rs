@@ -8,26 +8,26 @@ use soroban_sdk::{
 
 #[contracttype]
 pub enum StorageKey {
-    Post(u64),
-    Profile(Address),
-    Following(Address),
-    Followers(Address),
-    Pool(Symbol),
-    Like(u64, Address),
-    AuthorPosts(Address),
-    Blocks(Address),
+    Post(u64),                 // persistent: post_id -> Post
+    Profile(Address),          // persistent: user -> Profile
+    Following(Address),        // persistent: user -> Vec<Address> of accounts they follow
+    Followers(Address),        // persistent: user -> Vec<Address> of accounts following them
+    Pool(Symbol),              // persistent: pool_id -> Pool
+    Like(u64, Address),        // persistent: (post_id, user) -> bool
+    AuthorPosts(Address),      // persistent: author -> Vec<u64> of post IDs
+    Blocks(Address),           // persistent: blocker -> Map<Address, ()>
+    UsernameIndex(String), // persistent: username -> owner Address (reverse index for uniqueness)
+    TipCooldown(u64, Address), // temporary: (post_id, tipper) -> last-tip ledger sequence number
 }
 
 // ── Instance-storage key constants (small scalars, not contracttype) ──────────
 
 const POST_CT: Symbol = symbol_short!("POST_CT");
-const USERNAMES: Symbol = symbol_short!("UNAMES");
-const PROFILE_CT: Symbol = symbol_short!("PROF_CT");
+const PROFILE_CREATED_CT: Symbol = symbol_short!("PROF_CT");
 const ADMIN: Symbol = symbol_short!("ADMIN");
 const TREASURY: Symbol = symbol_short!("TREASURY");
 const FEE_BPS: Symbol = symbol_short!("FEE_BPS");
 const INITIALIZED: Symbol = symbol_short!("INIT");
-const TIP_COOLDOWN: Symbol = symbol_short!("TIP_CD");
 const TIP_COOLDOWN_WINDOW: Symbol = symbol_short!("TIP_CD_W");
 
 // ── TTL Constants ─────────────────────────────────────────────────────────────
@@ -333,10 +333,6 @@ fn validate_content(content: &String) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn username_lookup_key(username: &String) -> (Symbol, String) {
-    (USERNAMES, username.clone())
-}
-
 fn paginate<T>(env: &Env, list: &Vec<T>, offset: u32, limit: u32) -> Vec<T>
 where
     T: soroban_sdk::TryFromVal<Env, soroban_sdk::Val>
@@ -373,7 +369,9 @@ impl LinkoraContract {
         env.storage().instance().set(&ADMIN, &admin);
         env.storage().instance().set(&TREASURY, &treasury);
         env.storage().instance().set(&FEE_BPS, &fee_bps);
-        env.storage().instance().set(&TIP_COOLDOWN_WINDOW, &TIP_COOLDOWN_LEDGERS);
+        env.storage()
+            .instance()
+            .set(&TIP_COOLDOWN_WINDOW, &TIP_COOLDOWN_LEDGERS);
     }
 
     // ── Profiles ──────────────────────────────────────────────────────────────
@@ -383,12 +381,12 @@ impl LinkoraContract {
         validate_username(&username).expect("invalid username");
 
         let key = StorageKey::Profile(user.clone());
-        let username_index_key = username_lookup_key(&username);
+        let username_index_key = StorageKey::UsernameIndex(username.clone());
 
         if let Some(existing_owner) = env
             .storage()
             .persistent()
-            .get::<(Symbol, String), Address>(&username_index_key)
+            .get::<_, Address>(&username_index_key)
         {
             if existing_owner != user {
                 panic!("username taken");
@@ -399,13 +397,21 @@ impl LinkoraContract {
             if existing_profile.username != username {
                 env.storage()
                     .persistent()
-                    .remove(&username_lookup_key(&existing_profile.username));
+                    .remove(&StorageKey::UsernameIndex(
+                        existing_profile.username.clone(),
+                    ));
             }
         }
 
         if !env.storage().persistent().has(&key) {
-            let count: u64 = env.storage().instance().get(&PROFILE_CT).unwrap_or(0);
-            env.storage().instance().set(&PROFILE_CT, &(count + 1));
+            let count: u64 = env
+                .storage()
+                .instance()
+                .get(&PROFILE_CREATED_CT)
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&PROFILE_CREATED_CT, &(count + 1));
         }
 
         // Write profile.
@@ -432,12 +438,18 @@ impl LinkoraContract {
         result
     }
 
+    /// Returns the total number of unique addresses that have ever called `set_profile`,
+    /// i.e. the number of profiles ever created. This counter is never decremented —
+    /// updating an existing profile does not increment it again.
     pub fn get_profile_count(env: Env) -> u64 {
-        env.storage().instance().get(&PROFILE_CT).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&PROFILE_CREATED_CT)
+            .unwrap_or(0)
     }
 
     pub fn get_address_by_username(env: Env, username: String) -> Option<Address> {
-        let key = username_lookup_key(&username);
+        let key = StorageKey::UsernameIndex(username);
         let result: Option<Address> = env.storage().persistent().get(&key);
         if result.is_some() {
             Self::bump(&env, &key);
@@ -745,8 +757,8 @@ impl LinkoraContract {
             panic!("blocked");
         }
 
-        // Check tip cooldown
-        let cooldown_key = (TIP_COOLDOWN, tipper.clone(), post_id);
+        // Check tip cooldown: one tip per tipper per post per cooldown window.
+        let cooldown_key = StorageKey::TipCooldown(post_id, tipper.clone());
         let current_ledger = env.ledger().sequence();
         let cooldown_window: u32 = env
             .storage()

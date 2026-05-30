@@ -106,7 +106,7 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "UNAMES"
+                    "symbol": "UsernameIndex"
                   },
                   {
                     "string": "alice"
@@ -175,7 +175,7 @@
                         "symbol": "TIP_CD_W"
                       },
                       "val": {
-                        "u32": 1
+                        "u32": 17280
                       }
                     },
                     {

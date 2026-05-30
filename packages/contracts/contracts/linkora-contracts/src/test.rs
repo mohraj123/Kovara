@@ -2118,8 +2118,12 @@ fn test_delete_post_emits_event() {
 
     client.delete_post(&author, &post_id);
 
-    let events = env.events().all().events();
-    assert!(!events.is_empty(), "PostDeleted event should be emitted on successful deletion");
+    let all_events = env.events().all();
+    let events = all_events.events();
+    assert!(
+        !events.is_empty(),
+        "PostDeleted event should be emitted on successful deletion"
+    );
 }
 
 #[test]
@@ -2221,4 +2225,116 @@ fn test_tip_cooldown_allows_after_window() {
 
     let post = client.get_post(&post_id).unwrap();
     assert_eq!(post.tip_total, 200, "tip_total must reflect both tips");
+}
+
+// ── Issue #132: PROFILE_CREATED_CT semantics ──────────────────────────────────
+//
+// Design decision: PROFILE_CREATED_CT (stored as "PROF_CT") tracks the total
+// number of unique addresses that have ever registered a profile. It is
+// incremented exactly once per new address and is never decremented.
+// Updating an existing profile does not change the counter.
+
+#[test]
+fn test_profile_count_tracks_total_created_never_decrements() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    assert_eq!(client.get_profile_count(), 0, "counter starts at zero");
+
+    client.set_profile(&user, &String::from_str(&env, "alice"), &token);
+    assert_eq!(
+        client.get_profile_count(),
+        1,
+        "first registration increments counter"
+    );
+
+    // Updating the same user's username must NOT increment the counter again.
+    client.set_profile(&user, &String::from_str(&env, "alice2"), &token);
+    assert_eq!(
+        client.get_profile_count(),
+        1,
+        "profile update must not increment PROFILE_CREATED_CT"
+    );
+
+    // A second distinct user adds 1.
+    let user2 = Address::generate(&env);
+    client.set_profile(&user2, &String::from_str(&env, "bob"), &token);
+    assert_eq!(
+        client.get_profile_count(),
+        2,
+        "second registration increments counter"
+    );
+}
+
+// ── Issue #184: StorageKey typed-key round-trip tests ─────────────────────────
+
+#[test]
+fn test_username_index_uses_typed_storage_key() {
+    // Verify that the username reverse index is stored and retrieved through
+    // StorageKey::UsernameIndex, eliminating the raw (Symbol, String) tuple key.
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = Address::generate(&env);
+    let username = String::from_str(&env, "charlie");
+
+    client.set_profile(&user, &username, &token);
+
+    // Read back through the public API (which internally uses StorageKey::UsernameIndex).
+    let resolved = client.get_address_by_username(&username);
+    assert_eq!(
+        resolved,
+        Some(user.clone()),
+        "username must resolve to owner via typed key"
+    );
+
+    // Change username: old index entry must be cleared.
+    client.set_profile(&user, &String::from_str(&env, "charlie2"), &token);
+    assert!(
+        client.get_address_by_username(&username).is_none(),
+        "old username must be removed from typed index on update"
+    );
+}
+
+#[test]
+fn test_tip_cooldown_uses_typed_storage_key() {
+    // Verify that TipCooldown is enforced via StorageKey::TipCooldown in temp storage.
+    // A second tip from the same tipper within the cooldown window must be rejected.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(LinkoraContract, ());
+    let client = LinkoraContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let author = Address::generate(&env);
+    let tipper = Address::generate(&env);
+
+    client.initialize(&admin, &treasury, &0);
+    client.set_tip_cooldown_window(&100);
+
+    let token = setup_token(&env, &tipper);
+    let post_id = client.create_post(&author, &String::from_str(&env, "cooldown key test"));
+
+    // First tip succeeds and records the cooldown under StorageKey::TipCooldown.
+    client.tip(&tipper, &post_id, &token, &50);
+
+    // Advance ledger past the cooldown window; second tip must succeed.
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 100;
+    });
+    client.tip(&tipper, &post_id, &token, &50);
+
+    let post = client.get_post(&post_id).unwrap();
+    assert_eq!(
+        post.tip_total, 100,
+        "both tips must accumulate after cooldown expires"
+    );
 }

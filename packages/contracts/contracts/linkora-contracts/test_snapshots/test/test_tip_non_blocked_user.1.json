@@ -387,13 +387,13 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "TIP_CD"
-                  },
-                  {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                    "symbol": "TipCooldown"
                   },
                   {
                     "u64": "1"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                   }
                 ]
               },
@@ -459,7 +459,7 @@
                         "symbol": "TIP_CD_W"
                       },
                       "val": {
-                        "u32": 1
+                        "u32": 17280
                       }
                     },
                     {
