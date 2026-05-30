@@ -1,0 +1,49 @@
+name: Contract Issue
+description: Report a bug, logic error, or security concern in a Soroban contract function
+title: "[Contract]: "
+labels: [contract, bug]
+body:
+  - type: input
+    id: affected_function
+    attributes:
+      label: Affected Function
+      description: Name of the contract function(s) involved (e.g. `tip`, `pool_withdraw`)
+      placeholder: e.g. tip
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the issue clearly.
+    validations:
+      required: true
+
+  - type: textarea
+    id: test_case
+    attributes:
+      label: Test Case
+      description: Minimal Rust test or reproduction steps that demonstrate the issue.
+      render: rust
+    validations:
+      required: true
+
+  - type: textarea
+    id: security_impact
+    attributes:
+      label: Security Impact
+      description: |
+        Could this lead to fund loss, access control bypass, DoS, or other security impact?
+        If yes, consider reporting privately via GitHub Security Advisories instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        - soroban-sdk version:
+        - stellar-cli version:
+        - Network (Testnet / Mainnet / local):
