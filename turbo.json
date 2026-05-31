@@ -3,11 +3,18 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", "target/**"]
+      "outputs": ["dist/**", "target/**", ".next/**", ".expo/**"]
     },
-    "dev": { "persistent": true, "cache": false },
-    "lint": {},
-    "test": {},
+    "dev": { 
+      "persistent": true, 
+      "cache": false 
+    },
+    "lint": {
+      "dependsOn": ["^build"]
+    },
+    "test": {
+      "dependsOn": ["^build"]
+    },
     "test:integration": {
       "cache": false
     },

@@ -1,4 +1,4 @@
 packages:
   - "packages/*"
-  - "apps/mobile"
-  - "services/indexer"
+  - "apps/*"
+  - "services/*"

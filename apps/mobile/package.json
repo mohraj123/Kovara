@@ -5,6 +5,8 @@
   "main": "src/index.ts",
   "license": "MIT",
   "scripts": {
+    "dev": "expo start",
+    "build": "expo build",
     "lint": "eslint . --ext .ts,.tsx",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
     "test": "jest"
