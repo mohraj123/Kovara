@@ -147,29 +147,16 @@
           "v0": {
             "topics": [
               {
-                "symbol": "fee_updated_event"
-              },
-              {
                 "symbol": "fee_upd"
               }
             ],
             "data": {
-              "map": [
+              "vec": [
                 {
-                  "key": {
-                    "symbol": "new_fee_bps"
-                  },
-                  "val": {
-                    "u32": 100
-                  }
+                  "u32": 0
                 },
                 {
-                  "key": {
-                    "symbol": "old_fee_bps"
-                  },
-                  "val": {
-                    "u32": 0
-                  }
+                  "u32": 100
                 }
               ]
             }

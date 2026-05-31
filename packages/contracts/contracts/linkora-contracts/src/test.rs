@@ -1037,9 +1037,10 @@ fn test_set_fee_emits_fee_updated_event() {
 
     client.set_fee(&250);
 
+    let event_count_after = env.events().all().events().len();
     assert_eq!(client.get_fee_bps(), 250);
     assert_eq!(
-        env.events().all().events().len(),
+        event_count_after,
         event_count_before + 1,
         "FeeUpdatedEvent should be emitted"
     );
@@ -1056,9 +1057,10 @@ fn test_set_treasury_emits_treasury_updated_event() {
 
     client.set_treasury(&new_treasury);
 
+    let event_count_after = env.events().all().events().len();
     assert_eq!(client.get_treasury(), Some(new_treasury));
     assert_eq!(
-        env.events().all().events().len(),
+        event_count_after,
         event_count_before + 1,
         "TreasuryUpdatedEvent should be emitted"
     );

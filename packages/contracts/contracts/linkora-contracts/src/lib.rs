@@ -286,6 +286,8 @@ pub struct PoolThresholdUpdatedEvent {
 #[contractevent]
 #[derive(Clone)]
 pub struct FeeUpdatedEvent {
+    #[topic]
+    pub name: Symbol,
     pub old_fee_bps: u32,
     pub new_fee_bps: u32,
 }
@@ -293,10 +295,11 @@ pub struct FeeUpdatedEvent {
 #[contractevent]
 #[derive(Clone)]
 pub struct TreasuryUpdatedEvent {
+    #[topic]
+    pub name: Symbol,
     pub old_treasury: Address,
     pub new_treasury: Address,
 }
-
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -1085,6 +1088,7 @@ impl LinkoraContract {
         let old_fee_bps = Self::get_fee_bps(env.clone());
         env.storage().instance().set(&FEE_BPS, &fee_bps);
         FeeUpdatedEvent {
+            name: symbol_short!("fee_upd"),
             old_fee_bps,
             new_fee_bps: fee_bps,
         }
@@ -1096,6 +1100,7 @@ impl LinkoraContract {
         let old_treasury = Self::get_treasury(env.clone()).expect("treasury not set");
         env.storage().instance().set(&TREASURY, &treasury);
         TreasuryUpdatedEvent {
+            name: symbol_short!("treas_upd"),
             old_treasury,
             new_treasury: treasury,
         }

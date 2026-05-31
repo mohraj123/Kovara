@@ -1,12 +1,12 @@
 {
-  "name": "web",
+  "name": "apps-web",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "echo 'No lint configured for apps/web stub'",
     "format": "prettier --write ."
   },
   "dependencies": {
