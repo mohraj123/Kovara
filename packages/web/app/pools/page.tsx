@@ -31,12 +31,13 @@ export default function PoolsPage() {
         </div>
         <div style={styles.headerActions}>
           <button
+            type="button"
             onClick={refresh}
             disabled={state === "loading"}
             style={styles.refreshBtn}
             aria-label="Refresh pool list"
           >
-            {state === "loading" ? "⏳" : "↻"} Refresh
+            {state === "loading" ? "⏳ Refreshing..." : "↻ Refresh"}
           </button>
           <Link href="/pools/new" style={styles.createBtn} aria-label="Create new pool">
             + Create Pool
