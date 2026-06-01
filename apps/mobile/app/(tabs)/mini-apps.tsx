@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from "react";
-import { Alert, FlatList, StyleSheet, View } from "react-native";
+import { Alert, FlatList, StyleSheet } from "react-native";
 import { useRouter } from "expo-router";
 
 import { MiniAppIcon, MiniApp } from "../../components/MiniAppIcon";
@@ -31,31 +31,26 @@ export default function MiniAppsScreen() {
   const handlePress = useCallback(
     (app: MiniApp) => {
       router.push(
-        `/mini-app/${app.id}?name=${encodeURIComponent(app.name)}&entry=${encodeURIComponent(app.entry)}` as Parameters<typeof router.push>[0],
+        `/mini-app/${app.id}?name=${encodeURIComponent(app.name)}&entry=${encodeURIComponent(app.entry)}` as Parameters<
+          typeof router.push
+        >[0]
       );
     },
-    [router],
+    [router]
   );
 
-  const handleLongPress = useCallback(
-    (app: MiniApp) => {
-      Alert.alert(
-        `Uninstall ${app.name}?`,
-        "This will remove the mini app from your launcher.",
-        [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: "Uninstall",
-            style: "destructive",
-            onPress: () => {
-              setApps((prev) => prev.filter((a) => a.id !== app.id));
-            },
-          },
-        ],
-      );
-    },
-    [],
-  );
+  const handleLongPress = useCallback((app: MiniApp) => {
+    Alert.alert(`Uninstall ${app.name}?`, "This will remove the mini app from your launcher.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Uninstall",
+        style: "destructive",
+        onPress: () => {
+          setApps((prev) => prev.filter((a) => a.id !== app.id));
+        },
+      },
+    ]);
+  }, []);
 
   return (
     <FlatList
@@ -73,9 +68,7 @@ export default function MiniAppsScreen() {
           title="No Mini Apps"
           description="Discover and install mini apps to enhance your Linkora experience."
           actionText="Browse Discovery"
-          onActionPress={() =>
-            router.push("/(tabs)/explore" as Parameters<typeof router.push>[0])
-          }
+          onActionPress={() => router.push("/(tabs)/explore" as Parameters<typeof router.push>[0])}
         />
       }
     />

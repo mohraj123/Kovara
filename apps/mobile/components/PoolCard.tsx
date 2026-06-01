@@ -1,8 +1,65 @@
 import React, { useMemo } from "react";
-import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
+import { StyleSheet, View, Text, TouchableOpacity } from "react-native";
 
 import { useTheme } from "../theme/useTheme";
 import { PoolCardSkeleton } from "./skeletons/PoolCardSkeleton";
+import type { ThemeTokens } from "../theme/tokens";
+
+function createStyles(theme: ThemeTokens) {
+  return StyleSheet.create({
+    container: {
+      backgroundColor: theme.colors.surface.surface1,
+      borderRadius: 12,
+      padding: 20,
+      marginVertical: 4,
+      borderWidth: 1,
+      borderColor: theme.colors.surface.border,
+    },
+    header: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 12,
+    },
+    name: {
+      fontSize: 18,
+      fontWeight: "bold",
+      color: theme.colors.text.primary,
+      flex: 1,
+    },
+    apy: {
+      fontSize: 14,
+      fontWeight: "600",
+      color: theme.colors.semantic.success,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 6,
+    },
+    description: {
+      fontSize: 14,
+      color: theme.colors.text.secondary,
+      lineHeight: 20,
+      marginBottom: 16,
+    },
+    statsContainer: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+    },
+    stat: {
+      flex: 1,
+    },
+    statLabel: {
+      fontSize: 12,
+      color: theme.colors.text.disabled,
+      marginBottom: 4,
+    },
+    statValue: {
+      fontSize: 16,
+      fontWeight: "600",
+      color: theme.colors.text.secondary,
+    },
+  });
+}
 
 interface PoolCardProps {
   id: string;
@@ -58,78 +115,3 @@ export const PoolCard: React.FC<PoolCardProps> = ({
     </TouchableOpacity>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    backgroundColor: '#1e293b',
-    borderRadius: 12,
-    padding: 20,
-    marginVertical: 4,
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  loadingContainer: {
-    opacity: 0.6,
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  name: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#f1f5f9',
-    flex: 1,
-  },
-  apy: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#22c55e',
-    backgroundColor: '#1e4c2b',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  description: {
-    fontSize: 14,
-    color: '#cbd5e1',
-    lineHeight: 20,
-    marginBottom: 16,
-  },
-  statsContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  stat: {
-    flex: 1,
-  },
-  statLabel: {
-    fontSize: 12,
-    color: '#64748b',
-    marginBottom: 4,
-  },
-  statValue: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#cbd5e1',
-  },
-  loadingBar: {
-    backgroundColor: '#334155',
-    borderRadius: 4,
-    marginBottom: 12,
-  },
-  nameLoading: {
-    height: 18,
-    width: '60%',
-  },
-  descriptionLoading: {
-    height: 14,
-    width: '100%',
-  },
-  statLoading: {
-    height: 16,
-    width: '80%',
-  },
-});

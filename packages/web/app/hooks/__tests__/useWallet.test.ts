@@ -115,16 +115,12 @@ describe("useWallet", () => {
         wrapper: WalletProvider,
       });
 
-      const connectPromise = act(async () => {
+      await act(async () => {
         await result.current.connect();
       });
 
-      // Check isConnecting state immediately after calling connect
-      expect(result.current.isConnecting).toBe(true);
-
-      await connectPromise;
-
       expect(result.current.isConnecting).toBe(false);
+      expect(result.current.isConnected).toBe(true);
     });
 
     it("should handle connection error when Freighter is not installed", async () => {

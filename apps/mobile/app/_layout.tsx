@@ -2,12 +2,10 @@ import { Tabs, useRouter } from "expo-router";
 import { useEffect } from "react";
 import { Linking, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
-import { NetworkProvider } from "../context/NetworkContext";
 import { WalletProvider } from "../context/WalletContext";
 import { useNetwork } from "../hooks/useNetwork";
 import { useWallet } from "../hooks/useWallet";
 import { parseDeepLink } from "../utils/deepLinks";
-import { ToastProvider } from "../context/ToastContext";
 import { useTheme } from "../theme/useTheme";
 
 function shortAddress(address: string): string {
@@ -20,7 +18,7 @@ function HeaderWalletAddress() {
   const { address, connected } = useWallet();
 
   return (
-      <TouchableOpacity
+    <TouchableOpacity
       style={[
         styles.headerWallet,
         {
@@ -84,7 +82,6 @@ function HeaderActions() {
  */
 export default function RootLayout() {
   const router = useRouter();
-  const { theme } = useTheme();
 
   useEffect(() => {
     let isMounted = true;
@@ -132,7 +129,7 @@ export default function RootLayout() {
             fontWeight: "700",
           },
           headerTintColor: "#f8fafc",
-          headerRight: () => <HeaderWalletAddress />,
+          headerRight: () => <HeaderActions />,
           tabBarActiveTintColor: "#6366f1",
           tabBarInactiveTintColor: "#9ca3af",
           tabBarStyle: {

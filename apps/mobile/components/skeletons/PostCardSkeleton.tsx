@@ -5,7 +5,7 @@ import { SkeletonBase, SkeletonCircle, SkeletonLine } from "./SkeletonBase";
 
 export function PostCardSkeleton() {
   return (
-    <SkeletonBase style={styles.card}>
+    <SkeletonBase style={styles.card} testID="post-skeleton">
       <View style={styles.header}>
         <SkeletonCircle size={40} />
         <View style={styles.meta}>

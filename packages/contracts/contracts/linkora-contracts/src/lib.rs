@@ -633,60 +633,6 @@ impl LinkoraContract {
         blocks.contains_key(blocked)
     }
 
-    // ── Blocking ──────────────────────────────────────────────────────────────
-
-    /// Block a user. Emits `BlockEvent { blocker, blocked }`.
-    pub fn block_user(env: Env, blocker: Address, blocked: Address) {
-        blocker.require_auth();
-        let key = (BLOCKS, blocker.clone());
-        let mut list: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(Vec::new(&env));
-        if !list.contains(&blocked) {
-            list.push_back(blocked.clone());
-        }
-        env.storage().persistent().set(&key, &list);
-        env.events().publish(
-            (symbol_short!("block"),),
-            BlockEvent {
-                blocker,
-                blocked,
-            },
-        );
-    }
-
-    /// Unblock a user. Emits `UnblockEvent { blocker, blocked }`.
-    pub fn unblock_user(env: Env, blocker: Address, blocked: Address) {
-        blocker.require_auth();
-        let key = (BLOCKS, blocker.clone());
-        let mut list: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(Vec::new(&env));
-        list = list
-            .iter()
-            .filter(|a| a != blocked)
-            .collect::<Vec<Address>>();
-        env.storage().persistent().set(&key, &list);
-        env.events().publish(
-            (symbol_short!("unblock"),),
-            UnblockEvent {
-                blocker,
-                blocked,
-            },
-        );
-    }
-
-    pub fn get_blocked(env: Env, user: Address) -> Vec<Address> {
-        env.storage()
-            .persistent()
-            .get(&(BLOCKS, user))
-            .unwrap_or(Vec::new(&env))
-    }
-
     // ── Posts ─────────────────────────────────────────────────────────────────
 
     pub fn create_post(env: Env, author: Address, content: String) -> u64 {

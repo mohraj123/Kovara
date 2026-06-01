@@ -9,12 +9,14 @@ jest.mock("../context/WalletContext", () => ({
 describe("useWallet", () => {
   it("returns wallet state correctly when connected", () => {
     const mockContext = {
-      wallet: { address: "GBBDQJ...", network: "TESTNET" },
+      wallet: { address: "GBBDQJ..." },
+      network: "TESTNET",
       state: "connected",
       error: null,
       connect: jest.fn(),
       disconnect: jest.fn(),
       refresh: jest.fn(),
+      setNetwork: jest.fn(),
     };
 
     (useWalletContext as jest.Mock).mockReturnValue(mockContext);
@@ -29,12 +31,14 @@ describe("useWallet", () => {
 
   it("returns wallet state correctly when disconnected", () => {
     const mockContext = {
-      wallet: { address: null, network: null },
+      wallet: { address: null },
+      network: null,
       state: "disconnected",
       error: "Connection failed",
       connect: jest.fn(),
       disconnect: jest.fn(),
       refresh: jest.fn(),
+      setNetwork: jest.fn(),
     };
 
     (useWalletContext as jest.Mock).mockReturnValue(mockContext);

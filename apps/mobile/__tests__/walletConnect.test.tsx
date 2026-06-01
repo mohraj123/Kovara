@@ -1,8 +1,21 @@
 import React from "react";
-import { render, act, waitFor } from "@testing-library/react-native";
+import { render, act, waitFor, fireEvent } from "@testing-library/react-native";
 import { Text, TouchableOpacity, View } from "react-native";
 import { WalletProvider, useWallet } from "../hooks/useWallet";
 import * as secureStorage from "../utils/secureStorage";
+
+// Mock NetworkContext so WalletProvider doesn't require NetworkProvider
+jest.mock("../context/NetworkContext", () => ({
+  useNetworkContext: () => ({
+    network: { label: "Testnet", rpcUrl: "https://soroban-testnet.stellar.org", contractId: "" },
+    networkLabel: "Testnet",
+    contractId: "",
+    rpcUrl: "https://soroban-testnet.stellar.org",
+    isMainnet: false,
+    setNetwork: jest.fn(),
+  }),
+  NetworkProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
 
 // Mock expo-secure-store
 jest.mock("expo-secure-store", () => {
@@ -114,7 +127,7 @@ describe("Wallet Connect Integration Tests", () => {
 
       // Trigger connect
       await act(async () => {
-        await getByTestId("connect-btn").props.onPress();
+        fireEvent.press(getByTestId("connect-btn"));
       });
 
       // Wait for connection to complete
@@ -194,7 +207,7 @@ describe("Wallet Connect Integration Tests", () => {
 
       // Trigger disconnect
       await act(async () => {
-        await getByTestId("disconnect-btn").props.onPress();
+        fireEvent.press(getByTestId("disconnect-btn"));
       });
 
       // Wait for disconnection to complete
@@ -230,7 +243,7 @@ describe("Wallet Connect Integration Tests", () => {
 
       // Trigger disconnect (should be safe to call)
       await act(async () => {
-        await getByTestId("disconnect-btn").props.onPress();
+        fireEvent.press(getByTestId("disconnect-btn"));
       });
 
       // State should remain disconnected
@@ -256,7 +269,7 @@ describe("Wallet Connect Integration Tests", () => {
 
       // Trigger connect
       await act(async () => {
-        await getByTestId("connect-btn").props.onPress();
+        fireEvent.press(getByTestId("connect-btn"));
       });
 
       // Wait for error state
@@ -286,7 +299,7 @@ describe("Wallet Connect Integration Tests", () => {
 
       // Trigger connect
       await act(async () => {
-        await getByTestId("connect-btn").props.onPress();
+        fireEvent.press(getByTestId("connect-btn"));
       });
 
       // Wait for error state
@@ -311,7 +324,7 @@ describe("Wallet Connect Integration Tests", () => {
 
       // Trigger connect
       await act(async () => {
-        await getByTestId("connect-btn").props.onPress();
+        fireEvent.press(getByTestId("connect-btn"));
       });
 
       // Wait for error state
@@ -339,7 +352,7 @@ describe("Wallet Connect Integration Tests", () => {
 
       // First connection attempt fails
       await act(async () => {
-        await getByTestId("connect-btn").props.onPress();
+        fireEvent.press(getByTestId("connect-btn"));
       });
 
       await waitFor(() => {
@@ -348,7 +361,7 @@ describe("Wallet Connect Integration Tests", () => {
 
       // Second connection attempt succeeds
       await act(async () => {
-        await getByTestId("connect-btn").props.onPress();
+        fireEvent.press(getByTestId("connect-btn"));
       });
 
       await waitFor(() => {

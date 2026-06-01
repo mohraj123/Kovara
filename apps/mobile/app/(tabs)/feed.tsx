@@ -1,11 +1,10 @@
 import React from "react";
-import { FlatList, Text, StyleSheet, ActivityIndicator, RefreshControl, View } from "react-native";
+import { FlatList, StyleSheet, ActivityIndicator, RefreshControl, View } from "react-native";
 import { useRouter } from "expo-router";
 import { PostCard, PostCardSkeleton, Post } from "../../components/PostCard";
 import { EmptyState } from "../../components/states/EmptyState";
 import { ErrorState } from "../../components/states/ErrorState";
 import { useFeed } from "../../hooks/useFeed";
-import { useTheme } from "../../theme/useTheme";
 
 const SKELETON_COUNT = 4;
 
@@ -55,7 +54,11 @@ export default function FeedScreen() {
       }
       ListFooterComponent={
         loading && posts.length > 0 ? (
-          <ActivityIndicator style={styles.footer} color={theme.colors.brand.primary} size="small" />
+          <ActivityIndicator
+            style={styles.footer}
+            color={theme.colors.brand.primary}
+            size="small"
+          />
         ) : null
       }
       onEndReached={loadMore}

@@ -54,5 +54,5 @@ export function validateManifest(manifest: unknown): MiniAppManifest {
     const errorsText = ajv.errorsText(validate.errors);
     throw new InvalidManifestError(`Manifest validation failed: ${errorsText}`);
   }
-  return manifest as MiniAppManifest;
+  return manifest as unknown as MiniAppManifest;
 }

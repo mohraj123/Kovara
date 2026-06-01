@@ -15,6 +15,7 @@ import { useTheme } from "../../theme/useTheme";
 interface SkeletonBaseProps {
   children: React.ReactNode;
   style?: ViewStyle;
+  testID?: string;
 }
 
 function ShimmerOverlay() {
@@ -51,14 +52,18 @@ function ShimmerOverlay() {
   return <Animated.View pointerEvents="none" style={[styles.shimmer, shimmerStyle]} />;
 }
 
-export function SkeletonBase({ children, style }: SkeletonBaseProps) {
+export function SkeletonBase({ children, style, testID }: SkeletonBaseProps) {
   const { theme } = useTheme();
 
   return (
     <View
+      testID={testID}
       style={[
         styles.container,
-        { backgroundColor: theme.colors.surface.surface1, borderColor: theme.colors.surface.border },
+        {
+          backgroundColor: theme.colors.surface.surface1,
+          borderColor: theme.colors.surface.border,
+        },
         style,
       ]}
     >
@@ -93,13 +98,7 @@ export function SkeletonLine({
   );
 }
 
-export function SkeletonCircle({
-  size,
-  style,
-}: {
-  size: number;
-  style?: ViewStyle;
-}) {
+export function SkeletonCircle({ size, style }: { size: number; style?: ViewStyle }) {
   const { theme } = useTheme();
   return (
     <View

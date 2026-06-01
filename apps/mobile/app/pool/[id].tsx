@@ -1,18 +1,22 @@
 import React from "react";
-import { Text, StyleSheet, ScrollView, View, ActivityIndicator, TouchableOpacity } from "react-native";
+import {
+  Text,
+  StyleSheet,
+  ScrollView,
+  View,
+  ActivityIndicator,
+  TouchableOpacity,
+} from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { useWallet } from "../../hooks/useWallet";
 import { usePool } from "../../hooks/usePool";
 import { PoolDepositForm } from "../../components/PoolDepositForm";
-
-import { useTheme } from "../../theme/useTheme";
 
 type PoolParams = {
   id: string;
 };
 
 export default function PoolDetailScreen(): JSX.Element {
-  const router = useRouter();
   const { id } = useLocalSearchParams<PoolParams>();
   const { wallet } = useWallet();
   const { pool, loading, error, isAdmin, refresh } = usePool(id || "");
@@ -70,7 +74,9 @@ export default function PoolDetailScreen(): JSX.Element {
         <Text style={styles.sectionTitle}>Admins ({pool.admins.length})</Text>
         {pool.admins.map((admin, index) => (
           <View key={index} style={styles.adminItem}>
-            <Text style={styles.adminAddress}>{admin.slice(0, 10)}...{admin.slice(-8)}</Text>
+            <Text style={styles.adminAddress}>
+              {admin.slice(0, 10)}...{admin.slice(-8)}
+            </Text>
           </View>
         ))}
       </View>

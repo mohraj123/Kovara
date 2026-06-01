@@ -1,16 +1,45 @@
 // Jest Snapshot v1, https://goo.gl/fbAQLP
 
 exports[`PostCard Snapshots renders default state correctly 1`] = `
-<TouchableOpacity
+<View
   accessibilityLabel="Post by john.doe"
   accessibilityRole="button"
-  onPress={[Function]}
+  accessibilityState={
+    {
+      "busy": undefined,
+      "checked": undefined,
+      "disabled": undefined,
+      "expanded": undefined,
+      "selected": undefined,
+    }
+  }
+  accessibilityValue={
+    {
+      "max": undefined,
+      "min": undefined,
+      "now": undefined,
+      "text": undefined,
+    }
+  }
+  accessible={true}
+  collapsable={false}
+  focusable={true}
+  onClick={[Function]}
+  onResponderGrant={[Function]}
+  onResponderMove={[Function]}
+  onResponderRelease={[Function]}
+  onResponderTerminate={[Function]}
+  onResponderTerminationRequest={[Function]}
+  onStartShouldSetResponder={[Function]}
   style={
     {
-      "backgroundColor": "#1e293b",
+      "backgroundColor": "#F9FAFB",
+      "borderColor": "#E5E7EB",
       "borderRadius": 12,
+      "borderWidth": 1,
       "marginHorizontal": 16,
       "marginVertical": 6,
+      "opacity": 1,
       "padding": 16,
     }
   }
@@ -28,7 +57,7 @@ exports[`PostCard Snapshots renders default state correctly 1`] = `
       style={
         {
           "alignItems": "center",
-          "backgroundColor": "#6366f1",
+          "backgroundColor": "#7C3AED",
           "borderRadius": 20,
           "height": 40,
           "justifyContent": "center",
@@ -40,7 +69,7 @@ exports[`PostCard Snapshots renders default state correctly 1`] = `
       <Text
         style={
           {
-            "color": "#fff",
+            "color": "#FFFFFF",
             "fontSize": 16,
             "fontWeight": "700",
           }
@@ -59,7 +88,7 @@ exports[`PostCard Snapshots renders default state correctly 1`] = `
       <Text
         style={
           {
-            "color": "#f1f5f9",
+            "color": "#111827",
             "fontSize": 14,
             "fontWeight": "600",
           }
@@ -70,7 +99,7 @@ exports[`PostCard Snapshots renders default state correctly 1`] = `
       <Text
         style={
           {
-            "color": "#64748b",
+            "color": "#6B7280",
             "fontFamily": "monospace",
             "fontSize": 11,
           }
@@ -82,18 +111,18 @@ exports[`PostCard Snapshots renders default state correctly 1`] = `
     <Text
       style={
         {
-          "color": "#64748b",
+          "color": "#6B7280",
           "fontSize": 11,
         }
       }
     >
-      928d ago
+      929d ago
     </Text>
   </View>
   <Text
     style={
       {
-        "color": "#cbd5e1",
+        "color": "#111827",
         "fontSize": 14,
         "lineHeight": 20,
       }
@@ -113,7 +142,7 @@ exports[`PostCard Snapshots renders default state correctly 1`] = `
     <Text
       style={
         {
-          "color": "#64748b",
+          "color": "#6B7280",
           "fontSize": 12,
         }
       }
@@ -124,7 +153,7 @@ exports[`PostCard Snapshots renders default state correctly 1`] = `
     <Text
       style={
         {
-          "color": "#64748b",
+          "color": "#6B7280",
           "fontSize": 12,
         }
       }
@@ -133,20 +162,49 @@ exports[`PostCard Snapshots renders default state correctly 1`] = `
       0
     </Text>
   </View>
-</TouchableOpacity>
+</View>
 `;
 
 exports[`PostCard Snapshots renders with long content correctly 1`] = `
-<TouchableOpacity
+<View
   accessibilityLabel="Post by john.doe"
   accessibilityRole="button"
-  onPress={[Function]}
+  accessibilityState={
+    {
+      "busy": undefined,
+      "checked": undefined,
+      "disabled": undefined,
+      "expanded": undefined,
+      "selected": undefined,
+    }
+  }
+  accessibilityValue={
+    {
+      "max": undefined,
+      "min": undefined,
+      "now": undefined,
+      "text": undefined,
+    }
+  }
+  accessible={true}
+  collapsable={false}
+  focusable={true}
+  onClick={[Function]}
+  onResponderGrant={[Function]}
+  onResponderMove={[Function]}
+  onResponderRelease={[Function]}
+  onResponderTerminate={[Function]}
+  onResponderTerminationRequest={[Function]}
+  onStartShouldSetResponder={[Function]}
   style={
     {
-      "backgroundColor": "#1e293b",
+      "backgroundColor": "#F9FAFB",
+      "borderColor": "#E5E7EB",
       "borderRadius": 12,
+      "borderWidth": 1,
       "marginHorizontal": 16,
       "marginVertical": 6,
+      "opacity": 1,
       "padding": 16,
     }
   }
@@ -164,7 +222,7 @@ exports[`PostCard Snapshots renders with long content correctly 1`] = `
       style={
         {
           "alignItems": "center",
-          "backgroundColor": "#6366f1",
+          "backgroundColor": "#7C3AED",
           "borderRadius": 20,
           "height": 40,
           "justifyContent": "center",
@@ -176,7 +234,7 @@ exports[`PostCard Snapshots renders with long content correctly 1`] = `
       <Text
         style={
           {
-            "color": "#fff",
+            "color": "#FFFFFF",
             "fontSize": 16,
             "fontWeight": "700",
           }
@@ -195,7 +253,7 @@ exports[`PostCard Snapshots renders with long content correctly 1`] = `
       <Text
         style={
           {
-            "color": "#f1f5f9",
+            "color": "#111827",
             "fontSize": 14,
             "fontWeight": "600",
           }
@@ -206,7 +264,7 @@ exports[`PostCard Snapshots renders with long content correctly 1`] = `
       <Text
         style={
           {
-            "color": "#64748b",
+            "color": "#6B7280",
             "fontFamily": "monospace",
             "fontSize": 11,
           }
@@ -218,18 +276,18 @@ exports[`PostCard Snapshots renders with long content correctly 1`] = `
     <Text
       style={
         {
-          "color": "#64748b",
+          "color": "#6B7280",
           "fontSize": 11,
         }
       }
     >
-      928d ago
+      929d ago
     </Text>
   </View>
   <Text
     style={
       {
-        "color": "#cbd5e1",
+        "color": "#111827",
         "fontSize": 14,
         "lineHeight": 20,
       }
@@ -249,7 +307,7 @@ exports[`PostCard Snapshots renders with long content correctly 1`] = `
     <Text
       style={
         {
-          "color": "#64748b",
+          "color": "#6B7280",
           "fontSize": 12,
         }
       }
@@ -260,7 +318,7 @@ exports[`PostCard Snapshots renders with long content correctly 1`] = `
     <Text
       style={
         {
-          "color": "#64748b",
+          "color": "#6B7280",
           "fontSize": 12,
         }
       }
@@ -269,20 +327,49 @@ exports[`PostCard Snapshots renders with long content correctly 1`] = `
       0
     </Text>
   </View>
-</TouchableOpacity>
+</View>
 `;
 
 exports[`PostCard Snapshots renders with zero likes correctly 1`] = `
-<TouchableOpacity
+<View
   accessibilityLabel="Post by john.doe"
   accessibilityRole="button"
-  onPress={[Function]}
+  accessibilityState={
+    {
+      "busy": undefined,
+      "checked": undefined,
+      "disabled": undefined,
+      "expanded": undefined,
+      "selected": undefined,
+    }
+  }
+  accessibilityValue={
+    {
+      "max": undefined,
+      "min": undefined,
+      "now": undefined,
+      "text": undefined,
+    }
+  }
+  accessible={true}
+  collapsable={false}
+  focusable={true}
+  onClick={[Function]}
+  onResponderGrant={[Function]}
+  onResponderMove={[Function]}
+  onResponderRelease={[Function]}
+  onResponderTerminate={[Function]}
+  onResponderTerminationRequest={[Function]}
+  onStartShouldSetResponder={[Function]}
   style={
     {
-      "backgroundColor": "#1e293b",
+      "backgroundColor": "#F9FAFB",
+      "borderColor": "#E5E7EB",
       "borderRadius": 12,
+      "borderWidth": 1,
       "marginHorizontal": 16,
       "marginVertical": 6,
+      "opacity": 1,
       "padding": 16,
     }
   }
@@ -300,7 +387,7 @@ exports[`PostCard Snapshots renders with zero likes correctly 1`] = `
       style={
         {
           "alignItems": "center",
-          "backgroundColor": "#6366f1",
+          "backgroundColor": "#7C3AED",
           "borderRadius": 20,
           "height": 40,
           "justifyContent": "center",
@@ -312,7 +399,7 @@ exports[`PostCard Snapshots renders with zero likes correctly 1`] = `
       <Text
         style={
           {
-            "color": "#fff",
+            "color": "#FFFFFF",
             "fontSize": 16,
             "fontWeight": "700",
           }
@@ -331,7 +418,7 @@ exports[`PostCard Snapshots renders with zero likes correctly 1`] = `
       <Text
         style={
           {
-            "color": "#f1f5f9",
+            "color": "#111827",
             "fontSize": 14,
             "fontWeight": "600",
           }
@@ -342,7 +429,7 @@ exports[`PostCard Snapshots renders with zero likes correctly 1`] = `
       <Text
         style={
           {
-            "color": "#64748b",
+            "color": "#6B7280",
             "fontFamily": "monospace",
             "fontSize": 11,
           }
@@ -354,18 +441,18 @@ exports[`PostCard Snapshots renders with zero likes correctly 1`] = `
     <Text
       style={
         {
-          "color": "#64748b",
+          "color": "#6B7280",
           "fontSize": 11,
         }
       }
     >
-      928d ago
+      929d ago
     </Text>
   </View>
   <Text
     style={
       {
-        "color": "#cbd5e1",
+        "color": "#111827",
         "fontSize": 14,
         "lineHeight": 20,
       }
@@ -385,7 +472,7 @@ exports[`PostCard Snapshots renders with zero likes correctly 1`] = `
     <Text
       style={
         {
-          "color": "#64748b",
+          "color": "#6B7280",
           "fontSize": 12,
         }
       }
@@ -396,7 +483,7 @@ exports[`PostCard Snapshots renders with zero likes correctly 1`] = `
     <Text
       style={
         {
-          "color": "#64748b",
+          "color": "#6B7280",
           "fontSize": 12,
         }
       }
@@ -405,5 +492,5 @@ exports[`PostCard Snapshots renders with zero likes correctly 1`] = `
       0
     </Text>
   </View>
-</TouchableOpacity>
+</View>
 `;

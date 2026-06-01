@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, ScrollView, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 
 import { PoolRow, PoolSearchResult } from "../../components/PoolRow";
@@ -229,47 +229,3 @@ export default function ExploreScreen() {
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#0f172a",
-  },
-  content: {
-    paddingBottom: 24,
-  },
-  centerContent: {
-    flexGrow: 1,
-    justifyContent: "center",
-  },
-  center: {
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 32,
-  },
-  muted: {
-    color: "#94a3b8",
-    fontSize: 13,
-    marginTop: 10,
-  },
-  summary: {
-    color: "#64748b",
-    fontSize: 12,
-    fontWeight: "700",
-    marginHorizontal: 16,
-    marginTop: 8,
-    marginBottom: 8,
-    textTransform: "uppercase",
-  },
-  section: {
-    marginTop: 8,
-  },
-  sectionTitle: {
-    color: "#e2e8f0",
-    fontSize: 13,
-    fontWeight: "800",
-    marginHorizontal: 16,
-    marginBottom: 4,
-    textTransform: "uppercase",
-  },
-});

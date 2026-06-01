@@ -6,7 +6,6 @@ import { EmptyState } from "../../components/states/EmptyState";
 import { ErrorState } from "../../components/states/ErrorState";
 import { useNetwork } from "../../hooks/useNetwork";
 import { useWallet } from "../../hooks/useWallet";
-import { useTheme } from "../../theme/useTheme";
 
 export default function ProfileScreen() {
   const router = useRouter();

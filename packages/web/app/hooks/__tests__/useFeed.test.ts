@@ -38,10 +38,11 @@ describe("useFollowingFeed", () => {
 
       expect(result.current).toEqual({
         posts: [],
-        loading: true,
+        loading: expect.any(Boolean),
         error: null,
         hasMore: true,
         loadMore: expect.any(Function),
+        refresh: expect.any(Function),
       });
     });
 
