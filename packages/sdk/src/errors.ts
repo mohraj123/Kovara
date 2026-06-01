@@ -40,6 +40,11 @@ export class CooldownError extends LinkoraError {}
 export class InvalidInputError extends LinkoraError {}
 
 /**
+ * Thrown when a mini-app manifest fails JSON schema validation.
+ */
+export class InvalidManifestError extends LinkoraError {}
+
+/**
  * Maps a raw error string or transaction simulation response error to a specific LinkoraError subclass.
  *
  * @param err The caught raw error object or string.

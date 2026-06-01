@@ -1,0 +1,51 @@
+import * as Notifications from "expo-notifications";
+import * as SecureStore from "expo-secure-store";
+import { Platform } from "react-native";
+
+const SECURE_STORE_PUSH_TOKEN_KEY = "linkora_push_token";
+
+export async function registerForPushNotificationsAsync(): Promise<string | null> {
+  let token: string | null = null;
+
+  if (Platform.OS === "android") {
+    await Notifications.setNotificationChannelAsync("default", {
+      name: "default",
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: "#FF231F7C",
+    });
+  }
+
+  const { status: existingStatus } = await Notifications.getPermissionsAsync();
+  let finalStatus = existingStatus;
+
+  if (existingStatus !== "granted") {
+    const { status } = await Notifications.requestPermissionsAsync();
+    finalStatus = status;
+  }
+
+  if (finalStatus !== "granted") {
+    return null;
+  }
+
+  try {
+    const expoToken = await Notifications.getExpoPushTokenAsync();
+    token = expoToken.data;
+    if (token) {
+      await SecureStore.setItemAsync(SECURE_STORE_PUSH_TOKEN_KEY, token);
+    }
+  } catch (error) {
+    console.error("Error getting or storing push token", error);
+  }
+
+  return token;
+}
+
+export async function getStoredPushTokenAsync(): Promise<string | null> {
+  try {
+    return await SecureStore.getItemAsync(SECURE_STORE_PUSH_TOKEN_KEY);
+  } catch (error) {
+    console.error("Error retrieving push token from secure store", error);
+    return null;
+  }
+}
