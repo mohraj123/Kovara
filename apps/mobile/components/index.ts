@@ -7,4 +7,5 @@ export { UserListItem } from "./UserListItem";
 export { PoolRow } from "./PoolRow";
 export { WalletButton } from "./WalletButton";
 export { MiniAppIcon } from "./MiniAppIcon";
+export { TipModal } from "./TipModal";
 export type { MiniApp } from "./MiniAppIcon";
