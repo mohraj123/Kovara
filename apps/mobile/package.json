@@ -39,6 +39,6 @@
     "react-native-webview": "^13.6.0"
   },
   "optionalDependencies": {
-    "@stellar/freighter-api": "^2.0.0"
+    "@stellar/freighter-api": "^6.0.1"
   }
 }
