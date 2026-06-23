@@ -900,7 +900,7 @@ impl KovaraContract {
         amount: i128,
     ) {
         Self::bump_instance(&env);
-        assert!(amount > 0, "must be positive");
+        assert!(amount > 0, "deposit amount must be strictly greater than zero");
         depositor.require_auth();
         let key = StorageKey::Pool(pool_id.clone());
         let mut pool: Pool = env

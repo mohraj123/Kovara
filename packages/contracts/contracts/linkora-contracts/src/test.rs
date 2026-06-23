@@ -2563,3 +2563,40 @@ fn test_unblock_event() {
     // Verify bob is no longer blocked by alice
     assert!(!client.is_blocked(&alice, &bob));
 }
+
+#[test]
+#[should_panic(expected = "deposit amount must be strictly greater than zero")]
+fn test_pool_deposit_zero_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_id = symbol_short!("pool_a");
+    let token = setup_token(&env, &admin);
+    let mut admins = vec![&env];
+    admins.push_back(admin.clone());
+
+    client.create_pool(&admin, &pool_id, &token, &admins, &1);
+
+    let other_user = Address::generate(&env);
+    client.pool_deposit(&other_user, &pool_id, &token, &0);
+}
+
+#[test]
+#[should_panic(expected = "deposit amount must be strictly greater than zero")]
+fn test_pool_deposit_negative_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_id = symbol_short!("pool_a");
+    let token = setup_token(&env, &admin);
+    let mut admins = vec![&env];
+    admins.push_back(admin.clone());
+
+    client.create_pool(&admin, &pool_id, &token, &admins, &1);
+
+    let other_user = Address::generate(&env);
+    client.pool_deposit(&other_user, &pool_id, &token, &-50);
+}
+
