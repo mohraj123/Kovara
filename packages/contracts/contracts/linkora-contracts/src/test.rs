@@ -578,6 +578,51 @@ fn test_blocked_follow_panics() {
 }
 
 #[test]
+fn test_follow_after_unblock() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // Bob blocks Alice
+    client.block_user(&bob, &alice);
+    assert!(client.is_blocked(&bob, &alice));
+
+    // Bob unblocks Alice
+    client.unblock_user(&bob, &alice);
+    assert!(!client.is_blocked(&bob, &alice));
+
+    // Alice can now follow Bob
+    client.follow(&alice, &bob);
+    assert_eq!(client.get_following(&alice, &0, &10).len(), 1);
+    assert_eq!(client.get_followers(&bob, &0, &10).len(), 1);
+}
+
+#[test]
+fn test_blocked_user_can_follow_others() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let charlie = Address::generate(&env);
+
+    // Bob blocks Alice
+    client.block_user(&bob, &alice);
+
+    // Alice can still follow Charlie
+    client.follow(&alice, &charlie);
+    assert_eq!(client.get_following(&alice, &0, &10).len(), 1);
+    assert_eq!(client.get_followers(&charlie, &0, &10).len(), 1);
+
+    // Alice cannot follow Bob
+    // (verified separately by test_blocked_follow_panics)
+}
+
+#[test]
 fn test_like_post() {
     let env = Env::default();
     env.mock_all_auths();
