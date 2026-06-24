@@ -647,6 +647,64 @@ fn test_like_post_no_event_on_duplicate() {
 }
 
 #[test]
+fn test_like_post_once() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author = Address::generate(&env);
+    let user = Address::generate(&env);
+    let post_id = client.create_post(&author, &String::from_str(&env, "Like test"));
+
+    client.like_post(&user, &post_id);
+    assert_eq!(client.get_like_count(&post_id), 1);
+    assert!(client.has_liked(&user, &post_id));
+}
+
+#[test]
+fn test_duplicate_like_same_user() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author = Address::generate(&env);
+    let user = Address::generate(&env);
+    let post_id = client.create_post(&author, &String::from_str(&env, "Duplicate like test"));
+
+    client.like_post(&user, &post_id);
+    assert_eq!(client.get_like_count(&post_id), 1);
+
+    // Second like from same user - should keep like count at 1
+    client.like_post(&user, &post_id);
+    assert_eq!(client.get_like_count(&post_id), 1);
+    assert!(client.has_liked(&user, &post_id));
+}
+
+#[test]
+fn test_duplicate_like_no_duplicate_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author = Address::generate(&env);
+    let user = Address::generate(&env);
+    let post_id = client.create_post(&author, &String::from_str(&env, "Duplicate event test"));
+
+    client.like_post(&user, &post_id);
+    let event_count_after_first = env.events().all().events().len();
+    assert_eq!(event_count_after_first, 1, "First like must emit 1 event");
+
+    // Second like from same user
+    client.like_post(&user, &post_id);
+    let event_count_after_second = env.events().all().events().len();
+
+    assert_eq!(
+        event_count_after_second, 0,
+        "Duplicate like must not publish duplicate events"
+    );
+}
+
+#[test]
 fn test_pool_authorization() {
     let env = Env::default();
     env.mock_all_auths();
