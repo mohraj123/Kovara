@@ -529,6 +529,26 @@ fn test_follow_and_unfollow() {
 }
 
 #[test]
+fn test_duplicate_follow_only_one_record() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // First follow should add the relationship
+    client.follow(&alice, &bob);
+    assert_eq!(client.get_following(&alice, &0, &10).len(), 1);
+    assert_eq!(client.get_followers(&bob, &0, &10).len(), 1);
+
+    // Following again should be a no-op and not create duplicates
+    client.follow(&alice, &bob);
+    assert_eq!(client.get_following(&alice, &0, &10).len(), 1);
+    assert_eq!(client.get_followers(&bob, &0, &10).len(), 1);
+}
+
+#[test]
 fn test_block_prevents_follow() {
     let env = Env::default();
     env.mock_all_auths();
@@ -555,6 +575,51 @@ fn test_blocked_follow_panics() {
 
     // Alice tries to follow Bob
     client.follow(&alice, &bob);
+}
+
+#[test]
+fn test_follow_after_unblock() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // Bob blocks Alice
+    client.block_user(&bob, &alice);
+    assert!(client.is_blocked(&bob, &alice));
+
+    // Bob unblocks Alice
+    client.unblock_user(&bob, &alice);
+    assert!(!client.is_blocked(&bob, &alice));
+
+    // Alice can now follow Bob
+    client.follow(&alice, &bob);
+    assert_eq!(client.get_following(&alice, &0, &10).len(), 1);
+    assert_eq!(client.get_followers(&bob, &0, &10).len(), 1);
+}
+
+#[test]
+fn test_blocked_user_can_follow_others() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let charlie = Address::generate(&env);
+
+    // Bob blocks Alice
+    client.block_user(&bob, &alice);
+
+    // Alice can still follow Charlie
+    client.follow(&alice, &charlie);
+    assert_eq!(client.get_following(&alice, &0, &10).len(), 1);
+    assert_eq!(client.get_followers(&charlie, &0, &10).len(), 1);
+
+    // Alice cannot follow Bob
+    // (verified separately by test_blocked_follow_panics)
 }
 
 #[test]
@@ -623,6 +688,64 @@ fn test_like_post_no_event_on_duplicate() {
         like_count_after_new_user,
         like_count_after_first + 1,
         "like from new user should increment"
+    );
+}
+
+#[test]
+fn test_like_post_once() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author = Address::generate(&env);
+    let user = Address::generate(&env);
+    let post_id = client.create_post(&author, &String::from_str(&env, "Like test"));
+
+    client.like_post(&user, &post_id);
+    assert_eq!(client.get_like_count(&post_id), 1);
+    assert!(client.has_liked(&user, &post_id));
+}
+
+#[test]
+fn test_duplicate_like_same_user() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author = Address::generate(&env);
+    let user = Address::generate(&env);
+    let post_id = client.create_post(&author, &String::from_str(&env, "Duplicate like test"));
+
+    client.like_post(&user, &post_id);
+    assert_eq!(client.get_like_count(&post_id), 1);
+
+    // Second like from same user - should keep like count at 1
+    client.like_post(&user, &post_id);
+    assert_eq!(client.get_like_count(&post_id), 1);
+    assert!(client.has_liked(&user, &post_id));
+}
+
+#[test]
+fn test_duplicate_like_no_duplicate_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author = Address::generate(&env);
+    let user = Address::generate(&env);
+    let post_id = client.create_post(&author, &String::from_str(&env, "Duplicate event test"));
+
+    client.like_post(&user, &post_id);
+    let event_count_after_first = env.events().all().events().len();
+    assert_eq!(event_count_after_first, 1, "First like must emit 1 event");
+
+    // Second like from same user
+    client.like_post(&user, &post_id);
+    let event_count_after_second = env.events().all().events().len();
+
+    assert_eq!(
+        event_count_after_second, 0,
+        "Duplicate like must not publish duplicate events"
     );
 }
 
@@ -778,6 +901,68 @@ fn test_pool_withdraw_exceeds_balance() {
         &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
         &pool_id,
         &200,
+        &other_user,
+    );
+}
+
+#[test]
+#[should_panic(expected = "must be positive")]
+fn test_pool_withdraw_zero_amount_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let other_user = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+    StellarAssetClient::new(&env, &token).mint(&other_user, &1000);
+
+    let pool_id = symbol_short!("pool3");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &1,
+    );
+    client.pool_deposit(&other_user, &pool_id, &token, &100);
+
+    client.pool_withdraw(
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &pool_id,
+        &0,
+        &other_user,
+    );
+}
+
+#[test]
+#[should_panic(expected = "must be positive")]
+fn test_pool_withdraw_negative_amount_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let other_user = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+    StellarAssetClient::new(&env, &token).mint(&other_user, &1000);
+
+    let pool_id = symbol_short!("pool3");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &1,
+    );
+    client.pool_deposit(&other_user, &pool_id, &token, &100);
+
+    client.pool_withdraw(
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &pool_id,
+        &-50,
         &other_user,
     );
 }
@@ -2172,6 +2357,60 @@ fn test_pool_threshold_updated_event() {
     assert_eq!(pool.threshold, 1);
 }
 
+#[test]
+#[should_panic(expected = "threshold must be positive")]
+fn test_update_pool_threshold_zero_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+
+    let pool_id = symbol_short!("pool1");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &2,
+    );
+
+    client.update_pool_threshold(
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &pool_id,
+        &0,
+    );
+}
+
+#[test]
+#[should_panic(expected = "threshold cannot exceed admin count")]
+fn test_update_pool_threshold_exceeds_admins_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+
+    let pool_id = symbol_short!("pool1");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &2,
+    );
+
+    client.update_pool_threshold(
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &pool_id,
+        &3,
+    );
+}
+
 // ── Issue #124: delete_post success path, unauthorized caller, event emission ─
 
 #[test]
@@ -2608,3 +2847,40 @@ fn test_unblock_event() {
     // Verify bob is no longer blocked by alice
     assert!(!client.is_blocked(&alice, &bob));
 }
+
+#[test]
+#[should_panic(expected = "deposit amount must be strictly greater than zero")]
+fn test_pool_deposit_zero_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_id = symbol_short!("pool_a");
+    let token = setup_token(&env, &admin);
+    let mut admins = vec![&env];
+    admins.push_back(admin.clone());
+
+    client.create_pool(&admin, &pool_id, &token, &admins, &1);
+
+    let other_user = Address::generate(&env);
+    client.pool_deposit(&other_user, &pool_id, &token, &0);
+}
+
+#[test]
+#[should_panic(expected = "deposit amount must be strictly greater than zero")]
+fn test_pool_deposit_negative_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_id = symbol_short!("pool_a");
+    let token = setup_token(&env, &admin);
+    let mut admins = vec![&env];
+    admins.push_back(admin.clone());
+
+    client.create_pool(&admin, &pool_id, &token, &admins, &1);
+
+    let other_user = Address::generate(&env);
+    client.pool_deposit(&other_user, &pool_id, &token, &-50);
+}
+
