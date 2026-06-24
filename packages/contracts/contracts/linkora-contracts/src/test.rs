@@ -2250,6 +2250,60 @@ fn test_pool_threshold_updated_event() {
     assert_eq!(pool.threshold, 1);
 }
 
+#[test]
+#[should_panic(expected = "threshold must be positive")]
+fn test_update_pool_threshold_zero_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+
+    let pool_id = symbol_short!("pool1");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &2,
+    );
+
+    client.update_pool_threshold(
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &pool_id,
+        &0,
+    );
+}
+
+#[test]
+#[should_panic(expected = "threshold cannot exceed admin count")]
+fn test_update_pool_threshold_exceeds_admins_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _) = setup_contract(&env);
+
+    let pool_admin1 = Address::generate(&env);
+    let pool_admin2 = Address::generate(&env);
+    let token = setup_token(&env, &pool_admin1);
+
+    let pool_id = symbol_short!("pool1");
+    client.create_pool(
+        &admin,
+        &pool_id,
+        &token,
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &2,
+    );
+
+    client.update_pool_threshold(
+        &vec![&env, pool_admin1.clone(), pool_admin2.clone()],
+        &pool_id,
+        &3,
+    );
+}
+
 // ── Issue #124: delete_post success path, unauthorized caller, event emission ─
 
 #[test]
