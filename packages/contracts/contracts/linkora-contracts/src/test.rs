@@ -2848,6 +2848,210 @@ fn test_unblock_event() {
     assert!(!client.is_blocked(&alice, &bob));
 }
 
+// Issue #68: Multiple posts with incrementing IDs and timestamps
+
+#[test]
+fn test_create_multiple_posts_ids_increment_sequentially() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author = Address::generate(&env);
+
+    // Create 5 posts and verify IDs increment from 1 to 5
+    let mut post_ids = soroban_sdk::vec![&env];
+    for i in 1..=5 {
+        let content = if i == 1 {
+            String::from_str(&env, "First post")
+        } else if i == 2 {
+            String::from_str(&env, "Second post")
+        } else if i == 3 {
+            String::from_str(&env, "Third post")
+        } else if i == 4 {
+            String::from_str(&env, "Fourth post")
+        } else {
+            String::from_str(&env, "Fifth post")
+        };
+        let post_id = client.create_post(&author, &content);
+        post_ids.push_back(post_id);
+        assert_eq!(
+            post_id, i as u64,
+            "post ID must increment sequentially (expected {}, got {})",
+            i,
+            post_id
+        );
+    }
+
+    // Verify post count matches total created
+    assert_eq!(
+        client.get_post_count(),
+        5,
+        "get_post_count must return 5 after creating 5 posts"
+    );
+
+    // Verify all post IDs are unique and sequential
+    assert_eq!(post_ids.len(), 5);
+    for (idx, id) in post_ids.iter().enumerate() {
+        assert_eq!(
+            id,
+            (idx + 1) as u64,
+            "post IDs must be sequential starting from 1"
+        );
+    }
+}
+
+#[test]
+fn test_multiple_posts_timestamps_stored() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author = Address::generate(&env);
+
+    // Set initial ledger timestamp
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1000;
+    });
+
+    // Create first post
+    let post_id_1 = client.create_post(&author, &String::from_str(&env, "Post 1"));
+    let post_1 = client.get_post(&post_id_1).unwrap();
+    let timestamp_1 = post_1.timestamp;
+
+    // Verify timestamp is set to the ledger timestamp
+    assert_eq!(
+        timestamp_1, 1000,
+        "timestamp must be set to current ledger timestamp"
+    );
+
+    // Advance ledger time
+    env.ledger().with_mut(|li| {
+        li.timestamp = li.timestamp + 1000; // +1000 seconds
+    });
+
+    // Create second post
+    let post_id_2 = client.create_post(&author, &String::from_str(&env, "Post 2"));
+    let post_2 = client.get_post(&post_id_2).unwrap();
+    let timestamp_2 = post_2.timestamp;
+
+    // Verify timestamps are different and post_2's is later
+    assert_eq!(
+        timestamp_2, 2000,
+        "second post must have advanced timestamp"
+    );
+    assert!(
+        timestamp_2 > timestamp_1,
+        "later post must have a later timestamp (timestamp_1: {}, timestamp_2: {})",
+        timestamp_1,
+        timestamp_2
+    );
+
+    // Create third post (no ledger advancement)
+    let post_id_3 = client.create_post(&author, &String::from_str(&env, "Post 3"));
+    let post_3 = client.get_post(&post_id_3).unwrap();
+    let timestamp_3 = post_3.timestamp;
+
+    // Verify third post has same timestamp as second (no ledger advancement between them)
+    assert_eq!(
+        timestamp_3, 2000,
+        "third post should have same timestamp as second (no ledger advancement)"
+    );
+}
+
+#[test]
+fn test_multiple_posts_by_different_authors_ids_increment_globally() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author_1 = Address::generate(&env);
+    let author_2 = Address::generate(&env);
+
+    // Author 1 creates 2 posts
+    let post_1_1 = client.create_post(&author_1, &String::from_str(&env, "Author 1 - Post 1"));
+    let post_1_2 = client.create_post(&author_1, &String::from_str(&env, "Author 1 - Post 2"));
+
+    // Author 2 creates 3 posts
+    let post_2_1 = client.create_post(&author_2, &String::from_str(&env, "Author 2 - Post 1"));
+    let post_2_2 = client.create_post(&author_2, &String::from_str(&env, "Author 2 - Post 2"));
+    let post_2_3 = client.create_post(&author_2, &String::from_str(&env, "Author 2 - Post 3"));
+
+    // Verify all post IDs are globally sequential (1, 2, 3, 4, 5)
+    // regardless of author
+    assert_eq!(post_1_1, 1);
+    assert_eq!(post_1_2, 2);
+    assert_eq!(post_2_1, 3);
+    assert_eq!(post_2_2, 4);
+    assert_eq!(post_2_3, 5);
+
+    // Verify post count
+    assert_eq!(client.get_post_count(), 5);
+
+    // Verify all posts are retrievable with correct authors
+    let retrieved_1_1 = client.get_post(&post_1_1).unwrap();
+    assert_eq!(retrieved_1_1.author, author_1);
+    assert_eq!(retrieved_1_1.id, 1);
+
+    let retrieved_2_3 = client.get_post(&post_2_3).unwrap();
+    assert_eq!(retrieved_2_3.author, author_2);
+    assert_eq!(retrieved_2_3.id, 5);
+}
+
+#[test]
+fn test_multiple_posts_retain_content_and_metadata() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let author = Address::generate(&env);
+
+    // Set initial ledger timestamp
+    env.ledger().with_mut(|li| {
+        li.timestamp = 5000;
+    });
+
+    // Create 3 posts with different content
+    let content_1 = String::from_str(&env, "Content A");
+    let content_2 = String::from_str(&env, "Content B");
+    let content_3 = String::from_str(&env, "Content C");
+
+    let post_id_1 = client.create_post(&author, &content_1);
+    let post_id_2 = client.create_post(&author, &content_2);
+    let post_id_3 = client.create_post(&author, &content_3);
+
+    // Retrieve and verify all posts retain correct content
+    let post_1 = client.get_post(&post_id_1).unwrap();
+    let post_2 = client.get_post(&post_id_2).unwrap();
+    let post_3 = client.get_post(&post_id_3).unwrap();
+
+    assert_eq!(post_1.id, 1);
+    assert_eq!(post_1.content, content_1);
+    assert_eq!(post_1.author, author);
+    assert_eq!(post_1.tip_total, 0);
+    assert_eq!(post_1.like_count, 0);
+    assert_eq!(post_1.timestamp, 5000);
+
+    assert_eq!(post_2.id, 2);
+    assert_eq!(post_2.content, content_2);
+    assert_eq!(post_2.author, author);
+    assert_eq!(post_2.tip_total, 0);
+    assert_eq!(post_2.like_count, 0);
+    assert_eq!(post_2.timestamp, 5000);
+
+    assert_eq!(post_3.id, 3);
+    assert_eq!(post_3.content, content_3);
+    assert_eq!(post_3.author, author);
+    assert_eq!(post_3.tip_total, 0);
+    assert_eq!(post_3.like_count, 0);
+    assert_eq!(post_3.timestamp, 5000);
+
+    // Verify all posts are tracked in author's post list
+    let author_posts = client.get_posts_by_author(&author, &0, &10);
+    assert_eq!(author_posts.len(), 3);
+    assert_eq!(author_posts.get(0).unwrap(), post_id_1);
+    assert_eq!(author_posts.get(1).unwrap(), post_id_2);
+    assert_eq!(author_posts.get(2).unwrap(), post_id_3);
+}
 #[test]
 #[should_panic(expected = "deposit amount must be strictly greater than zero")]
 fn test_pool_deposit_zero_rejected() {
