@@ -25,6 +25,8 @@ export default function ConnectScreen() {
     await disconnect();
   };
 
+  const providerLabel = wallet.provider === "freighter" ? "Freighter" : "WalletConnect";
+
   return (
     <View style={styles.container}>
       <View style={styles.content}>
@@ -35,15 +37,28 @@ export default function ConnectScreen() {
         </Text>
 
         {connected && address ? (
-          <View style={styles.connectedPanel}>
+          <View
+            style={styles.connectedPanel}
+            accessibilityRole="summary"
+            accessibilityLabel={`Wallet connected. Address ${shortAddress(address)}. Provider ${providerLabel}.`}
+          >
             <Text style={styles.panelLabel}>Connected address</Text>
-            <Text style={styles.address}>{shortAddress(address)}</Text>
-            <Text style={styles.provider}>
-              {wallet.provider === "freighter" ? "Freighter" : "WalletConnect"}
+            <Text
+              style={styles.address}
+              accessibilityLabel={`Wallet address ${shortAddress(address)}`}
+            >
+              {shortAddress(address)}
+            </Text>
+            <Text
+              style={styles.provider}
+              accessibilityLabel={`Active wallet provider ${providerLabel}`}
+            >
+              {providerLabel}
             </Text>
             <WalletButton
               label="Continue"
               accessibilityLabel="Continue to feed"
+              accessibilityHint="Closes the connect screen and opens the main feed"
               onPress={() => router.replace("/(tabs)/feed")}
               state={state}
               style={styles.action}
@@ -51,16 +66,18 @@ export default function ConnectScreen() {
             <WalletButton
               label="Disconnect"
               accessibilityLabel="Disconnect wallet"
+              accessibilityHint="Disconnects your wallet and returns to wallet picker"
               onPress={handleDisconnect}
               state={state}
               variant="danger"
             />
           </View>
         ) : (
-          <View style={styles.buttonStack}>
+          <View style={styles.buttonStack} accessibilityRole="none">
             <WalletButton
               label="Connect Freighter"
               accessibilityLabel="Connect with Freighter wallet"
+              accessibilityHint="Pairs with the Freighter browser extension"
               onPress={() => handleConnect("freighter")}
               provider="freighter"
               state={state}
@@ -68,6 +85,7 @@ export default function ConnectScreen() {
             <WalletButton
               label="Connect WalletConnect"
               accessibilityLabel="Connect with WalletConnect wallet"
+              accessibilityHint="Opens a QR code to pair with a mobile Stellar wallet"
               onPress={() => handleConnect("walletconnect")}
               provider="walletconnect"
               state={state}
@@ -77,7 +95,12 @@ export default function ConnectScreen() {
         )}
 
         {error ? (
-          <View style={styles.errorBox} accessibilityRole="alert">
+          <View
+            style={styles.errorBox}
+            accessibilityRole="alert"
+            accessibilityLiveRegion="assertive"
+            accessibilityLabel={`Wallet error. ${error}`}
+          >
             <Text style={styles.errorText}>{error}</Text>
           </View>
         ) : null}

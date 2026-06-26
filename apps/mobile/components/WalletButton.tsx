@@ -13,11 +13,13 @@ interface WalletButtonProps {
   variant?: "primary" | "secondary" | "danger";
   disabled?: boolean;
   style?: ViewStyle;
+  accessibilityHint?: string;
 }
 
 export function WalletButton({
   label,
   accessibilityLabel,
+  accessibilityHint,
   onPress,
   state = "disconnected",
   provider,
@@ -28,14 +30,25 @@ export function WalletButton({
   const { theme } = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const isConnecting = state === "connecting";
+  const isDisabled = disabled || isConnecting;
+
+  const hint =
+    accessibilityHint ??
+    (isConnecting
+      ? "Connecting to wallet, please wait"
+      : provider
+        ? `Connects to ${provider === "freighter" ? "Freighter" : "WalletConnect"}`
+        : "Activates this wallet action");
 
   return (
     <TouchableOpacity
-      style={[styles.button, styles[variant], (disabled || isConnecting) && styles.disabled, style]}
+      style={[styles.button, styles[variant], isDisabled && styles.disabled, style]}
       onPress={onPress}
-      disabled={disabled || isConnecting}
+      disabled={isDisabled}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
+      accessibilityHint={hint}
+      accessibilityState={{ disabled: isDisabled, busy: isConnecting }}
       testID={provider ? `wallet-button-${provider}` : "wallet-button"}
     >
       {isConnecting ? (

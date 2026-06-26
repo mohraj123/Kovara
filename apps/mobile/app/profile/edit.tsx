@@ -84,11 +84,10 @@ export default function EditProfileScreen() {
       style={styles.container}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-      >
-        <Text style={styles.heading}>Edit Profile</Text>
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+        <Text style={styles.heading} accessibilityRole="header" accessibilityLabel="Edit profile">
+          Edit Profile
+        </Text>
 
         <View style={styles.fieldGroup}>
           <Text style={styles.label}>Username</Text>
@@ -102,8 +101,18 @@ export default function EditProfileScreen() {
             autoCorrect={false}
             editable={!submitting}
             accessibilityLabel="Username"
+            accessibilityHint="Choose a username with 3 to 32 letters, numbers, or underscores"
+            accessibilityState={{ disabled: submitting }}
           />
-          {usernameError ? <Text style={styles.errorText}>{usernameError}</Text> : null}
+          {usernameError ? (
+            <Text
+              style={styles.errorText}
+              accessibilityRole="alert"
+              accessibilityLiveRegion="assertive"
+            >
+              {usernameError}
+            </Text>
+          ) : null}
           <Text style={styles.hint}>3–32 characters: letters, numbers, or underscores.</Text>
         </View>
 
@@ -119,6 +128,8 @@ export default function EditProfileScreen() {
             autoCorrect={false}
             editable={!submitting}
             accessibilityLabel="Creator token address"
+            accessibilityHint="Paste the Stellar contract address of your creator token"
+            accessibilityState={{ disabled: submitting }}
           />
           <Text style={styles.hint}>Stellar contract address for your creator token.</Text>
         </View>
@@ -127,7 +138,10 @@ export default function EditProfileScreen() {
           style={[styles.submitButton, submitting && styles.submitButtonDisabled]}
           onPress={handleSubmit}
           disabled={submitting}
+          accessibilityRole="button"
           accessibilityLabel="Save profile"
+          accessibilityHint="Submits your profile changes to the network"
+          accessibilityState={{ disabled: submitting, busy: submitting }}
         >
           {submitting ? (
             <ActivityIndicator color="#ffffff" />
@@ -140,6 +154,10 @@ export default function EditProfileScreen() {
           style={styles.cancelButton}
           onPress={() => router.back()}
           disabled={submitting}
+          accessibilityRole="button"
+          accessibilityLabel="Cancel"
+          accessibilityHint="Returns to the previous screen without saving"
+          accessibilityState={{ disabled: submitting }}
         >
           <Text style={styles.cancelText}>Cancel</Text>
         </TouchableOpacity>
