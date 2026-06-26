@@ -1,126 +1,12 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { KovaraClient, Post } from "Kovara-sdk";
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-export interface Post {
-  id: number;
-  author: string;
-  username?: string;
-  content: string;
-  tip_total: number;
-  timestamp: number;
-  like_count: number;
-}
-
-// ── Mock contract calls ───────────────────────────────────────────────────────
-// Replace with real SDK calls once the generated client is available.
-
-async function getFollowing(
-  userAddress: string,
-  offset: number,
-  limit: number
-): Promise<string[]> {
-  // TODO: Replace with actual contract call using SDK
-  // For now, return mock data
-  const allFollowing = [
-    "GABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-    "GXYZ9876543210ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-  ];
-  return allFollowing.slice(offset, offset + limit);
-}
-
-async function getPostsByAuthor(
-  authorAddress: string,
-  offset: number,
-  limit: number
-): Promise<number[]> {
-  // TODO: Replace with actual contract call using SDK
-  // For now, return mock post IDs
-  const mockPosts: Post[] = [
-    {
-      id: 1,
-      author: "GABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-      username: "stellar_dev",
-      content: "Just deployed my first smart contract on Stellar! 🚀",
-      tip_total: 100,
-      timestamp: Date.now() / 1000 - 3600,
-      like_count: 5,
-    },
-    {
-      id: 2,
-      author: "GXYZ9876543210ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-      username: "crypto_enthusiast",
-      content: "The SocialFi ecosystem is growing fast. Excited to be part of it!",
-      tip_total: 50,
-      timestamp: Date.now() / 1000 - 7200,
-      like_count: 3,
-    },
-    {
-      id: 3,
-      author: "GABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-      username: "stellar_dev",
-      content: "Working on a new DeFi protocol. Stay tuned! 🔥",
-      tip_total: 200,
-      timestamp: Date.now() / 1000 - 14400,
-      like_count: 12,
-    },
-  ];
-  return mockPosts
-    .filter((p) => p.author === authorAddress)
-    .map((p) => p.id)
-    .slice(offset, offset + limit);
-}
-
-async function getPost(postId: number): Promise<Post | null> {
-  // TODO: Replace with actual contract call using SDK
-  const mockPosts: Post[] = [
-    {
-      id: 1,
-      author: "GABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-      username: "stellar_dev",
-      content: "Just deployed my first smart contract on Stellar! 🚀",
-      tip_total: 100,
-      timestamp: Date.now() / 1000 - 3600,
-      like_count: 5,
-    },
-    {
-      id: 2,
-      author: "GXYZ9876543210ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-      username: "crypto_enthusiast",
-      content: "The SocialFi ecosystem is growing fast. Excited to be part of it!",
-      tip_total: 50,
-      timestamp: Date.now() / 1000 - 7200,
-      like_count: 3,
-    },
-    {
-      id: 3,
-      author: "GABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-      username: "stellar_dev",
-      content: "Working on a new DeFi protocol. Stay tuned! 🔥",
-      tip_total: 200,
-      timestamp: Date.now() / 1000 - 14400,
-      like_count: 12,
-    },
-  ];
-  return mockPosts.find((p) => p.id === postId) || null;
-}
-
-async function getProfile(userAddress: string): Promise<{ username: string } | null> {
-  // TODO: Replace with actual contract call using SDK
-  const mockProfiles: Map<string, { username: string }> = new Map([
-    [
-      "GABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-      { username: "stellar_dev" },
-    ],
-    [
-      "GXYZ9876543210ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-      { username: "crypto_enthusiast" },
-    ],
-  ]);
-  return mockProfiles.get(userAddress) || null;
-}
+const client = new KovaraClient({
+  contractId: "CCYOURCONTRACTIDHERE",
+  rpcUrl: "https://soroban-testnet.stellar.org",
+});
 
 // ── Hook ───────────────────────────────────────────────────────────────────────
 
@@ -140,9 +26,10 @@ export function useFollowingFeed(walletAddress: string | null) {
       const limit = 10;
 
       // Get list of followed accounts
-      const following = await getFollowing(walletAddress, offset, limit);
+      const following = await client.getFollowing(walletAddress);
+      const followingPage = following.slice(offset, offset + limit);
 
-      if (following.length === 0 && page === 0) {
+      if (followingPage.length === 0 && page === 0) {
         setPosts([]);
         setHasMore(false);
         setLoading(false);
@@ -151,13 +38,13 @@ export function useFollowingFeed(walletAddress: string | null) {
 
       // Fetch posts from each followed account
       const allPosts: Post[] = [];
-      for (const author of following) {
-        const postIds = await getPostsByAuthor(author, 0, 10);
+      for (const author of followingPage) {
+        const postIds = await client.getPostsByAuthor(author, 0, 10);
         for (const postId of postIds) {
-          const post = await getPost(postId);
+          const post = await client.getPost(postId);
           if (post) {
-            const profile = await getProfile(author);
-            allPosts.push({ ...post, username: profile?.username });
+            const profile = await client.getProfile(author);
+            allPosts.push({ ...post, username: profile?.username || post.username });
           }
         }
       }
@@ -171,7 +58,7 @@ export function useFollowingFeed(walletAddress: string | null) {
         setPosts((prev) => [...prev, ...allPosts]);
       }
 
-      setHasMore(following.length >= limit);
+      setHasMore(followingPage.length >= limit);
     } catch (err) {
       setError("Failed to load feed");
     } finally {

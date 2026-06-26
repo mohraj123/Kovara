@@ -24,6 +24,7 @@ declare global {
       getPublicKey: () => Promise<{ publicKey: string }>;
       isConnected: () => Promise<boolean>;
       onNetworkChange: (callback: () => void) => void;
+      signTransaction: (xdr: string) => Promise<string>;
     };
   }
 }

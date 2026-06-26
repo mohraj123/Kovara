@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
+import { Contract, rpc, nativeToScVal, scValToNative } from "@stellar/stellar-sdk";
+import { getContractClient } from "../../lib/contract/client";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -45,80 +47,58 @@ export function parseTokenAmount(value: string, decimals: number): bigint {
   return BigInt(whole || "0") * BigInt(10 ** decimals) + BigInt(fracPadded || "0");
 }
 
-// ── Mock contract client ──────────────────────────────────────────────────────
-// Replace the body of each function with real SDK calls once the generated
-// client is wired up (packages/sdk/src/index.ts → stellar contract bindings).
+// ── Contract client ───────────────────────────────────────────────────────────
 
 async function contractGetPool(poolId: string): Promise<PoolData | null> {
-  // TODO: replace with: await client.get_pool({ pool_id: poolId })
-  await new Promise((r) => setTimeout(r, 600));
-
-  const mockPools: Record<string, PoolData> = {
-    community: {
-      pool_id: "community",
-      token: "GDQOE23CFSUMSVQK4Y5JHPPYK73VYCNHZHA7ENKCV37P6SUEO6XQBKPP",
-      balance: BigInt("5000000000"),
-      admins: [
-        "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
-        "GBVVJJWAKJHTEQHZGM5AOKXJLNBGKDSMXZXJZXJZXJZXJZXJZXJZXJ",
-        "GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGZXG5CHCGZXG5CHCGZXG5",
-        "GDFOHLMYCXVZD2CDXZLMIRQZPEAXE7B5MURMIZ4IYQUENHZSJPINMQB",
-        "GAHK7EEG2WWHVKDNT4CEQFZGKF2LGDSW2IVM4S5DP42RBW3K6BTODB4",
-      ],
-      threshold: 3,
-    },
-    grants: {
-      pool_id: "grants",
-      token: "GDQOE23CFSUMSVQK4Y5JHPPYK73VYCNHZHA7ENKCV37P6SUEO6XQBKPP",
-      balance: BigInt("0"),
-      admins: [
-        "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
-        "GBVVJJWAKJHTEQHZGM5AOKXJLNBGKDSMXZXJZXJZXJZXJZXJZXJZXJ",
-      ],
-      threshold: 2,
-    },
-    devfund: {
-      pool_id: "devfund",
-      token: "GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGZXG5CHCGZXG5CHCGZXG5",
-      balance: BigInt("12500000000"),
-      admins: [
-        "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
-        "GBVVJJWAKJHTEQHZGM5AOKXJLNBGKDSMXZXJZXJZXJZXJZXJZXJZXJ",
-        "GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGZXG5CHCGZXG5CHCGZXG5",
-      ],
-      threshold: 2,
-    },
+  const client = getContractClient();
+  const pool = await client.getPool(poolId);
+  if (!pool) return null;
+  return {
+    pool_id: pool.pool_id,
+    token: pool.token,
+    balance: pool.balance,
+    admins: pool.admins,
+    threshold: pool.threshold,
   };
-
-  return mockPools[poolId] ?? null;
 }
 
 async function contractGetAllPools(): Promise<PoolData[]> {
-  // TODO: replace with indexed query or event scan
-  await new Promise((r) => setTimeout(r, 800));
-  const ids = ["community", "grants", "devfund"];
-  const results = await Promise.all(ids.map(contractGetPool));
+  const knownIds = ["community", "grants", "devfund"];
+  const results = await Promise.all(knownIds.map(contractGetPool));
   return results.filter(Boolean) as PoolData[];
 }
 
 async function contractGetTokenMeta(tokenAddress: string): Promise<TokenMeta> {
-  // TODO: replace with SEP-41 token.symbol() / token.decimals() calls
-  await new Promise((r) => setTimeout(r, 200));
-  const mocks: Record<string, TokenMeta> = {
-    GDQOE23CFSUMSVQK4Y5JHPPYK73VYCNHZHA7ENKCV37P6SUEO6XQBKPP: {
-      symbol: "USDC",
-      decimals: 7,
-      name: "USD Coin",
-    },
-    GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGZXG5CHCGZXG5CHCGZXG5: {
-      symbol: "XLM",
-      decimals: 7,
-      name: "Stellar Lumens",
-    },
-  };
-  return (
-    mocks[tokenAddress] ?? { symbol: "TOKEN", decimals: 7, name: "Unknown Token" }
-  );
+  const rpcUrl = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL!;
+  const server = new rpc.Server(rpcUrl);
+  const contract = new Contract(tokenAddress);
+
+  const source = (await import("@stellar/stellar-sdk")).Keypair.random();
+  const account = new (await import("@stellar/stellar-sdk")).Account(source.publicKey(), "0");
+  const builder = new (await import("@stellar/stellar-sdk")).TransactionBuilder(account, {
+    fee: "100",
+    networkPassphrase: process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE!,
+  });
+
+  const symbolOp = contract.call("symbol");
+  const decimalsOp = contract.call("decimals");
+
+  const symbolTx = builder.clone().addOperation(symbolOp).setTimeout(30).build();
+  const decimalsTx = builder.clone().addOperation(decimalsOp).setTimeout(30).build();
+
+  const [symbolResult, decimalsResult] = await Promise.all([
+    server.simulateTransaction(symbolTx),
+    server.simulateTransaction(decimalsTx),
+  ]);
+
+  const symbol = rpc.Api.isSimulationSuccess(symbolResult) && symbolResult.result
+    ? scValToNative(symbolResult.result.retval) as string
+    : "TOKEN";
+  const decimals = rpc.Api.isSimulationSuccess(decimalsResult) && decimalsResult.result
+    ? Number(scValToNative(decimalsResult.result.retval))
+    : 7;
+
+  return { symbol, decimals, name: symbol };
 }
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────

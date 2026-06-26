@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from "react";
 import { parseTokenAmount } from "./usePools";
+import { getContractClient, signAndSubmit } from "../../lib/contract/client";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -33,51 +34,86 @@ export function classifyError(err: unknown): string {
   return msg || "Transaction failed";
 }
 
-// ── Mock contract calls ───────────────────────────────────────────────────────
-// Replace with real SDK calls once the generated client is available.
+// ── Contract calls ────────────────────────────────────────────────────────────
 
 async function callIncreaseAllowance(
-  _depositor: string,
-  _token: string,
-  _amount: bigint,
-  _spender: string
+  depositor: string,
+  token: string,
+  amount: bigint,
+  spender: string
 ): Promise<void> {
-  // TODO: token::Client.increase_allowance(depositor, spender, amount)
-  await new Promise((r) => setTimeout(r, 900));
+  const { Contract, TransactionBuilder, Account, Keypair, nativeToScVal } = await import("@stellar/stellar-sdk");
+  const rpcUrl = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL!;
+  const passphrase = process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE!;
+
+  const server = new rpc.Server(rpcUrl);
+  const contract = new Contract(token);
+  const source = Keypair.random();
+  const account = new Account(source.publicKey(), "0");
+
+  const tx = new TransactionBuilder(account, { fee: "100", networkPassphrase: passphrase })
+    .addOperation(contract.call("increase_allowance",
+      nativeToScVal(depositor, { type: "address" }),
+      nativeToScVal(spender, { type: "address" }),
+      nativeToScVal(amount, { type: "i128" })
+    ))
+    .setTimeout(30)
+    .build();
+
+  const simulated = await server.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(simulated)) {
+    throw new Error(simulated.error);
+  }
+
+  const prepared = await server.prepareTransaction(tx);
+  prepared.sign(source);
+  const sendResult = await server.sendTransaction(prepared);
+  if (sendResult.status === "ERROR") {
+    throw new Error(sendResult.errorResult?.result().toString() ?? "Allowance failed");
+  }
+
+  let getResult = await server.getTransaction(sendResult.hash);
+  while (getResult.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
+    await new Promise((r) => setTimeout(r, 1000));
+    getResult = await server.getTransaction(sendResult.hash);
+  }
+  if (getResult.status === rpc.Api.GetTransactionStatus.FAILED) {
+    throw new Error("Allowance transaction failed on-chain");
+  }
 }
 
 async function callPoolDeposit(
-  _depositor: string,
-  _poolId: string,
+  depositor: string,
+  poolId: string,
   _token: string,
-  _amount: bigint
+  amount: bigint
 ): Promise<TxResult> {
-  // TODO: client.pool_deposit({ depositor, pool_id, token, amount })
-  await new Promise((r) => setTimeout(r, 1200));
-  return { hash: "abc123def456", ledger: 12345678 };
+  const client = getContractClient();
+  const xdr = client.deposit(depositor, poolId, _token, amount);
+  return signAndSubmit(xdr);
 }
 
 async function callPoolWithdraw(
-  _signers: string[],
-  _poolId: string,
-  _amount: bigint,
-  _recipient: string
+  signers: string[],
+  poolId: string,
+  amount: bigint,
+  recipient: string
 ): Promise<TxResult> {
-  // TODO: client.pool_withdraw({ signers, pool_id, amount, recipient })
-  await new Promise((r) => setTimeout(r, 1200));
-  return { hash: "xyz789uvw012", ledger: 12345679 };
+  const client = getContractClient();
+  const xdr = client.withdraw(signers, poolId, amount, recipient);
+  return signAndSubmit(xdr);
 }
 
 async function callCreatePool(
-  _admin: string,
-  _poolId: string,
-  _token: string,
-  _initialAdmins: string[],
-  _threshold: number
+  admin: string,
+  poolId: string,
+  token: string,
+  initialAdmins: string[],
+  threshold: number
 ): Promise<TxResult> {
-  // TODO: client.create_pool({ admin, pool_id, token, initial_admins, threshold })
-  await new Promise((r) => setTimeout(r, 1400));
-  return { hash: "pool_create_hash", ledger: 12345680 };
+  const client = getContractClient();
+  const xdr = client.createPool(admin, token, initialAdmins, threshold);
+  return signAndSubmit(xdr);
 }
 
 // ── useDeposit ────────────────────────────────────────────────────────────────

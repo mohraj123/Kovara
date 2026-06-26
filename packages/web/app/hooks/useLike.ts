@@ -53,6 +53,15 @@ declare global {
       signTransaction?: (opts: { txXdr: string }) => Promise<{ signedTxXdr?: string; signedXdr?: string; signedTx?: string }>;
     };
   }
+import { useState, useCallback, useEffect, useRef } from "react";
+import { useWallet } from "../components/WalletProvider";
+import { classifyError } from "./usePoolContract";
+import { getContractClient, signAndSubmit } from "../../lib/contract/client";
+
+async function contractLikePost(liker: string, postId: number): Promise<void> {
+  const client = getContractClient();
+  const xdr = client.like(liker, postId);
+  await signAndSubmit(xdr);
 }
 
 export interface UseLikeOptions {
