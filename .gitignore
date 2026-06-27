@@ -3,6 +3,8 @@ node_modules/
 dist/
 build/
 target/
+coverage/
 *.env
 .env.*
 !.env.example
+\n*.tsbuildinfo
