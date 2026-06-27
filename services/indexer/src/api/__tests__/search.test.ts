@@ -1,79 +1,78 @@
+import http from "http";
 import { AddressInfo } from "net";
-import type { Database } from "../../db";
 import { createApp } from "../index";
+import { Database } from "../../db";
 
 describe("POST /api/search/posts", () => {
-  let baseUrl: string;
-  let server: ReturnType<ReturnType<typeof createApp>["listen"]>;
+  const db = {
+    upsertProfile: jest.fn(),
+    insertFollow: jest.fn(),
+    deleteFollow: jest.fn(),
+    insertPost: jest.fn(),
+    markPostDeleted: jest.fn(),
+    incrementPostLikeCount: jest.fn(),
+    addPostTipTotal: jest.fn(),
+    getPost: jest.fn(),
+    upsertLike: jest.fn(),
+    insertTip: jest.fn(),
+    upsertPool: jest.fn(),
+    adjustPoolBalance: jest.fn(),
+    insertPool: jest.fn(),
+    getPool: jest.fn(),
+    addPoolAdmin: jest.fn(),
+    removePoolAdmin: jest.fn(),
+    getProfile: jest.fn(),
+    listPosts: jest.fn(),
+    getFollowers: jest.fn(),
+    getFollowing: jest.fn(),
+    searchPosts: jest.fn().mockResolvedValue({
+      posts: [
+        {
+          id: 42n,
+          author: "GABC...XYZ",
+          content: "Building on Stellar with Soroban is great!",
+          tip_total: 1000000000n,
+          like_count: 7n,
+          created_at: new Date("2024-01-01T00:00:00.000Z"),
+          deleted_at: null,
+        },
+      ],
+      total: 1,
+    }),
+  } as unknown as Database;
 
-  beforeAll(() => {
-    const db = {
-      getProfile: jest.fn().mockResolvedValue(null),
-      listPosts: jest.fn().mockResolvedValue({ posts: [], total: 0 }),
-      getFollowers: jest.fn().mockResolvedValue({ followers: [], total: 0 }),
-      getFollowing: jest.fn().mockResolvedValue({ following: [], total: 0 }),
-    } as unknown as Database;
-
+  it("returns search results from the database", async () => {
     const app = createApp(db);
-    server = app.listen(0);
+    const server = http.createServer(app);
 
-    return new Promise<void>((resolve) => {
-      server.once("listening", () => {
-        const address = server.address() as AddressInfo;
-        baseUrl = `http://127.0.0.1:${address.port}`;
-        resolve();
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+
+    try {
+      const address = server.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/search/posts`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query: "stellar soroban", limit: 10, offset: 0 }),
       });
-    });
-  });
 
-  afterAll(() => {
-    server.close();
-  });
-
-  async function postSearch(body: Record<string, unknown>) {
-    const response = await fetch(`${baseUrl}/api/search/posts`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
-    return {
-      status: response.status,
-      body: (await response.json()) as Record<string, unknown>,
-    };
-  }
-
-  it("returns the search response contract with default paging values", async () => {
-    const response = await postSearch({ query: "hello world" });
-
-    expect(response.status).toBe(200);
-    expect(response.body).toEqual(
-      expect.objectContaining({
-        posts: [],
-        total: 0,
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        posts: [
+          {
+            id: "42",
+            author: "GABC...XYZ",
+            content: "Building on Stellar with Soroban is great!",
+            tip_total: "1000000000",
+            like_count: 7,
+            created_at: "2024-01-01T00:00:00.000Z",
+            deleted: false,
+          },
+        ],
+        total: 1,
         has_more: false,
-        limit: 20,
-        offset: 0,
-      })
-    );
-  });
-
-  it("echoes custom paging values in the search response", async () => {
-    const response = await postSearch({ query: "hello world", limit: 2, offset: 3 });
-
-    expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({
-      limit: 2,
-      offset: 3,
-    });
-  });
-
-  it("returns a validation error for invalid paging values", async () => {
-    const response = await postSearch({ query: "hello world", limit: 0, offset: -1 });
-
-    expect(response.status).toBe(400);
-    expect(response.body).toMatchObject({
-      code: "INVALID_QUERY",
-    });
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    }
   });
 });

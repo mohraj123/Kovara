@@ -89,13 +89,52 @@ export function createApp(db: Database): express.Application {
     offset?: number;
   }
 
+  interface SearchPost {
+    id: string;
+    author: string;
+    content: string;
+    tip_total: string;
+    like_count: number;
+    created_at: string | null;
+    deleted: boolean;
+  }
+
+  interface SearchResponse {
+    posts: SearchPost[];
+    total: number;
+    has_more: boolean;
+  }
+
+  interface ErrorResponse {
+    error: string;
+    code: string;
+  }
+
   const MAX_LIMIT = 100;
   const DEFAULT_LIMIT = 20;
   const DEFAULT_OFFSET = 0;
 
+  const serializePost = (post: {
+    id: bigint;
+    author: string;
+    content: string;
+    tip_total: bigint;
+    like_count: bigint;
+    created_at?: Date | null;
+    deleted_at?: Date | null;
+  }): SearchPost => ({
+    id: post.id.toString(),
+    author: post.author,
+    content: post.content,
+    tip_total: post.tip_total.toString(),
+    like_count: Number(post.like_count),
+    created_at: post.created_at instanceof Date ? post.created_at.toISOString() : null,
+    deleted: post.deleted_at !== undefined && post.deleted_at !== null,
+  });
+
   app.post(
     "/api/search/posts",
-    (req: Request, res: Response<SearchResponse | ApiErrorResponse>): void => {
+    async (req: Request, res: Response<SearchResponse | ErrorResponse>): Promise<void> => {
       const body = req.body as Partial<SearchQuery>;
 
       if (
@@ -131,8 +170,22 @@ export function createApp(db: Database): express.Application {
         return;
       }
 
-      // TODO: integrate with the search database.
-      res.json({ posts: [], total: 0, has_more: false, limit, offset });
+      if (typeof db.searchPosts !== "function") {
+        res.status(500).json({ error: "search backend unavailable", code: "SEARCH_UNAVAILABLE" });
+        return;
+      }
+
+      const { posts, total } = await db.searchPosts({
+        query: body.query.trim(),
+        limit,
+        offset,
+      });
+
+      res.json({
+        posts: posts.map(serializePost),
+        total,
+        has_more: offset + posts.length < total,
+      });
     }
   );
 

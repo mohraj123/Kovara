@@ -77,6 +77,22 @@ async function ensureEventsTable(): Promise<void> {
   `);
 }
 
+async function ensurePostSearchIndex(): Promise<void> {
+  await pgPool.query(`
+    ALTER TABLE posts
+    ADD COLUMN IF NOT EXISTS search_vector TSVECTOR
+  `);
+  await pgPool.query(`
+    UPDATE posts
+    SET search_vector = to_tsvector('simple', coalesce(content, ''))
+    WHERE search_vector IS NULL
+  `);
+  await pgPool.query(`
+    CREATE INDEX IF NOT EXISTS idx_posts_search_vector
+    ON posts USING GIN (search_vector)
+  `);
+}
+
 async function persistEvent(event: RawEvent): Promise<void> {
   await pgPool.query(
     `
