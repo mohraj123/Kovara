@@ -276,6 +276,244 @@ All event handlers are designed to be idempotent:
 
 This ensures the indexer can safely replay events without data corruption.
 
+## API Routes
+
+The indexer exposes a REST API on port `3001` (configurable via `PORT`). All endpoints are prefixed with `/api` and return `application/json`. Large integers (post IDs, token amounts) are serialised as strings to avoid floating-point loss.
+
+**Base URL:** `http://localhost:3001`
+
+> **Rate limit:** 100 requests per 60 seconds per IP by default (overridable via `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW_MS`). Exceeding the limit returns `429` with a `Retry-After` header.
+
+### Profiles
+
+#### `GET /api/profiles/:address`
+
+Returns the on-chain profile for a Stellar account address.
+
+**Path parameter**
+
+| Param     | Type     | Description                      |
+| --------- | -------- | -------------------------------- |
+| `address` | `string` | Stellar account address (`G...`) |
+
+**Response `200`**
+
+```json
+{
+  "address": "GABC...XYZ",
+  "username": "alice",
+  "creator_token": "CABC...TOKEN",
+  "updated_ledger": 12100000
+}
+```
+
+**Response `404`** — profile not found.
+
+---
+
+### Posts
+
+#### `GET /api/posts`
+
+Paginated list of posts. Optionally filtered by author.
+
+**Query parameters**
+
+| Param    | Type     | Default | Constraints | Description                    |
+| -------- | -------- | ------- | ----------- | ------------------------------ |
+| `author` | `string` | —       | —           | Filter by Stellar address      |
+| `limit`  | `number` | `20`    | 1–100       | Maximum items to return        |
+| `offset` | `number` | `0`     | ≥ 0         | Items to skip before returning |
+
+**Response `200`**
+
+```json
+{
+  "posts": [
+    {
+      "id": "42",
+      "author": "GABC...XYZ",
+      "content": "Hello Kovara!",
+      "tip_total": "500000000",
+      "like_count": "3",
+      "created_ledger": 12200000,
+      "deleted": false,
+      "deleted_ledger": null
+    }
+  ],
+  "total": 1,
+  "limit": 20,
+  "offset": 0,
+  "has_more": false
+}
+```
+
+**Error codes:** `INVALID_QUERY`, `LIMIT_EXCEEDED`
+
+---
+
+#### `GET /api/posts/:id`
+
+Returns a single post by its numeric ID.
+
+**Path parameter**
+
+| Param | Type  | Description                      |
+| ----- | ----- | -------------------------------- |
+| `id`  | `u64` | Post ID assigned by the contract |
+
+**Response `200`** — same shape as a single item in the list above.
+
+**Response `400`** — `INVALID_ID` (non-numeric or negative ID).
+
+**Response `404`** — post not found.
+
+---
+
+#### `POST /api/search/posts`
+
+Full-text search over post content.
+
+**Request body**
+
+```json
+{
+  "query": "stellar soroban",
+  "limit": 20,
+  "offset": 0
+}
+```
+
+| Field    | Type     | Required | Default | Constraints      |
+| -------- | -------- | -------- | ------- | ---------------- |
+| `query`  | `string` | yes      | —       | non-empty string |
+| `limit`  | `number` | no       | `20`    | 1–100            |
+| `offset` | `number` | no       | `0`     | ≥ 0              |
+
+**Response `200`**
+
+```json
+{
+  "posts": [...],
+  "total": 1,
+  "has_more": false
+}
+```
+
+**Error codes:** `INVALID_QUERY`, `LIMIT_EXCEEDED`
+
+---
+
+### Follows
+
+#### `GET /api/follows/:address/followers`
+
+Paginated list of accounts that follow `:address`.
+
+**Path parameter**
+
+| Param     | Type     | Description                      |
+| --------- | -------- | -------------------------------- |
+| `address` | `string` | Stellar account address (`G...`) |
+
+**Query parameters**
+
+| Param    | Type     | Default | Constraints |
+| -------- | -------- | ------- | ----------- |
+| `limit`  | `number` | `20`    | 1–100       |
+| `offset` | `number` | `0`     | ≥ 0         |
+
+**Response `200`**
+
+```json
+{
+  "address": "GABC...XYZ",
+  "followers": ["GBOB...XYZ", "GCAR...XYZ"],
+  "total": 2,
+  "limit": 20,
+  "offset": 0,
+  "has_more": false
+}
+```
+
+---
+
+#### `GET /api/follows/:address/following`
+
+Paginated list of accounts that `:address` follows.
+
+**Query parameters:** same as `/followers`.
+
+**Response `200`**
+
+```json
+{
+  "address": "GABC...XYZ",
+  "following": ["GDAVE...XYZ"],
+  "total": 1,
+  "limit": 20,
+  "offset": 0,
+  "has_more": false
+}
+```
+
+---
+
+### Pools
+
+#### `GET /api/pools/:id`
+
+Returns the current state of a community pool.
+
+**Path parameter**
+
+| Param | Type     | Description            |
+| ----- | -------- | ---------------------- |
+| `id`  | `string` | Pool symbol identifier |
+
+**Response `200`**
+
+```json
+{
+  "pool_id": "CREATOR_FUND",
+  "token": "CABC...TOKEN",
+  "balance": "5000000000",
+  "admins": ["GABC...XYZ"],
+  "threshold": 2,
+  "created_ledger": 12300000,
+  "updated_ledger": 12350000
+}
+```
+
+**Response `400`** — `INVALID_ID` (empty ID).
+
+**Response `404`** — pool not found.
+
+---
+
+### Error format
+
+All error responses share the same shape:
+
+```json
+{
+  "error": "human-readable message",
+  "code": "MACHINE_READABLE_CODE"
+}
+```
+
+| Code                  | HTTP status | Meaning                                |
+| --------------------- | ----------- | -------------------------------------- |
+| `NOT_FOUND`           | 404         | Resource does not exist in the index   |
+| `INVALID_QUERY`       | 400         | Missing or malformed request parameter |
+| `INVALID_ID`          | 400         | Missing or malformed path ID           |
+| `INVALID_ADDRESS`     | 400         | Missing or malformed Stellar address   |
+| `LIMIT_EXCEEDED`      | 400         | `limit` parameter exceeds the maximum  |
+| `RATE_LIMIT_EXCEEDED` | 429         | Too many requests from this IP         |
+| `INTERNAL_ERROR`      | 500         | Unexpected server error                |
+
+---
+
 ## Monitoring
 
 ### Health Check
