@@ -1,0 +1,76 @@
+name: Contract Security Issue
+description: >
+  Report a non-critical security concern in a Soroban contract function.
+  For Critical or High severity issues, use GitHub Security Advisories (private) — see SECURITY.md.
+title: "[Security]: "
+labels: [contracts, security]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > ⚠️ **Do not use this form for Critical or High severity vulnerabilities.**
+        > Report those privately via [GitHub Security Advisories](../../security/advisories/new).
+        > See [SECURITY.md](../../blob/main/SECURITY.md) for severity definitions and response timelines.
+
+  - type: input
+    id: affected_function
+    attributes:
+      label: Affected Function(s)
+      description: Name of the contract function(s) involved.
+      placeholder: "e.g. tip, pool_withdraw, block_user"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: See SECURITY.md for definitions.
+      options:
+        - Medium — DoS or logic error without direct fund loss
+        - Low — Minor logic issue or information disclosure
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the vulnerability clearly. Include the root cause if known.
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Security Impact
+      description: What can an attacker achieve? (e.g. drain pool, bypass auth, spam ledger)
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction Steps or Proof of Concept
+      description: Minimal Rust test or step-by-step instructions that demonstrate the issue.
+      render: rust
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggested_fix
+    attributes:
+      label: Suggested Fix (optional)
+      description: A proposed code change or mitigation strategy.
+      render: rust
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        - soroban-sdk version:
+        - stellar-cli version:
+        - Network (Testnet / Mainnet / local):
+    validations:
+      required: true

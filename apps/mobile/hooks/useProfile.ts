@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { KovaraClient } from "../../../packages/sdk/src/client";
+import { IndexerError } from "../../../packages/sdk/src/errors";
 
 import { useNetwork } from "./useNetwork";
 import { useFollowers } from "./useFollowers";
 import { useFollowing } from "./useFollowing";
 import { useWallet } from "./useWallet";
 import { useToast } from "../context/ToastContext";
+import type { IndexerErrorCode } from "../components/states/ErrorState";
 
 export interface Profile {
   address: string;
@@ -23,6 +25,7 @@ export function useProfile(address: string) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState<boolean>(!!address);
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<IndexerErrorCode | undefined>(undefined);
 
   const followers = useFollowers(address ?? "");
   const following = useFollowing(address ?? "");
@@ -41,6 +44,7 @@ export function useProfile(address: string) {
     if (!address) return;
     setLoading(true);
     setError(null);
+    setErrorCode(undefined);
     try {
       const client = clientRef.current as KovaraClient;
       const p = await client.getProfile(address);
@@ -56,7 +60,12 @@ export function useProfile(address: string) {
     } catch (e) {
       // eslint-disable-next-line no-console
       console.warn("Failed to load profile", e);
-      setError("Failed to load profile.");
+      if (e instanceof IndexerError) {
+        setErrorCode(e.statusCode as IndexerErrorCode);
+        setError(e.message);
+      } else {
+        setError("Failed to load profile.");
+      }
     } finally {
       setLoading(false);
     }
@@ -148,6 +157,7 @@ export function useProfile(address: string) {
     profile,
     loading,
     error,
+    errorCode,
     followerCount,
     followingCount,
     isFollowing,

@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import {
   GestureResponderEvent,
   Pressable,
@@ -12,6 +12,7 @@ import { useRouter } from "expo-router";
 import { useLike } from "../hooks/useLike";
 import { useTheme } from "../theme/useTheme";
 import { PostCardSkeleton as SharedPostCardSkeleton } from "./skeletons/PostCardSkeleton";
+import { TipModal } from "./TipModal";
 
 export { SharedPostCardSkeleton as PostCardSkeleton };
 
@@ -80,6 +81,7 @@ export function PostCard(props: PostCardProps) {
   const { theme } = useTheme();
   const router = useRouter();
   const { post, timeLabel } = normalizePost(props);
+  const [tipModalOpen, setTipModalOpen] = useState(false);
   const onPress =
     props.onPress ?? (() => router.push(`/post/${post.id}` as Parameters<typeof router.push>[0]));
   const { liked, likeCount, pending, like } = useLike({
@@ -99,46 +101,75 @@ export function PostCard(props: PostCardProps) {
     void like();
   };
 
+  const handleTipPress = (event: GestureResponderEvent) => {
+    event.stopPropagation();
+    setTipModalOpen(true);
+  };
+
+  const handleTipClose = () => setTipModalOpen(false);
+
   return (
-    <TouchableOpacity
-      style={styles.card}
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={`Post by ${post.username}`}
-    >
-      <View style={styles.header}>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>{post.username.charAt(0).toUpperCase()}</Text>
+    <View>
+      <TouchableOpacity
+        style={styles.card}
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={`Post by ${post.username}`}
+        accessibilityHint="Opens post details"
+      >
+        <View style={styles.header}>
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{post.username.charAt(0).toUpperCase()}</Text>
+          </View>
+          <View style={styles.meta}>
+            <Text style={styles.username}>{post.username}</Text>
+            <Text style={styles.address}>{shortAddress(post.author)}</Text>
+          </View>
+          <Text style={styles.time}>{timeLabel ?? formatTimestamp(post.timestamp)}</Text>
         </View>
-        <View style={styles.meta}>
-          <Text style={styles.username}>{post.username}</Text>
-          <Text style={styles.address}>{shortAddress(post.author)}</Text>
+
+        <Text style={styles.content}>{post.content}</Text>
+
+        <View style={styles.footer}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={
+              liked ? `Unlike post. ${likeCount} likes` : `Like post. ${likeCount} likes`
+            }
+            accessibilityHint={liked ? "You have already liked this post" : "Tap to like this post"}
+            accessibilityState={{ disabled: liked || pending, selected: liked, busy: pending }}
+            disabled={liked || pending}
+            onPress={handleLikePress}
+            style={({ pressed }) => [
+              styles.likeButton,
+              liked && styles.likeButtonLiked,
+              pressed && !liked && !pending && styles.likeButtonPressed,
+            ]}
+          >
+            <Text style={[styles.stat, liked && styles.statLiked]}>
+              {liked ? "Liked" : "Like"} {likeCount}
+            </Text>
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Send tip to ${post.username}. Currently ${post.tip_total} tips`}
+            accessibilityHint="Opens the tip sheet"
+            onPress={handleTipPress}
+            style={({ pressed }) => [styles.tipButton, pressed && styles.tipButtonPressed]}
+          >
+            <Text style={styles.stat}>Tips {post.tip_total}</Text>
+          </Pressable>
         </View>
-        <Text style={styles.time}>{timeLabel ?? formatTimestamp(post.timestamp)}</Text>
-      </View>
+      </TouchableOpacity>
 
-      <Text style={styles.content}>{post.content}</Text>
-
-      <View style={styles.footer}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={liked ? "Post already liked" : "Like post"}
-          accessibilityState={{ disabled: liked || pending, selected: liked }}
-          disabled={liked || pending}
-          onPress={handleLikePress}
-          style={({ pressed }) => [
-            styles.likeButton,
-            liked && styles.likeButtonLiked,
-            pressed && !liked && !pending && styles.likeButtonPressed,
-          ]}
-        >
-          <Text style={[styles.stat, liked && styles.statLiked]}>
-            {liked ? "Liked" : "Like"} {likeCount}
-          </Text>
-        </Pressable>
-        <Text style={styles.stat}>Tips {post.tip_total}</Text>
-      </View>
-    </TouchableOpacity>
+      <TipModal
+        visible={tipModalOpen}
+        postId={post.id}
+        authorName={post.username}
+        onClose={handleTipClose}
+      />
+    </View>
   );
 }
 
@@ -217,6 +248,16 @@ function createStyles(theme: ReturnType<typeof useTheme>["theme"]) {
       backgroundColor: theme.colors.brand.primaryLight,
     },
     likeButtonPressed: {
+      opacity: 0.82,
+    },
+    tipButton: {
+      minHeight: 32,
+      borderRadius: 999,
+      paddingHorizontal: 12,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    tipButtonPressed: {
       opacity: 0.82,
     },
     stat: {

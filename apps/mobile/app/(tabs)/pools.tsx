@@ -11,10 +11,13 @@ import { useRouter } from "expo-router";
 import { PoolCard } from "../../components/PoolCard";
 import { usePools } from "../../hooks/usePools";
 import { EmptyState } from "../../components/states/EmptyState";
+import { ErrorState } from "../../components/states/ErrorState";
+import { useTheme } from "../../theme/useTheme";
 
 export default function PoolsScreen() {
   const router = useRouter();
-  const { pools, loading, error, refresh } = usePools();
+  const { theme } = useTheme();
+  const { pools, loading, error, errorCode, refresh } = usePools();
 
   const handlePoolPress = (poolId: string) => {
     router.push(`/pool/${poolId}`);
@@ -28,7 +31,7 @@ export default function PoolsScreen() {
           <Text style={styles.subtitle}>Community funding pools</Text>
         </View>
         <View style={styles.loaderContainer}>
-          <ActivityIndicator size="large" color="#6366f1" />
+          <ActivityIndicator size="large" color={theme.colors.brand.primary} />
         </View>
       </View>
     );
@@ -41,17 +44,7 @@ export default function PoolsScreen() {
           <Text style={styles.title}>Pools</Text>
           <Text style={styles.subtitle}>Community funding pools</Text>
         </View>
-        <View style={styles.errorContainer}>
-          <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity
-            style={styles.retryButton}
-            onPress={refresh}
-            accessibilityRole="button"
-            accessibilityLabel="Retry loading pools"
-          >
-            <Text style={styles.retryButtonText}>Retry</Text>
-          </TouchableOpacity>
-        </View>
+        <ErrorState message={error} statusCode={errorCode} onRetry={refresh} />
       </View>
     );
   }
@@ -134,28 +127,5 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-  },
-  errorContainer: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 24,
-  },
-  errorText: {
-    color: "#fca5a5",
-    fontSize: 14,
-    marginBottom: 16,
-    textAlign: "center",
-  },
-  retryButton: {
-    backgroundColor: "#6366f1",
-    borderRadius: 8,
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-  },
-  retryButtonText: {
-    color: "#fff",
-    fontSize: 14,
-    fontWeight: "600",
   },
 });

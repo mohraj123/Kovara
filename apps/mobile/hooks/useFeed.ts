@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Post } from "../components/PostCard";
+import { IndexerError } from "../../../packages/sdk/src/errors";
+import type { IndexerErrorCode } from "../components/states/ErrorState";
 
 const PAGE_SIZE = 10;
 const deletedPostIds = new Set<string>();
@@ -164,6 +166,7 @@ export interface UseFeedReturn {
   posts: Post[];
   loading: boolean;
   error: string | null;
+  errorCode: IndexerErrorCode | undefined;
   hasMore: boolean;
   loadMore: () => void;
   refresh: () => void;
@@ -173,6 +176,7 @@ export function useFeed(): UseFeedReturn {
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<IndexerErrorCode | undefined>(undefined);
   const [hasMore, setHasMore] = useState(true);
 
   // cursor = id of the last loaded post (0 = initial load)
@@ -184,6 +188,7 @@ export function useFeed(): UseFeedReturn {
     loadingRef.current = true;
     setLoading(true);
     setError(null);
+    setErrorCode(undefined);
 
     try {
       const fetched = await fetchPostPage(cursor, PAGE_SIZE);
@@ -192,8 +197,13 @@ export function useFeed(): UseFeedReturn {
       if (fetched.length > 0) {
         cursorRef.current = Number(fetched[fetched.length - 1].id);
       }
-    } catch {
-      setError("Failed to load posts. Please try again.");
+    } catch (e) {
+      if (e instanceof IndexerError) {
+        setErrorCode(e.statusCode as IndexerErrorCode);
+        setError(e.message);
+      } else {
+        setError("Failed to load posts. Please try again.");
+      }
     } finally {
       setLoading(false);
       loadingRef.current = false;
@@ -221,5 +231,5 @@ export function useFeed(): UseFeedReturn {
     load(0, true);
   }, [load]);
 
-  return { posts, loading, error, hasMore, loadMore, refresh };
+  return { posts, loading, error, errorCode, hasMore, loadMore, refresh };
 }

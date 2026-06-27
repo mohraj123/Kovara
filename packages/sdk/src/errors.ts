@@ -40,6 +40,20 @@ export class CooldownError extends KovaraError {}
 export class InvalidInputError extends KovaraError {}
 
 /**
+ * Thrown when the indexer returns a non-200 HTTP response.
+ * Carries the HTTP `statusCode` so callers can surface context-specific messages.
+ */
+export class IndexerError extends KovaraError {
+  constructor(
+    message: string,
+    public readonly statusCode: number,
+    originalError?: unknown
+  ) {
+    super(message, originalError);
+  }
+}
+
+/**
  * Thrown when a mini-app manifest fails JSON schema validation.
  */
 export class InvalidManifestError extends KovaraError {}
@@ -50,7 +64,39 @@ export class InvalidManifestError extends KovaraError {}
  * @param err The caught raw error object or string.
  * @returns A typed KovaraError instance.
  */
+/**
+ * Converts a non-200 HTTP response into an `IndexerError` with an appropriate message.
+ * Use this wherever you call the indexer REST API.
+ *
+ * @param statusCode The HTTP status code returned by the indexer.
+ * @param body Optional response body text for additional context.
+ */
+export function mapHttpError(statusCode: number, body?: string): IndexerError {
+  const detail = body ? `: ${body}` : "";
+  if (statusCode === 404) {
+    return new IndexerError(`Indexer: resource not found${detail}`, statusCode);
+  }
+  if (statusCode === 429) {
+    return new IndexerError(`Indexer: rate limit exceeded${detail}`, statusCode);
+  }
+  if (statusCode === 401 || statusCode === 403) {
+    return new IndexerError(`Indexer: access denied${detail}`, statusCode);
+  }
+  if (statusCode === 503) {
+    return new IndexerError(`Indexer: service unavailable${detail}`, statusCode);
+  }
+  if (statusCode === 502 || statusCode === 504) {
+    return new IndexerError(`Indexer: gateway error${detail}`, statusCode);
+  }
+  if (statusCode >= 500) {
+    return new IndexerError(`Indexer: internal server error (${statusCode})${detail}`, statusCode);
+  }
+  return new IndexerError(`Indexer: unexpected status ${statusCode}${detail}`, statusCode);
+}
+
 export function mapError(err: unknown): Error {
+  // Pass through already-typed SDK errors unchanged.
+  if (err instanceof KovaraError) return err;
   const msg = err instanceof Error ? err.message : String(err);
 
   if (/allowance|insufficient allowance/i.test(msg)) {

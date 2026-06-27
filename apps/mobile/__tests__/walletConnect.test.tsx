@@ -62,6 +62,16 @@ jest.mock(
   { virtual: true }
 );
 
+// Mock @stellar/freighter-api
+const mockFreighterApi = {
+  isConnected: jest.fn(),
+  requestAccess: jest.fn(),
+  getPublicKey: jest.fn(),
+  getAddress: jest.fn(),
+};
+
+jest.mock("@stellar/freighter-api", () => mockFreighterApi, { virtual: true });
+
 // Test component to access wallet context
 const TestComponent: React.FC = () => {
   const { state, wallet, connect, disconnect, error } = useWallet();
@@ -84,6 +94,32 @@ const TestComponent: React.FC = () => {
 const TestApp: React.FC = () => (
   <WalletProvider>
     <TestComponent />
+  </WalletProvider>
+);
+
+// Freighter-specific test component with explicit provider button
+const FreighterTestComponent: React.FC = () => {
+  const { state, wallet, connect, disconnect, error } = useWallet();
+
+  return (
+    <View>
+      <Text testID="wallet-state">{state}</Text>
+      <Text testID="wallet-address">{wallet.address || "null"}</Text>
+      <Text testID="wallet-provider">{wallet.provider || "null"}</Text>
+      <Text testID="wallet-error">{error || "null"}</Text>
+      <TouchableOpacity testID="connect-freighter-btn" onPress={() => connect("freighter")}>
+        <Text>Connect Freighter</Text>
+      </TouchableOpacity>
+      <TouchableOpacity testID="disconnect-btn" onPress={disconnect}>
+        <Text>Disconnect</Text>
+      </TouchableOpacity>
+    </View>
+  );
+};
+
+const FreighterTestApp: React.FC = () => (
+  <WalletProvider>
+    <FreighterTestComponent />
   </WalletProvider>
 );
 
@@ -427,6 +463,261 @@ describe("Wallet Connect Integration Tests", () => {
       expect(getByTestId("wallet-address").children[0]).toBe("null");
 
       // Verify storage is cleared
+      const storedAddress = await secureStorage.getWalletAddress();
+      expect(storedAddress).toBeNull();
+    });
+  });
+});
+
+describe("Freighter Connection Tests", () => {
+  const mockAddress = "GCKFBEIYTKP6RCZNVPH73XL7XFWTEOAO4MKONX7HOILHDVBMW5EVPOPZ";
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const mockSecureStore = require("expo-secure-store");
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSecureStore.__resetStore();
+
+    // Reset Freighter API mocks
+    mockFreighterApi.isConnected.mockReset();
+    mockFreighterApi.requestAccess.mockReset();
+    mockFreighterApi.getPublicKey.mockReset();
+    mockFreighterApi.getAddress.mockReset();
+
+    // Ensure Wallet Kit mock is present so WalletProvider initializes properly
+    globalThis.__Kovara_WALLET_KIT__ = mockWalletKit;
+  });
+
+  afterEach(() => {
+    delete globalThis.__Kovara_WALLET_KIT__;
+  });
+
+  describe("Successful Connection", () => {
+    it("should connect via Freighter using requestAccess", async () => {
+      // Setup Freighter to be available and return address via requestAccess
+      mockFreighterApi.isConnected.mockResolvedValue(true);
+      mockFreighterApi.requestAccess.mockResolvedValue({ address: mockAddress });
+
+      const { getByTestId } = render(<FreighterTestApp />);
+
+      // Wait for initial disconnected state
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("disconnected");
+      });
+
+      // Trigger Freighter connect
+      await act(async () => {
+        fireEvent.press(getByTestId("connect-freighter-btn"));
+      });
+
+      // Should be connected with Freighter provider
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("connected");
+      });
+
+      expect(getByTestId("wallet-address").children[0]).toBe(mockAddress);
+      expect(getByTestId("wallet-provider").children[0]).toBe("freighter");
+
+      // Verify Freighter API was called
+      expect(mockFreighterApi.isConnected).toHaveBeenCalledTimes(1);
+      expect(mockFreighterApi.requestAccess).toHaveBeenCalledTimes(1);
+
+      // Verify address persisted to secure storage
+      const storedAddress = await secureStorage.getWalletAddress();
+      expect(storedAddress).toBe(mockAddress);
+    });
+
+    it("should connect via Freighter when requestAccess returns string", async () => {
+      mockFreighterApi.isConnected.mockResolvedValue(true);
+      mockFreighterApi.requestAccess.mockResolvedValue(mockAddress);
+
+      const { getByTestId } = render(<FreighterTestApp />);
+
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("disconnected");
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId("connect-freighter-btn"));
+      });
+
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("connected");
+      });
+
+      expect(getByTestId("wallet-address").children[0]).toBe(mockAddress);
+      expect(getByTestId("wallet-provider").children[0]).toBe("freighter");
+    });
+
+    it("should connect via Freighter using getPublicKey fallback", async () => {
+      // requestAccess doesn't exist, falls back to getPublicKey
+      mockFreighterApi.isConnected.mockResolvedValue(true);
+      mockFreighterApi.requestAccess.mockResolvedValue(undefined as unknown as string);
+      mockFreighterApi.getPublicKey.mockResolvedValue(mockAddress);
+
+      const { getByTestId } = render(<FreighterTestApp />);
+
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("disconnected");
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId("connect-freighter-btn"));
+      });
+
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("connected");
+      });
+
+      expect(getByTestId("wallet-address").children[0]).toBe(mockAddress);
+      expect(getByTestId("wallet-provider").children[0]).toBe("freighter");
+      expect(mockFreighterApi.getPublicKey).toHaveBeenCalledTimes(1);
+    });
+
+    it("should connect via Freighter using getAddress fallback", async () => {
+      // getPublicKey returns undefined, falls back to getAddress
+      mockFreighterApi.isConnected.mockResolvedValue(true);
+      mockFreighterApi.requestAccess.mockResolvedValue(undefined as unknown as string);
+      mockFreighterApi.getPublicKey.mockResolvedValue(undefined as unknown as string);
+      mockFreighterApi.getAddress.mockResolvedValue({ address: mockAddress });
+
+      const { getByTestId } = render(<FreighterTestApp />);
+
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("disconnected");
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId("connect-freighter-btn"));
+      });
+
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("connected");
+      });
+
+      expect(getByTestId("wallet-address").children[0]).toBe(mockAddress);
+      expect(getByTestId("wallet-provider").children[0]).toBe("freighter");
+      expect(mockFreighterApi.getAddress).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("Connection Failure", () => {
+    it("should show error when Freighter is not available", async () => {
+      mockFreighterApi.isConnected.mockResolvedValue(false);
+
+      const { getByTestId } = render(<FreighterTestApp />);
+
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("disconnected");
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId("connect-freighter-btn"));
+      });
+
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("error");
+      });
+
+      expect(getByTestId("wallet-error").children[0]).toBe("Freighter is not available");
+      expect(getByTestId("wallet-address").children[0]).toBe("null");
+
+      // No address should be persisted
+      const storedAddress = await secureStorage.getWalletAddress();
+      expect(storedAddress).toBeNull();
+    });
+
+    it("should show error when Freighter returns no address", async () => {
+      mockFreighterApi.isConnected.mockResolvedValue(true);
+      mockFreighterApi.requestAccess.mockResolvedValue(null as unknown as string);
+      mockFreighterApi.getPublicKey.mockResolvedValue(null as unknown as string);
+      mockFreighterApi.getAddress.mockResolvedValue(null as unknown as string);
+
+      const { getByTestId } = render(<FreighterTestApp />);
+
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("disconnected");
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId("connect-freighter-btn"));
+      });
+
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("error");
+      });
+
+      expect(getByTestId("wallet-error").children[0]).toBe("No address returned from Freighter");
+      expect(getByTestId("wallet-address").children[0]).toBe("null");
+    });
+
+    it("should retry after Freighter connection failure", async () => {
+      // First attempt: Freighter not available
+      mockFreighterApi.isConnected.mockResolvedValue(false);
+
+      const { getByTestId } = render(<FreighterTestApp />);
+
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("disconnected");
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId("connect-freighter-btn"));
+      });
+
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("error");
+      });
+      expect(getByTestId("wallet-error").children[0]).toBe("Freighter is not available");
+
+      // Second attempt: Freighter becomes available
+      mockFreighterApi.isConnected.mockResolvedValue(true);
+      mockFreighterApi.requestAccess.mockResolvedValue({ address: mockAddress });
+
+      await act(async () => {
+        fireEvent.press(getByTestId("connect-freighter-btn"));
+      });
+
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("connected");
+      });
+
+      expect(getByTestId("wallet-address").children[0]).toBe(mockAddress);
+      expect(mockFreighterApi.isConnected).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("Disconnect with Freighter", () => {
+    it("should disconnect Freighter and clear state", async () => {
+      // Connect with Freighter first
+      mockFreighterApi.isConnected.mockResolvedValue(true);
+      mockFreighterApi.requestAccess.mockResolvedValue({ address: mockAddress });
+
+      const { getByTestId } = render(<FreighterTestApp />);
+
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("disconnected");
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId("connect-freighter-btn"));
+      });
+
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("connected");
+      });
+
+      // Now disconnect
+      await act(async () => {
+        fireEvent.press(getByTestId("disconnect-btn"));
+      });
+
+      await waitFor(() => {
+        expect(getByTestId("wallet-state").children[0]).toBe("disconnected");
+      });
+
+      expect(getByTestId("wallet-address").children[0]).toBe("null");
+
       const storedAddress = await secureStorage.getWalletAddress();
       expect(storedAddress).toBeNull();
     });

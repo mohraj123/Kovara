@@ -23,7 +23,7 @@ function SkeletonList() {
 export default function FeedScreen() {
   const router = useRouter();
   const { theme } = useTheme();
-  const { posts, loading, error, loadMore, refresh } = useFeed();
+  const { posts, loading, error, errorCode, loadMore, refresh } = useFeed();
 
   const isInitialLoad = loading && posts.length === 0;
 
@@ -36,7 +36,7 @@ export default function FeedScreen() {
   }
 
   if (error && posts.length === 0) {
-    return <ErrorState message={error} onRetry={refresh} />;
+    return <ErrorState message={error} statusCode={errorCode} onRetry={refresh} />;
   }
 
   return (

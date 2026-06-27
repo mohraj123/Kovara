@@ -3,6 +3,12 @@ import renderer from "react-test-renderer";
 import { PostCard, Post } from "../PostCard";
 
 jest.mock("expo-router", () => ({ useRouter: () => ({ push: jest.fn() }) }));
+jest.mock("../../hooks/useNetwork", () => ({
+  useNetwork: () => ({
+    rpcUrl: "https://test-rpc.example.com",
+    contractId: "CABC123",
+  }),
+}));
 jest.mock("../../context/WalletContext", () => ({
   useWalletContext: () => ({
     wallet: { address: null },

@@ -1,55 +1,48 @@
 // Jest Snapshot v1, https://goo.gl/fbAQLP
 
 exports[`PostCard Snapshots renders default state correctly 1`] = `
-<View
-  accessibilityLabel="Post by john.doe"
-  accessibilityRole="button"
-  accessibilityState={
-    {
-      "busy": undefined,
-      "checked": undefined,
-      "disabled": undefined,
-      "expanded": undefined,
-      "selected": undefined,
-    }
-  }
-  accessibilityValue={
-    {
-      "max": undefined,
-      "min": undefined,
-      "now": undefined,
-      "text": undefined,
-    }
-  }
-  accessible={true}
-  collapsable={false}
-  focusable={true}
-  onClick={[Function]}
-  onResponderGrant={[Function]}
-  onResponderMove={[Function]}
-  onResponderRelease={[Function]}
-  onResponderTerminate={[Function]}
-  onResponderTerminationRequest={[Function]}
-  onStartShouldSetResponder={[Function]}
-  style={
-    {
-      "backgroundColor": "#F9FAFB",
-      "borderColor": "#E5E7EB",
-      "borderRadius": 12,
-      "borderWidth": 1,
-      "marginHorizontal": 16,
-      "marginVertical": 6,
-      "opacity": 1,
-      "padding": 16,
-    }
-  }
->
+<View>
   <View
+    accessibilityHint="Opens post details"
+    accessibilityLabel="Post by john.doe"
+    accessibilityRole="button"
+    accessibilityState={
+      {
+        "busy": undefined,
+        "checked": undefined,
+        "disabled": undefined,
+        "expanded": undefined,
+        "selected": undefined,
+      }
+    }
+    accessibilityValue={
+      {
+        "max": undefined,
+        "min": undefined,
+        "now": undefined,
+        "text": undefined,
+      }
+    }
+    accessible={true}
+    collapsable={false}
+    focusable={true}
+    onClick={[Function]}
+    onResponderGrant={[Function]}
+    onResponderMove={[Function]}
+    onResponderRelease={[Function]}
+    onResponderTerminate={[Function]}
+    onResponderTerminationRequest={[Function]}
+    onStartShouldSetResponder={[Function]}
     style={
       {
-        "alignItems": "center",
-        "flexDirection": "row",
-        "marginBottom": 10,
+        "backgroundColor": "#F9FAFB",
+        "borderColor": "#E5E7EB",
+        "borderRadius": 12,
+        "borderWidth": 1,
+        "marginHorizontal": 16,
+        "marginVertical": 6,
+        "opacity": 1,
+        "padding": 16,
       }
     }
   >
@@ -57,220 +50,278 @@ exports[`PostCard Snapshots renders default state correctly 1`] = `
       style={
         {
           "alignItems": "center",
-          "backgroundColor": "#7C3AED",
-          "borderRadius": 20,
-          "height": 40,
-          "justifyContent": "center",
-          "marginRight": 10,
-          "width": 40,
+          "flexDirection": "row",
+          "marginBottom": 10,
         }
       }
     >
-      <Text
+      <View
         style={
           {
-            "color": "#FFFFFF",
-            "fontSize": 16,
-            "fontWeight": "700",
+            "alignItems": "center",
+            "backgroundColor": "#7C3AED",
+            "borderRadius": 20,
+            "height": 40,
+            "justifyContent": "center",
+            "marginRight": 10,
+            "width": 40,
           }
         }
       >
-        J
-      </Text>
-    </View>
-    <View
-      style={
-        {
-          "flex": 1,
-        }
-      }
-    >
-      <Text
+        <Text
+          style={
+            {
+              "color": "#FFFFFF",
+              "fontSize": 16,
+              "fontWeight": "700",
+            }
+          }
+        >
+          J
+        </Text>
+      </View>
+      <View
         style={
           {
-            "color": "#111827",
-            "fontSize": 14,
-            "fontWeight": "600",
+            "flex": 1,
           }
         }
       >
-        john.doe
-      </Text>
+        <Text
+          style={
+            {
+              "color": "#111827",
+              "fontSize": 14,
+              "fontWeight": "600",
+            }
+          }
+        >
+          john.doe
+        </Text>
+        <Text
+          style={
+            {
+              "color": "#6B7280",
+              "fontFamily": "monospace",
+              "fontSize": 11,
+            }
+          }
+        >
+          GABCD1...WXYZ
+        </Text>
+      </View>
       <Text
         style={
           {
             "color": "#6B7280",
-            "fontFamily": "monospace",
             "fontSize": 11,
           }
         }
       >
-        GABCD1...WXYZ
+        954d ago
       </Text>
     </View>
     <Text
       style={
         {
-          "color": "#6B7280",
-          "fontSize": 11,
+          "color": "#111827",
+          "fontSize": 14,
+          "lineHeight": 20,
         }
       }
     >
-      930d ago
+      This is a sample post content that demonstrates the PostCard component functionality.
     </Text>
-  </View>
-  <Text
-    style={
-      {
-        "color": "#111827",
-        "fontSize": 14,
-        "lineHeight": 20,
-      }
-    }
-  >
-    This is a sample post content that demonstrates the PostCard component functionality.
-  </Text>
-  <View
-    style={
-      {
-        "alignItems": "center",
-        "flexDirection": "row",
-        "gap": 16,
-        "marginTop": 12,
-      }
-    }
-  >
     <View
-      accessibilityLabel="Like post"
-      accessibilityRole="button"
-      accessibilityState={
-        {
-          "busy": undefined,
-          "checked": undefined,
-          "disabled": false,
-          "expanded": undefined,
-          "selected": false,
-        }
-      }
-      accessibilityValue={
-        {
-          "max": undefined,
-          "min": undefined,
-          "now": undefined,
-          "text": undefined,
-        }
-      }
-      accessible={true}
-      collapsable={false}
-      focusable={true}
-      onBlur={[Function]}
-      onClick={[Function]}
-      onFocus={[Function]}
-      onResponderGrant={[Function]}
-      onResponderMove={[Function]}
-      onResponderRelease={[Function]}
-      onResponderTerminate={[Function]}
-      onResponderTerminationRequest={[Function]}
-      onStartShouldSetResponder={[Function]}
       style={
-        [
-          {
-            "alignItems": "center",
-            "borderColor": "#E5E7EB",
-            "borderRadius": 999,
-            "borderWidth": 1,
-            "justifyContent": "center",
-            "minHeight": 32,
-            "paddingHorizontal": 12,
-          },
-          false,
-          false,
-        ]
+        {
+          "alignItems": "center",
+          "flexDirection": "row",
+          "gap": 16,
+          "marginTop": 12,
+        }
       }
     >
-      <Text
+      <View
+        accessibilityHint="Tap to like this post"
+        accessibilityLabel="Like post. 42 likes"
+        accessibilityRole="button"
+        accessibilityState={
+          {
+            "busy": false,
+            "checked": undefined,
+            "disabled": false,
+            "expanded": undefined,
+            "selected": false,
+          }
+        }
+        accessibilityValue={
+          {
+            "max": undefined,
+            "min": undefined,
+            "now": undefined,
+            "text": undefined,
+          }
+        }
+        accessible={true}
+        collapsable={false}
+        focusable={true}
+        onBlur={[Function]}
+        onClick={[Function]}
+        onFocus={[Function]}
+        onResponderGrant={[Function]}
+        onResponderMove={[Function]}
+        onResponderRelease={[Function]}
+        onResponderTerminate={[Function]}
+        onResponderTerminationRequest={[Function]}
+        onStartShouldSetResponder={[Function]}
         style={
           [
             {
-              "color": "#6B7280",
-              "fontSize": 12,
-              "fontWeight": "700",
+              "alignItems": "center",
+              "borderColor": "#E5E7EB",
+              "borderRadius": 999,
+              "borderWidth": 1,
+              "justifyContent": "center",
+              "minHeight": 32,
+              "paddingHorizontal": 12,
+            },
+            false,
+            false,
+          ]
+        }
+      >
+        <Text
+          style={
+            [
+              {
+                "color": "#6B7280",
+                "fontSize": 12,
+                "fontWeight": "700",
+              },
+              false,
+            ]
+          }
+        >
+          Like
+           
+          42
+        </Text>
+      </View>
+      <View
+        accessibilityHint="Opens the tip sheet"
+        accessibilityLabel="Send tip to john.doe. Currently 0 tips"
+        accessibilityRole="button"
+        accessibilityState={
+          {
+            "busy": undefined,
+            "checked": undefined,
+            "disabled": undefined,
+            "expanded": undefined,
+            "selected": undefined,
+          }
+        }
+        accessibilityValue={
+          {
+            "max": undefined,
+            "min": undefined,
+            "now": undefined,
+            "text": undefined,
+          }
+        }
+        accessible={true}
+        collapsable={false}
+        focusable={true}
+        onBlur={[Function]}
+        onClick={[Function]}
+        onFocus={[Function]}
+        onResponderGrant={[Function]}
+        onResponderMove={[Function]}
+        onResponderRelease={[Function]}
+        onResponderTerminate={[Function]}
+        onResponderTerminationRequest={[Function]}
+        onStartShouldSetResponder={[Function]}
+        style={
+          [
+            {
+              "alignItems": "center",
+              "borderRadius": 999,
+              "justifyContent": "center",
+              "minHeight": 32,
+              "paddingHorizontal": 12,
             },
             false,
           ]
         }
       >
-        Like
-         
-        42
-      </Text>
+        <Text
+          style={
+            {
+              "color": "#6B7280",
+              "fontSize": 12,
+              "fontWeight": "700",
+            }
+          }
+        >
+          Tips 
+          0
+        </Text>
+      </View>
     </View>
-    <Text
-      style={
-        {
-          "color": "#6B7280",
-          "fontSize": 12,
-          "fontWeight": "700",
-        }
-      }
-    >
-      Tips 
-      0
-    </Text>
   </View>
+  <Modal
+    animationType="slide"
+    hardwareAccelerated={false}
+    onRequestClose={[Function]}
+    transparent={true}
+    visible={false}
+  />
 </View>
 `;
 
 exports[`PostCard Snapshots renders with long content correctly 1`] = `
-<View
-  accessibilityLabel="Post by john.doe"
-  accessibilityRole="button"
-  accessibilityState={
-    {
-      "busy": undefined,
-      "checked": undefined,
-      "disabled": undefined,
-      "expanded": undefined,
-      "selected": undefined,
-    }
-  }
-  accessibilityValue={
-    {
-      "max": undefined,
-      "min": undefined,
-      "now": undefined,
-      "text": undefined,
-    }
-  }
-  accessible={true}
-  collapsable={false}
-  focusable={true}
-  onClick={[Function]}
-  onResponderGrant={[Function]}
-  onResponderMove={[Function]}
-  onResponderRelease={[Function]}
-  onResponderTerminate={[Function]}
-  onResponderTerminationRequest={[Function]}
-  onStartShouldSetResponder={[Function]}
-  style={
-    {
-      "backgroundColor": "#F9FAFB",
-      "borderColor": "#E5E7EB",
-      "borderRadius": 12,
-      "borderWidth": 1,
-      "marginHorizontal": 16,
-      "marginVertical": 6,
-      "opacity": 1,
-      "padding": 16,
-    }
-  }
->
+<View>
   <View
+    accessibilityHint="Opens post details"
+    accessibilityLabel="Post by john.doe"
+    accessibilityRole="button"
+    accessibilityState={
+      {
+        "busy": undefined,
+        "checked": undefined,
+        "disabled": undefined,
+        "expanded": undefined,
+        "selected": undefined,
+      }
+    }
+    accessibilityValue={
+      {
+        "max": undefined,
+        "min": undefined,
+        "now": undefined,
+        "text": undefined,
+      }
+    }
+    accessible={true}
+    collapsable={false}
+    focusable={true}
+    onClick={[Function]}
+    onResponderGrant={[Function]}
+    onResponderMove={[Function]}
+    onResponderRelease={[Function]}
+    onResponderTerminate={[Function]}
+    onResponderTerminationRequest={[Function]}
+    onStartShouldSetResponder={[Function]}
     style={
       {
-        "alignItems": "center",
-        "flexDirection": "row",
-        "marginBottom": 10,
+        "backgroundColor": "#F9FAFB",
+        "borderColor": "#E5E7EB",
+        "borderRadius": 12,
+        "borderWidth": 1,
+        "marginHorizontal": 16,
+        "marginVertical": 6,
+        "opacity": 1,
+        "padding": 16,
       }
     }
   >
@@ -278,220 +329,278 @@ exports[`PostCard Snapshots renders with long content correctly 1`] = `
       style={
         {
           "alignItems": "center",
-          "backgroundColor": "#7C3AED",
-          "borderRadius": 20,
-          "height": 40,
-          "justifyContent": "center",
-          "marginRight": 10,
-          "width": 40,
+          "flexDirection": "row",
+          "marginBottom": 10,
         }
       }
     >
-      <Text
+      <View
         style={
           {
-            "color": "#FFFFFF",
-            "fontSize": 16,
-            "fontWeight": "700",
+            "alignItems": "center",
+            "backgroundColor": "#7C3AED",
+            "borderRadius": 20,
+            "height": 40,
+            "justifyContent": "center",
+            "marginRight": 10,
+            "width": 40,
           }
         }
       >
-        J
-      </Text>
-    </View>
-    <View
-      style={
-        {
-          "flex": 1,
-        }
-      }
-    >
-      <Text
+        <Text
+          style={
+            {
+              "color": "#FFFFFF",
+              "fontSize": 16,
+              "fontWeight": "700",
+            }
+          }
+        >
+          J
+        </Text>
+      </View>
+      <View
         style={
           {
-            "color": "#111827",
-            "fontSize": 14,
-            "fontWeight": "600",
+            "flex": 1,
           }
         }
       >
-        john.doe
-      </Text>
+        <Text
+          style={
+            {
+              "color": "#111827",
+              "fontSize": 14,
+              "fontWeight": "600",
+            }
+          }
+        >
+          john.doe
+        </Text>
+        <Text
+          style={
+            {
+              "color": "#6B7280",
+              "fontFamily": "monospace",
+              "fontSize": 11,
+            }
+          }
+        >
+          GABCD1...WXYZ
+        </Text>
+      </View>
       <Text
         style={
           {
             "color": "#6B7280",
-            "fontFamily": "monospace",
             "fontSize": 11,
           }
         }
       >
-        GABCD1...WXYZ
+        954d ago
       </Text>
     </View>
     <Text
       style={
         {
-          "color": "#6B7280",
-          "fontSize": 11,
+          "color": "#111827",
+          "fontSize": 14,
+          "lineHeight": 20,
         }
       }
     >
-      930d ago
+      This is a very long post content that spans multiple lines and demonstrates how the PostCard component handles longer text content. It should wrap properly and maintain good readability across different screen sizes.
     </Text>
-  </View>
-  <Text
-    style={
-      {
-        "color": "#111827",
-        "fontSize": 14,
-        "lineHeight": 20,
-      }
-    }
-  >
-    This is a very long post content that spans multiple lines and demonstrates how the PostCard component handles longer text content. It should wrap properly and maintain good readability across different screen sizes.
-  </Text>
-  <View
-    style={
-      {
-        "alignItems": "center",
-        "flexDirection": "row",
-        "gap": 16,
-        "marginTop": 12,
-      }
-    }
-  >
     <View
-      accessibilityLabel="Like post"
-      accessibilityRole="button"
-      accessibilityState={
-        {
-          "busy": undefined,
-          "checked": undefined,
-          "disabled": false,
-          "expanded": undefined,
-          "selected": false,
-        }
-      }
-      accessibilityValue={
-        {
-          "max": undefined,
-          "min": undefined,
-          "now": undefined,
-          "text": undefined,
-        }
-      }
-      accessible={true}
-      collapsable={false}
-      focusable={true}
-      onBlur={[Function]}
-      onClick={[Function]}
-      onFocus={[Function]}
-      onResponderGrant={[Function]}
-      onResponderMove={[Function]}
-      onResponderRelease={[Function]}
-      onResponderTerminate={[Function]}
-      onResponderTerminationRequest={[Function]}
-      onStartShouldSetResponder={[Function]}
       style={
-        [
-          {
-            "alignItems": "center",
-            "borderColor": "#E5E7EB",
-            "borderRadius": 999,
-            "borderWidth": 1,
-            "justifyContent": "center",
-            "minHeight": 32,
-            "paddingHorizontal": 12,
-          },
-          false,
-          false,
-        ]
+        {
+          "alignItems": "center",
+          "flexDirection": "row",
+          "gap": 16,
+          "marginTop": 12,
+        }
       }
     >
-      <Text
+      <View
+        accessibilityHint="Tap to like this post"
+        accessibilityLabel="Like post. 42 likes"
+        accessibilityRole="button"
+        accessibilityState={
+          {
+            "busy": false,
+            "checked": undefined,
+            "disabled": false,
+            "expanded": undefined,
+            "selected": false,
+          }
+        }
+        accessibilityValue={
+          {
+            "max": undefined,
+            "min": undefined,
+            "now": undefined,
+            "text": undefined,
+          }
+        }
+        accessible={true}
+        collapsable={false}
+        focusable={true}
+        onBlur={[Function]}
+        onClick={[Function]}
+        onFocus={[Function]}
+        onResponderGrant={[Function]}
+        onResponderMove={[Function]}
+        onResponderRelease={[Function]}
+        onResponderTerminate={[Function]}
+        onResponderTerminationRequest={[Function]}
+        onStartShouldSetResponder={[Function]}
         style={
           [
             {
-              "color": "#6B7280",
-              "fontSize": 12,
-              "fontWeight": "700",
+              "alignItems": "center",
+              "borderColor": "#E5E7EB",
+              "borderRadius": 999,
+              "borderWidth": 1,
+              "justifyContent": "center",
+              "minHeight": 32,
+              "paddingHorizontal": 12,
+            },
+            false,
+            false,
+          ]
+        }
+      >
+        <Text
+          style={
+            [
+              {
+                "color": "#6B7280",
+                "fontSize": 12,
+                "fontWeight": "700",
+              },
+              false,
+            ]
+          }
+        >
+          Like
+           
+          42
+        </Text>
+      </View>
+      <View
+        accessibilityHint="Opens the tip sheet"
+        accessibilityLabel="Send tip to john.doe. Currently 0 tips"
+        accessibilityRole="button"
+        accessibilityState={
+          {
+            "busy": undefined,
+            "checked": undefined,
+            "disabled": undefined,
+            "expanded": undefined,
+            "selected": undefined,
+          }
+        }
+        accessibilityValue={
+          {
+            "max": undefined,
+            "min": undefined,
+            "now": undefined,
+            "text": undefined,
+          }
+        }
+        accessible={true}
+        collapsable={false}
+        focusable={true}
+        onBlur={[Function]}
+        onClick={[Function]}
+        onFocus={[Function]}
+        onResponderGrant={[Function]}
+        onResponderMove={[Function]}
+        onResponderRelease={[Function]}
+        onResponderTerminate={[Function]}
+        onResponderTerminationRequest={[Function]}
+        onStartShouldSetResponder={[Function]}
+        style={
+          [
+            {
+              "alignItems": "center",
+              "borderRadius": 999,
+              "justifyContent": "center",
+              "minHeight": 32,
+              "paddingHorizontal": 12,
             },
             false,
           ]
         }
       >
-        Like
-         
-        42
-      </Text>
+        <Text
+          style={
+            {
+              "color": "#6B7280",
+              "fontSize": 12,
+              "fontWeight": "700",
+            }
+          }
+        >
+          Tips 
+          0
+        </Text>
+      </View>
     </View>
-    <Text
-      style={
-        {
-          "color": "#6B7280",
-          "fontSize": 12,
-          "fontWeight": "700",
-        }
-      }
-    >
-      Tips 
-      0
-    </Text>
   </View>
+  <Modal
+    animationType="slide"
+    hardwareAccelerated={false}
+    onRequestClose={[Function]}
+    transparent={true}
+    visible={false}
+  />
 </View>
 `;
 
 exports[`PostCard Snapshots renders with zero likes correctly 1`] = `
-<View
-  accessibilityLabel="Post by john.doe"
-  accessibilityRole="button"
-  accessibilityState={
-    {
-      "busy": undefined,
-      "checked": undefined,
-      "disabled": undefined,
-      "expanded": undefined,
-      "selected": undefined,
-    }
-  }
-  accessibilityValue={
-    {
-      "max": undefined,
-      "min": undefined,
-      "now": undefined,
-      "text": undefined,
-    }
-  }
-  accessible={true}
-  collapsable={false}
-  focusable={true}
-  onClick={[Function]}
-  onResponderGrant={[Function]}
-  onResponderMove={[Function]}
-  onResponderRelease={[Function]}
-  onResponderTerminate={[Function]}
-  onResponderTerminationRequest={[Function]}
-  onStartShouldSetResponder={[Function]}
-  style={
-    {
-      "backgroundColor": "#F9FAFB",
-      "borderColor": "#E5E7EB",
-      "borderRadius": 12,
-      "borderWidth": 1,
-      "marginHorizontal": 16,
-      "marginVertical": 6,
-      "opacity": 1,
-      "padding": 16,
-    }
-  }
->
+<View>
   <View
+    accessibilityHint="Opens post details"
+    accessibilityLabel="Post by john.doe"
+    accessibilityRole="button"
+    accessibilityState={
+      {
+        "busy": undefined,
+        "checked": undefined,
+        "disabled": undefined,
+        "expanded": undefined,
+        "selected": undefined,
+      }
+    }
+    accessibilityValue={
+      {
+        "max": undefined,
+        "min": undefined,
+        "now": undefined,
+        "text": undefined,
+      }
+    }
+    accessible={true}
+    collapsable={false}
+    focusable={true}
+    onClick={[Function]}
+    onResponderGrant={[Function]}
+    onResponderMove={[Function]}
+    onResponderRelease={[Function]}
+    onResponderTerminate={[Function]}
+    onResponderTerminationRequest={[Function]}
+    onStartShouldSetResponder={[Function]}
     style={
       {
-        "alignItems": "center",
-        "flexDirection": "row",
-        "marginBottom": 10,
+        "backgroundColor": "#F9FAFB",
+        "borderColor": "#E5E7EB",
+        "borderRadius": 12,
+        "borderWidth": 1,
+        "marginHorizontal": 16,
+        "marginVertical": 6,
+        "opacity": 1,
+        "padding": 16,
       }
     }
   >
@@ -499,166 +608,231 @@ exports[`PostCard Snapshots renders with zero likes correctly 1`] = `
       style={
         {
           "alignItems": "center",
-          "backgroundColor": "#7C3AED",
-          "borderRadius": 20,
-          "height": 40,
-          "justifyContent": "center",
-          "marginRight": 10,
-          "width": 40,
+          "flexDirection": "row",
+          "marginBottom": 10,
         }
       }
     >
-      <Text
+      <View
         style={
           {
-            "color": "#FFFFFF",
-            "fontSize": 16,
-            "fontWeight": "700",
+            "alignItems": "center",
+            "backgroundColor": "#7C3AED",
+            "borderRadius": 20,
+            "height": 40,
+            "justifyContent": "center",
+            "marginRight": 10,
+            "width": 40,
           }
         }
       >
-        J
-      </Text>
-    </View>
-    <View
-      style={
-        {
-          "flex": 1,
-        }
-      }
-    >
-      <Text
+        <Text
+          style={
+            {
+              "color": "#FFFFFF",
+              "fontSize": 16,
+              "fontWeight": "700",
+            }
+          }
+        >
+          J
+        </Text>
+      </View>
+      <View
         style={
           {
-            "color": "#111827",
-            "fontSize": 14,
-            "fontWeight": "600",
+            "flex": 1,
           }
         }
       >
-        john.doe
-      </Text>
+        <Text
+          style={
+            {
+              "color": "#111827",
+              "fontSize": 14,
+              "fontWeight": "600",
+            }
+          }
+        >
+          john.doe
+        </Text>
+        <Text
+          style={
+            {
+              "color": "#6B7280",
+              "fontFamily": "monospace",
+              "fontSize": 11,
+            }
+          }
+        >
+          GABCD1...WXYZ
+        </Text>
+      </View>
       <Text
         style={
           {
             "color": "#6B7280",
-            "fontFamily": "monospace",
             "fontSize": 11,
           }
         }
       >
-        GABCD1...WXYZ
+        954d ago
       </Text>
     </View>
     <Text
       style={
         {
-          "color": "#6B7280",
-          "fontSize": 11,
+          "color": "#111827",
+          "fontSize": 14,
+          "lineHeight": 20,
         }
       }
     >
-      930d ago
+      This is a sample post content that demonstrates the PostCard component functionality.
     </Text>
-  </View>
-  <Text
-    style={
-      {
-        "color": "#111827",
-        "fontSize": 14,
-        "lineHeight": 20,
-      }
-    }
-  >
-    This is a sample post content that demonstrates the PostCard component functionality.
-  </Text>
-  <View
-    style={
-      {
-        "alignItems": "center",
-        "flexDirection": "row",
-        "gap": 16,
-        "marginTop": 12,
-      }
-    }
-  >
     <View
-      accessibilityLabel="Like post"
-      accessibilityRole="button"
-      accessibilityState={
-        {
-          "busy": undefined,
-          "checked": undefined,
-          "disabled": false,
-          "expanded": undefined,
-          "selected": false,
-        }
-      }
-      accessibilityValue={
-        {
-          "max": undefined,
-          "min": undefined,
-          "now": undefined,
-          "text": undefined,
-        }
-      }
-      accessible={true}
-      collapsable={false}
-      focusable={true}
-      onBlur={[Function]}
-      onClick={[Function]}
-      onFocus={[Function]}
-      onResponderGrant={[Function]}
-      onResponderMove={[Function]}
-      onResponderRelease={[Function]}
-      onResponderTerminate={[Function]}
-      onResponderTerminationRequest={[Function]}
-      onStartShouldSetResponder={[Function]}
       style={
-        [
-          {
-            "alignItems": "center",
-            "borderColor": "#E5E7EB",
-            "borderRadius": 999,
-            "borderWidth": 1,
-            "justifyContent": "center",
-            "minHeight": 32,
-            "paddingHorizontal": 12,
-          },
-          false,
-          false,
-        ]
+        {
+          "alignItems": "center",
+          "flexDirection": "row",
+          "gap": 16,
+          "marginTop": 12,
+        }
       }
     >
-      <Text
+      <View
+        accessibilityHint="Tap to like this post"
+        accessibilityLabel="Like post. 0 likes"
+        accessibilityRole="button"
+        accessibilityState={
+          {
+            "busy": false,
+            "checked": undefined,
+            "disabled": false,
+            "expanded": undefined,
+            "selected": false,
+          }
+        }
+        accessibilityValue={
+          {
+            "max": undefined,
+            "min": undefined,
+            "now": undefined,
+            "text": undefined,
+          }
+        }
+        accessible={true}
+        collapsable={false}
+        focusable={true}
+        onBlur={[Function]}
+        onClick={[Function]}
+        onFocus={[Function]}
+        onResponderGrant={[Function]}
+        onResponderMove={[Function]}
+        onResponderRelease={[Function]}
+        onResponderTerminate={[Function]}
+        onResponderTerminationRequest={[Function]}
+        onStartShouldSetResponder={[Function]}
         style={
           [
             {
-              "color": "#6B7280",
-              "fontSize": 12,
-              "fontWeight": "700",
+              "alignItems": "center",
+              "borderColor": "#E5E7EB",
+              "borderRadius": 999,
+              "borderWidth": 1,
+              "justifyContent": "center",
+              "minHeight": 32,
+              "paddingHorizontal": 12,
+            },
+            false,
+            false,
+          ]
+        }
+      >
+        <Text
+          style={
+            [
+              {
+                "color": "#6B7280",
+                "fontSize": 12,
+                "fontWeight": "700",
+              },
+              false,
+            ]
+          }
+        >
+          Like
+           
+          0
+        </Text>
+      </View>
+      <View
+        accessibilityHint="Opens the tip sheet"
+        accessibilityLabel="Send tip to john.doe. Currently 0 tips"
+        accessibilityRole="button"
+        accessibilityState={
+          {
+            "busy": undefined,
+            "checked": undefined,
+            "disabled": undefined,
+            "expanded": undefined,
+            "selected": undefined,
+          }
+        }
+        accessibilityValue={
+          {
+            "max": undefined,
+            "min": undefined,
+            "now": undefined,
+            "text": undefined,
+          }
+        }
+        accessible={true}
+        collapsable={false}
+        focusable={true}
+        onBlur={[Function]}
+        onClick={[Function]}
+        onFocus={[Function]}
+        onResponderGrant={[Function]}
+        onResponderMove={[Function]}
+        onResponderRelease={[Function]}
+        onResponderTerminate={[Function]}
+        onResponderTerminationRequest={[Function]}
+        onStartShouldSetResponder={[Function]}
+        style={
+          [
+            {
+              "alignItems": "center",
+              "borderRadius": 999,
+              "justifyContent": "center",
+              "minHeight": 32,
+              "paddingHorizontal": 12,
             },
             false,
           ]
         }
       >
-        Like
-         
-        0
-      </Text>
+        <Text
+          style={
+            {
+              "color": "#6B7280",
+              "fontSize": 12,
+              "fontWeight": "700",
+            }
+          }
+        >
+          Tips 
+          0
+        </Text>
+      </View>
     </View>
-    <Text
-      style={
-        {
-          "color": "#6B7280",
-          "fontSize": 12,
-          "fontWeight": "700",
-        }
-      }
-    >
-      Tips 
-      0
-    </Text>
   </View>
+  <Modal
+    animationType="slide"
+    hardwareAccelerated={false}
+    onRequestClose={[Function]}
+    transparent={true}
+    visible={false}
+  />
 </View>
 `;
