@@ -6,10 +6,23 @@ import { createPostsRouter } from "./routes/posts";
 import { createFollowsRouter } from "./routes/follows";
 import { createPoolsRouter } from "./routes/pools";
 
-// ── Rate-limit configuration (all values are env-overridable) ────────────────
+// ── Runtime configuration (all values are env-overridable) ─────────────────
 
-const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS ?? "60000", 10);
-const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX ?? "100", 10);
+function parseEnvNumber(name: string, defaultValue: number): number {
+  const value = process.env[name];
+  if (!value) return defaultValue;
+  const parsed = parseInt(value, 10);
+  if (isNaN(parsed) || parsed < 0) {
+    throw new Error(`Invalid numeric value for environment variable: ${name}`);
+  }
+  return parsed;
+}
+
+const HOST = process.env.HOST ?? "0.0.0.0";
+const PORT = parseEnvNumber("PORT", 3000);
+const TRUST_PROXY = process.env.TRUST_PROXY ?? "0";
+const RATE_LIMIT_WINDOW_MS = parseEnvNumber("RATE_LIMIT_WINDOW_MS", 60000);
+const RATE_LIMIT_MAX = parseEnvNumber("RATE_LIMIT_MAX", 100);
 
 // ── Rate limiter middleware ───────────────────────────────────────────────────
 
@@ -43,6 +56,10 @@ const apiLimiter = rateLimit({
 export function createApp(db: Database): express.Application {
   const app = express();
   app.use(express.json());
+
+  if (TRUST_PROXY !== "") {
+    app.set("trust proxy", TRUST_PROXY);
+  }
 
   // Apply rate limiting to all /api routes.
   app.use("/api", apiLimiter);
@@ -144,14 +161,4 @@ const _stub = {} as any;
 export const app = createApp(_stub);
 export { apiLimiter };
 
-// ── Server bootstrap (skipped when imported in tests) ────────────────────────
-
-if (require.main === module) {
-  const PORT = parseInt(process.env.PORT ?? "3001", 10);
-  app.listen(PORT, () => {
-    console.log(`Indexer API listening on port ${PORT}`);
-    console.log(
-      `Rate limit: ${RATE_LIMIT_MAX} requests per ${RATE_LIMIT_WINDOW_MS / 1000}s per IP`
-    );
-  });
-}
+// Server is now started from the main index.ts entry point
