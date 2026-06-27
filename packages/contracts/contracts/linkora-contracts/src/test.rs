@@ -1662,6 +1662,57 @@ fn test_set_fee_non_admin_panics() {
     client.set_fee(&100);
 }
 
+#[test]
+#[should_panic]
+fn test_set_treasury_non_admin_panics() {
+    let env = Env::default();
+    // Don't mock all auths so we can test auth failure
+    let (client, _admin, _) = setup_contract(&env);
+    let new_treasury = Address::generate(&env);
+
+    // Non-admin trying to set treasury should panic due to auth failure
+    client.set_treasury(&new_treasury);
+}
+
+// ── Issue #84: username lookup and uniqueness tests ───────────────────────────
+
+#[test]
+fn test_get_address_by_username_nonexistent() {
+    // Looking up a username that has never been registered must return None.
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    assert!(client
+        .get_address_by_username(&String::from_str(&env, "nobody"))
+        .is_none());
+}
+
+#[test]
+fn test_get_address_by_username_after_profile_deleted() {
+    // After a profile is deleted, its username must no longer resolve.
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let token = make_token(&env);
+    client.set_profile(&user, &String::from_str(&env, "temp_user"), &token);
+
+    assert!(client
+        .get_address_by_username(&String::from_str(&env, "temp_user"))
+        .is_some());
+
+    client.delete_profile(&user);
+
+    assert!(client
+        .get_address_by_username(&String::from_str(&env, "temp_user"))
+        .is_none());
+}
+
+// ── Fee & Treasury authorization tests (issue #83) ────────────────────────────
+// (test_set_fee_non_admin_panics and test_set_treasury_non_admin_panics above)
+
 // ── Username validation tests (issue #195) ───────────────────────────────────────
 
 #[test]

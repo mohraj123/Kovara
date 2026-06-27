@@ -15,6 +15,7 @@
 
 import { Pool } from "pg";
 import { streamEvents, RawEvent } from "./stream";
+import { runMigrations } from "./migrate";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -106,6 +107,7 @@ async function main(): Promise<void> {
   console.log(`[indexer] From ledger: ${START_LEDGER}`);
 
   await ensureEventsTable();
+  await runMigrations(pgPool);
 
   await streamEvents(
     {

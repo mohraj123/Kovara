@@ -25,6 +25,11 @@ export type WalletState = "loading" | "disconnected" | "connecting" | "connected
 
 export type WalletProviderKind = "freighter" | "walletconnect";
 
+export interface WalletAvailability {
+  freighter: boolean;
+  walletconnect: boolean;
+}
+
 export type WalletNetwork = StellarNetworkId;
 
 export interface WalletInfo {
@@ -166,6 +171,8 @@ export interface WalletContextType {
   disconnect: () => Promise<void>;
   refresh: () => Promise<void>;
   setNetwork: (network: WalletNetwork) => void;
+  /** Wallet adapter availability detected at runtime */
+  availability: WalletAvailability;
 }
 
 const WalletContext = createContext<WalletContextType | null>(null);
@@ -181,6 +188,11 @@ export function WalletProvider({ children }: { children: ReactNode }): JSX.Eleme
   });
   const [error, setError] = useState<string | null>(null);
 
+  const [availability, setAvailability] = useState<WalletAvailability>({
+    freighter: false,
+    walletconnect: false,
+  });
+
   const [walletKit, setWalletKit] = useState<WalletConnectLike | null>(
     () => globalThis.__Kovara_WALLET_KIT__ ?? null
   );
@@ -192,6 +204,9 @@ export function WalletProvider({ children }: { children: ReactNode }): JSX.Eleme
       try {
         if (globalThis.__Kovara_WALLET_KIT__) {
           setWalletKit(globalThis.__Kovara_WALLET_KIT__);
+          if (!cancelled) {
+            setAvailability((prev) => ({ ...prev, walletconnect: true }));
+          }
           return;
         }
 
@@ -202,6 +217,7 @@ export function WalletProvider({ children }: { children: ReactNode }): JSX.Eleme
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (globalThis as any).__Kovara_WALLET_KIT__ = adapter;
           setWalletKit(adapter);
+          setAvailability((prev) => ({ ...prev, walletconnect: true }));
         }
       } catch {
         if (!cancelled) {
@@ -215,6 +231,28 @@ export function WalletProvider({ children }: { children: ReactNode }): JSX.Eleme
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // Detect Freighter availability
+  useEffect(() => {
+    let cancelled = false;
+
+    const detectFreighter = async () => {
+      try {
+        await importFreighterApi();
+        if (!cancelled) {
+          setAvailability((prev) => ({ ...prev, freighter: true }));
+        }
+      } catch {
+        // Freighter not installed — leave as false
+      }
+    };
+
+    detectFreighter();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const importFreighterApi = useCallback(async () => {
@@ -386,6 +424,7 @@ export function WalletProvider({ children }: { children: ReactNode }): JSX.Eleme
     disconnect,
     refresh,
     setNetwork,
+    availability,
   };
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
