@@ -1,7 +1,53 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { useToast } from "../context/ToastContext";
+import { KovaraClient } from "../../../packages/sdk/src/client";
+import { useNetwork } from "./useNetwork";
 import { useWallet } from "./useWallet";
+import { useToast } from "../context/ToastContext";
+
+// ── SDK-backed like/unlike transactions ─────────────────────────────────────
+
+async function contractLikePost(liker: string, postId: number, rpcUrl: string, contractId: string): Promise<void> {
+  const client = new KovaraClient({ contractId, rpcUrl });
+  const xdrEnv = client.like(liker, postId);
+
+  const kit = (
+    globalThis as unknown as {
+      __Kovara_WALLET_KIT__?: {
+        signAndSubmitTransaction: (opts: { txXdr: string }) => Promise<{ hash?: string; txHash?: string }>;
+      };
+    }
+  ).__Kovara_WALLET_KIT__;
+
+  if (kit && typeof kit.signAndSubmitTransaction === "function") {
+    const res = await kit.signAndSubmitTransaction({ txXdr: xdrEnv });
+    const txHash = res?.hash ?? res?.txHash;
+    if (!txHash) throw new Error("Transaction not confirmed");
+  } else {
+    throw new Error("Wallet signing not available");
+  }
+}
+
+async function contractUnlikePost(liker: string, postId: number, rpcUrl: string, contractId: string): Promise<void> {
+  const client = new KovaraClient({ contractId, rpcUrl });
+  const xdrEnv = client.unlike(liker, postId);
+
+  const kit = (
+    globalThis as unknown as {
+      __Kovara_WALLET_KIT__?: {
+        signAndSubmitTransaction: (opts: { txXdr: string }) => Promise<{ hash?: string; txHash?: string }>;
+      };
+    }
+  ).__Kovara_WALLET_KIT__;
+
+  if (kit && typeof kit.signAndSubmitTransaction === "function") {
+    const res = await kit.signAndSubmitTransaction({ txXdr: xdrEnv });
+    const txHash = res?.hash ?? res?.txHash;
+    if (!txHash) throw new Error("Transaction not confirmed");
+  } else {
+    throw new Error("Wallet signing not available");
+  }
+}
 
 export interface UseLikeOptions {
   postId: number | string;
@@ -15,11 +61,7 @@ export interface UseLikeResult {
   pending: boolean;
   error: string | null;
   like: () => Promise<boolean>;
-}
-
-async function likePostTransaction(_liker: string, _postId: number | string): Promise<void> {
-  // Replace with the SDK-backed `like_post(liker, postId)` submission once signing is wired.
-  await new Promise<void>((resolve) => setTimeout(resolve, 500));
+  unlike: () => Promise<boolean>;
 }
 
 export function useLike({
@@ -28,6 +70,7 @@ export function useLike({
   initialLikeCount,
 }: UseLikeOptions): UseLikeResult {
   const { address, connected } = useWallet();
+  const { rpcUrl, contractId } = useNetwork();
   const { showError } = useToast();
   const [liked, setLiked] = useState(initialHasLiked);
   const [likeCount, setLikeCount] = useState(initialLikeCount);
@@ -45,7 +88,7 @@ export function useLike({
     setLikeCount(initialLikeCount);
     setPending(false);
     setError(null);
-  }, [initialHasLiked, initialLikeCount, postId]);
+  }, [postId, initialHasLiked, initialLikeCount]);
 
   const like = useCallback(async (): Promise<boolean> => {
     if (liked || pending) {
@@ -65,7 +108,7 @@ export function useLike({
     setLikeCount((current) => current + 1);
 
     try {
-      await likePostTransaction(address, postId);
+      await contractLikePost(address, Number(postId), rpcUrl, contractId);
       return true;
     } catch (err) {
       setLiked(false);
@@ -77,9 +120,39 @@ export function useLike({
     } finally {
       setPending(false);
     }
-  }, [address, connected, liked, pending, postId, showError]);
+  }, [address, connected, liked, pending, postId, rpcUrl, contractId, showError]);
 
-  return { liked, likeCount, pending, error, like };
+  const unlike = useCallback(async (): Promise<boolean> => {
+    if (!liked || pending) {
+      return false;
+    }
+
+    if (!connected || !address) {
+      const message = "Connect your wallet to unlike posts.";
+      setError(message);
+      showError(message);
+      return false;
+    }
+
+    setPending(true);
+    setError(null);
+    setLiked(false);
+    setLikeCount((current) => Math.max(0, current - 1));
+
+    try {
+      await contractUnlikePost(address, Number(postId), rpcUrl, contractId);
+      return true;
+    } catch (err) {
+      setLiked(true);
+      setLikeCount((current) => current + 1);
+      const message = err instanceof Error ? err.message : "Failed to unlike post.";
+      setError(message);
+      showError(message);
+      return false;
+    } finally {
+      setPending(false);
+    }
+  }, [address, connected, liked, pending, postId, rpcUrl, contractId, showError]);
+
+  return { liked, likeCount, pending, error, like, unlike };
 }
-
-export { likePostTransaction };

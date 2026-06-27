@@ -15,7 +15,8 @@ export default function ConnectScreen() {
   const router = useRouter();
   const { theme } = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
-  const { address, connected, disconnect, connect, error, state, wallet } = useWallet();
+  const { address, connected, disconnect, connect, error, state, wallet, availability } =
+    useWallet();
 
   const handleConnect = async (provider: WalletProviderKind) => {
     await connect(provider);
@@ -24,6 +25,9 @@ export default function ConnectScreen() {
   const handleDisconnect = async () => {
     await disconnect();
   };
+
+  const providerLabel = wallet.provider === "freighter" ? "Freighter" : "WalletConnect";
+  const hasAnyWallet = availability.freighter || availability.walletconnect;
 
   return (
     <View style={styles.container}>
@@ -35,15 +39,28 @@ export default function ConnectScreen() {
         </Text>
 
         {connected && address ? (
-          <View style={styles.connectedPanel}>
+          <View
+            style={styles.connectedPanel}
+            accessibilityRole="summary"
+            accessibilityLabel={`Wallet connected. Address ${shortAddress(address)}. Provider ${providerLabel}.`}
+          >
             <Text style={styles.panelLabel}>Connected address</Text>
-            <Text style={styles.address}>{shortAddress(address)}</Text>
-            <Text style={styles.provider}>
-              {wallet.provider === "freighter" ? "Freighter" : "WalletConnect"}
+            <Text
+              style={styles.address}
+              accessibilityLabel={`Wallet address ${shortAddress(address)}`}
+            >
+              {shortAddress(address)}
+            </Text>
+            <Text
+              style={styles.provider}
+              accessibilityLabel={`Active wallet provider ${providerLabel}`}
+            >
+              {providerLabel}
             </Text>
             <WalletButton
               label="Continue"
               accessibilityLabel="Continue to feed"
+              accessibilityHint="Closes the connect screen and opens the main feed"
               onPress={() => router.replace("/(tabs)/feed")}
               state={state}
               style={styles.action}
@@ -51,16 +68,18 @@ export default function ConnectScreen() {
             <WalletButton
               label="Disconnect"
               accessibilityLabel="Disconnect wallet"
+              accessibilityHint="Disconnects your wallet and returns to wallet picker"
               onPress={handleDisconnect}
               state={state}
               variant="danger"
             />
           </View>
         ) : (
-          <View style={styles.buttonStack}>
+          <View style={styles.buttonStack} accessibilityRole="none">
             <WalletButton
               label="Connect Freighter"
               accessibilityLabel="Connect with Freighter wallet"
+              accessibilityHint="Pairs with the Freighter browser extension"
               onPress={() => handleConnect("freighter")}
               provider="freighter"
               state={state}
@@ -68,16 +87,70 @@ export default function ConnectScreen() {
             <WalletButton
               label="Connect WalletConnect"
               accessibilityLabel="Connect with WalletConnect wallet"
+              accessibilityHint="Opens a QR code to pair with a mobile Stellar wallet"
               onPress={() => handleConnect("walletconnect")}
               provider="walletconnect"
               state={state}
               variant="secondary"
             />
+          <View style={styles.buttonStack}>
+            {availability.freighter ? (
+              <WalletButton
+                label="Connect Freighter"
+                accessibilityLabel="Connect with Freighter wallet"
+                onPress={() => handleConnect("freighter")}
+                provider="freighter"
+                state={state}
+              />
+            ) : (
+              <View style={styles.unavailableRow}>
+                <Text style={styles.unavailableText}>
+                  ⚠️ Freighter is not detected — install it for the best desktop experience.
+                </Text>
+              </View>
+            )}
+
+            {availability.walletconnect ? (
+              <WalletButton
+                label="Connect WalletConnect"
+                accessibilityLabel="Connect with WalletConnect wallet"
+                onPress={() => handleConnect("walletconnect")}
+                provider="walletconnect"
+                state={state}
+                variant="secondary"
+              />
+            ) : (
+              <View style={styles.unavailableRow}>
+                <Text style={styles.unavailableText}>
+                  ⚠️ WalletConnect is not available — check your project configuration.
+                </Text>
+              </View>
+            )}
+
+            {!hasAnyWallet && state !== "connecting" && (
+              <View style={styles.guidanceBox} accessibilityRole="alert">
+                <Text style={styles.guidanceTitle}>No wallet detected</Text>
+                <Text style={styles.guidanceText}>
+                  To get started, install a Stellar wallet:
+                </Text>
+                <Text style={styles.guidanceBullet}>
+                  • Freighter browser extension (desktop)
+                </Text>
+                <Text style={styles.guidanceBullet}>
+                  • Any WalletConnect-compatible mobile wallet
+                </Text>
+              </View>
+            )}
           </View>
         )}
 
         {error ? (
-          <View style={styles.errorBox} accessibilityRole="alert">
+          <View
+            style={styles.errorBox}
+            accessibilityRole="alert"
+            accessibilityLiveRegion="assertive"
+            accessibilityLabel={`Wallet error. ${error}`}
+          >
             <Text style={styles.errorText}>{error}</Text>
           </View>
         ) : null}
@@ -157,6 +230,45 @@ function createStyles(theme: ReturnType<typeof useTheme>["theme"]) {
     errorText: {
       color: theme.colors.semantic.error,
       fontSize: 13,
+    },
+    unavailableRow: {
+      backgroundColor: theme.colors.surface.surface1,
+      borderColor: theme.colors.surface.border,
+      borderWidth: 1,
+      borderRadius: 8,
+      padding: 10,
+      opacity: 0.8,
+    },
+    unavailableText: {
+      color: theme.colors.text.secondary,
+      fontSize: 12,
+      fontStyle: "italic",
+    },
+    guidanceBox: {
+      marginTop: 16,
+      backgroundColor: theme.colors.surface.surface1,
+      borderColor: theme.colors.brand.secondary,
+      borderWidth: 1,
+      borderRadius: 12,
+      padding: 16,
+    },
+    guidanceTitle: {
+      color: theme.colors.text.primary,
+      fontSize: 15,
+      fontWeight: "700",
+      marginBottom: 8,
+    },
+    guidanceText: {
+      color: theme.colors.text.secondary,
+      fontSize: 13,
+      lineHeight: 20,
+      marginBottom: 8,
+    },
+    guidanceBullet: {
+      color: theme.colors.text.secondary,
+      fontSize: 13,
+      lineHeight: 22,
+      paddingLeft: 4,
     },
   });
 }

@@ -65,6 +65,8 @@ pnpm build:contracts
 
 # 4. Run unit tests
 pnpm --filter contracts test
+
+For more details on running web and mobile tests, see the [Testing Guide](docs/testing.md).
 ```
 
 ### Running each workspace package
@@ -74,6 +76,9 @@ pnpm --filter contracts test
 | Contracts (build)  | `packages/contracts` | `pnpm build` or `pnpm build:contracts` from root |
 | Contracts (test)   | `packages/contracts` | `cargo test` or `pnpm --filter contracts test`   |
 | Contracts (format) | `packages/contracts` | `cargo fmt`                                      |
+| Web (test)         | `packages/web`       | `pnpm --filter web test`                         |
+| Web (E2E)          | `packages/web`       | `pnpm --filter web test:e2e`                     |
+| Mobile (test)      | `apps/mobile`        | `pnpm --filter @Kovara/mobile test`              |
 | Integration tests  | repo root            | `pnpm test:integration`                          |
 | Full lint          | repo root            | `pnpm lint`                                      |
 | Format all         | repo root            | `pnpm format`                                    |
@@ -136,9 +141,9 @@ Rules:
 
 Before opening a PR:
 
-- [ ] All tests pass locally (`cargo test` / `pnpm --filter contracts test`)
-- [ ] New behaviour is covered by tests
-- [ ] If a contract function was added or changed, the README API table is updated
+- [ ] All tests pass locally (contracts, web, and/or mobile)
+- [ ] New behaviour is covered by tests (unit and/or E2E)
+- [ ] If a contract function was added or changed, the storage layout, APIs, and the README API table are updated
 - [ ] Commit messages follow Conventional Commits format
 - [ ] Branch is up to date with `main`
 - [ ] PR is focused — one concern per PR
@@ -178,6 +183,28 @@ Before opening a PR:
 4. Write unit tests in `src/test.rs`
 5. Update the API Reference table in `README.md`
 6. Add a changelog entry in `CHANGELOG.md`
+
+---
+
+## Issue Triage and Labels
+
+When opening or triaging an issue, apply the most relevant label(s) from the table below. Correct labelling helps maintainers prioritise work and helps new contributors find good entry points.
+
+| Label              | When to use                                                                                                                                                                                  | Example                                                                                                        |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `bug`              | Something that was working correctly has stopped working, or behaves contrary to its documented behaviour. Include steps to reproduce, expected result, and actual result.                   | `tip()` throws a contract auth error when called by a verified user — regression introduced in #184            |
+| `feature`          | A new capability that does not yet exist. Describe the motivation and the proposed behaviour; a rough API sketch is welcome but not required.                                                | Add a `repost()` contract function that records the original author and emits a `Repost` event for the indexer |
+| `contracts`        | The issue is scoped to the Soroban smart contracts (`packages/contracts`), whether a bug, feature, or refactor. Often combined with `bug` or `feature`.                                      | `block_user` does not prevent a blocked account from liking posts — fix needed in `lib.rs`                     |
+| `good first issue` | Self-contained, well-scoped, and does not require deep knowledge of the codebase. Add this label only when acceptance criteria are clear and a suggested approach exists in the description. | Add a missing unit test for the `follow()` edge case where a user follows themselves                           |
+
+### Tips for good issue reports
+
+- **Bug:** attach any relevant error output, transaction hash, or ledger sequence number.
+- **Feature:** link to prior discussion in Telegram or reference a related issue.
+- **Contracts:** specify the function name and the file (`lib.rs`, `test.rs`, etc.) if known.
+- **Good first issue:** leave a comment describing where in the codebase to start — this dramatically increases the chance someone picks it up.
+
+If you are unsure which label fits, open the issue without one and ask in [Telegram](https://t.me/+13csp8G4ccRhY2Zk) — a maintainer will triage it.
 
 ---
 

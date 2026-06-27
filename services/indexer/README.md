@@ -27,6 +27,101 @@ The indexer listens to Stellar contract events and processes them into a Postgre
 - **LikePostEvent**: Records likes in `likes` table and increments `like_count` on posts
 - Idempotent via `(post_id, user_address)` unique constraint
 
+## Database Migrations
+
+Migrations live in the `migrations/` directory as numbered SQL files (e.g., `001_profiles.sql`).
+On startup, the indexer automatically applies any unapplied migrations in order, tracking
+them in a `schema_version` table.
+
+```bash
+# Manually trigger migrations (if running indexer with --skip-migrations):
+npm run migrate
+```
+
+To add a new migration:
+
+```bash
+touch migrations/006_description.sql
+# Write your DDL, then restart the indexer.
+```
+
+## Schema Versioning
+
+The indexer uses a `schema_version` table to track which migrations have been applied:
+
+```sql
+CREATE TABLE schema_version (
+    version    TEXT        PRIMARY KEY,
+    name       TEXT        NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+## Error Handling
+
+All API routes return structured JSON error responses with an `error` message and a
+machine-readable `code` field:
+
+```json
+{ "error": "Profile not found", "code": "NOT_FOUND" }
+```
+
+| HTTP Status | Code                | Description                     |
+|-------------|---------------------|---------------------------------|
+| 400         | `INVALID_QUERY`     | Invalid query parameters        |
+| 400         | `LIMIT_EXCEEDED`    | Pagination limit too high       |
+| 400         | `INVALID_ADDRESS`   | Missing or malformed address    |
+| 400         | `INVALID_ID`        | Missing or malformed ID         |
+| 404         | `NOT_FOUND`         | Resource not found              |
+| 429         | `RATE_LIMIT_EXCEEDED` | Too many requests per IP      |
+| 500         | `INTERNAL_ERROR`    | Unexpected server error         |
+
+Unhandled errors are logged with request context (`[error] GET /api/profiles/GABC123: ...`)
+and return a generic 500 response.
+
+## Health Check
+
+```bash
+curl http://localhost:3000/health
+```
+
+Returns:
+
+```json
+{ "status": "ok", "uptime": 1234.56 }
+```
+
+## API Routes
+
+### Profiles
+
+- `GET /api/profiles/:address` — Get profile by Stellar address
+
+### Posts
+
+- `GET /api/posts?author=<address>&limit=<n>&offset=<n>` — List posts
+- `GET /api/posts/:id` — Get post by numeric ID
+- `POST /api/search/posts` — Full-text search (body: `{ "query": "...", "limit?", "offset?" }`)
+
+### Follows
+
+- `GET /api/follows/:address/followers?limit=<n>&offset=<n>` — List followers
+- `GET /api/follows/:address/following?limit=<n>&offset=<n>` — List accounts the address follows
+
+### Pools
+
+- `GET /api/pools/:id` — Get pool state by ID
+
+## Running Tests
+
+```bash
+# Run all tests
+npm test
+
+# Run route tests specifically
+npm test -- routes
+```
+
 ## Database Schema
 
 ### Posts Table
@@ -108,16 +203,31 @@ docker compose down -v
 
 See [`.env.example`](.env.example) for all required variables.
 
-| Variable               | Description                            |
-| ---------------------- | -------------------------------------- |
-| `DATABASE_URL`         | PostgreSQL connection string           |
-| `STELLAR_RPC_URL`      | Soroban RPC endpoint                   |
-| `CONTRACT_ID`          | Deployed Kovara contract address       |
-| `START_LEDGER`         | Ledger sequence to start indexing from |
-| `PORT`                 | API port (default: `3000`)             |
-| `RATE_LIMIT_WINDOW_MS` | Rate-limit window in ms (default: 60000) |
-| `RATE_LIMIT_MAX`       | Max requests per window (default: 100) |
+| Variable               | Description                                                         |
+| ---------------------- | ------------------------------------------------------------------- |
+| `DATABASE_URL`         | PostgreSQL connection string                                        |
+| `STELLAR_RPC_URL`      | Soroban RPC endpoint                                                |
+| `CONTRACT_ID`          | Deployed Kovara contract address                                    |
+| `START_LEDGER`         | Ledger sequence to start indexing from                              |
+| `HOST`                 | Bind address for the API server (recommended: `0.0.0.0`)            |
+| `PORT`                 | API port (default: `3000`)                                          |
+| `TRUST_PROXY`          | Express trust-proxy setting; set to `1` only behind a trusted proxy |
+| `RATE_LIMIT_WINDOW_MS` | Rate-limit window in milliseconds (default: `60000`)                |
+| `RATE_LIMIT_MAX`       | Maximum requests per window per IP (default: `100`)                |
 | `CORS_ORIGIN`          | Allowed CORS origin(s) (default: all)  |
+
+
+### Secure environment configuration
+
+For production deployments, keep the API bound to a non-public interface unless you need external access, and only trust proxy headers from your reverse proxy:
+
+```bash
+HOST=0.0.0.0
+PORT=3000
+TRUST_PROXY=1
+```
+
+If the indexer is exposed directly or behind a network you do not control, leave `TRUST_PROXY=0` so forwarded client IPs are not trusted implicitly.
 
 ## Manual Setup
 

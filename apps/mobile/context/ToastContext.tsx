@@ -19,7 +19,10 @@ interface ToastContextValue {
   dismissToast: () => void;
   showPending: () => void;
   showSuccess: (txHash: string) => void;
+  /** Show an error toast for failed transactions or wallet operations. */
   showError: (message: string) => void;
+  /** Show an error toast specifically for indexer / data-fetch failures (non-200 responses). */
+  showIndexerError: (message?: string) => void;
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
@@ -67,6 +70,17 @@ export function ToastProvider({ children }: { children: React.ReactNode }): JSX.
     [showToast]
   );
 
+  const showIndexerError = useCallback(
+    (message?: string) => {
+      showToast({
+        kind: "error",
+        title: "Couldn't load data",
+        message: message ?? "The indexer returned an error. Pull to refresh.",
+      });
+    },
+    [showToast]
+  );
+
   useEffect(() => {
     if (!toast) return undefined;
     const timer = setTimeout(() => {
@@ -76,8 +90,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }): JSX.
   }, [dismissToast, toast]);
 
   const value = useMemo<ToastContextValue>(
-    () => ({ showToast, dismissToast, showPending, showSuccess, showError }),
-    [dismissToast, showError, showPending, showSuccess, showToast]
+    () => ({ showToast, dismissToast, showPending, showSuccess, showError, showIndexerError }),
+    [dismissToast, showError, showIndexerError, showPending, showSuccess, showToast]
   );
 
   return (

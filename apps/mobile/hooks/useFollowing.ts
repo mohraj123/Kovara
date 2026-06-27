@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 import type { FollowUser } from "./useFollowers";
+import { IndexerError } from "../../../packages/sdk/src/errors";
+import type { IndexerErrorCode } from "../components/states/ErrorState";
 
 const PAGE_SIZE = 50;
 
@@ -26,6 +28,7 @@ export interface UseFollowingReturn {
   users: FollowUser[];
   loading: boolean;
   error: string | null;
+  errorCode: IndexerErrorCode | undefined;
   hasMore: boolean;
   loadMore: () => void;
   refresh: () => void;
@@ -35,6 +38,7 @@ export function useFollowing(address: string): UseFollowingReturn {
   const [users, setUsers] = useState<FollowUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<IndexerErrorCode | undefined>(undefined);
   const [hasMore, setHasMore] = useState(true);
 
   const offsetRef = useRef(0);
@@ -46,14 +50,20 @@ export function useFollowing(address: string): UseFollowingReturn {
       loadingRef.current = true;
       setLoading(true);
       setError(null);
+      setErrorCode(undefined);
 
       try {
         const fetched = await fetchFollowingPage(address, offset, PAGE_SIZE);
         setUsers((prev) => (replace ? fetched : [...prev, ...fetched]));
         setHasMore(fetched.length >= PAGE_SIZE);
         offsetRef.current = offset + fetched.length;
-      } catch {
-        setError("Failed to load following. Please try again.");
+      } catch (e) {
+        if (e instanceof IndexerError) {
+          setErrorCode(e.statusCode as IndexerErrorCode);
+          setError(e.message);
+        } else {
+          setError("Failed to load following. Please try again.");
+        }
       } finally {
         setLoading(false);
         loadingRef.current = false;
@@ -78,5 +88,5 @@ export function useFollowing(address: string): UseFollowingReturn {
     load(0, true);
   }, [load]);
 
-  return { users, loading, error, hasMore, loadMore, refresh };
+  return { users, loading, error, errorCode, hasMore, loadMore, refresh };
 }

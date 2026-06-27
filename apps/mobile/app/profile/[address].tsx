@@ -1,13 +1,6 @@
 import React, { useMemo } from "react";
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, FlatList, StyleSheet, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-
-import { useTheme } from "../../theme/useTheme";
-import { useProfile } from "../../hooks/useProfile";
-import { useFeed } from "../../hooks/useFeed";
-import { useWallet } from "../../hooks/useWallet";
-import ProfileHeader from "../../components/ProfileHeader";
-import { PostCard } from "../../components/PostCard";
 
 type ProfileParams = {
   address: string;
@@ -20,7 +13,7 @@ export default function ProfileDetailScreen() {
   const { address } = useLocalSearchParams<ProfileParams>();
   const { address: me } = useWallet();
 
-  const { profile, loading, error, followerCount, followingCount, isFollowing, toggleFollow, refresh } =
+  const { profile, loading, error, errorCode, followerCount, followingCount, isFollowing, toggleFollow, refresh } =
     useProfile(address ?? "");
 
   const { posts, loading: postsLoading, refresh: refreshPosts } = useFeed();
@@ -36,14 +29,7 @@ export default function ProfileDetailScreen() {
   }
 
   if (error) {
-    return (
-      <View style={styles.centered}>
-        <Text style={styles.errorText}>{error}</Text>
-        <Pressable onPress={refresh} style={styles.retryButton} accessibilityRole="button">
-          <Text style={styles.retryText}>Retry</Text>
-        </Pressable>
-      </View>
-    );
+    return <ErrorState message={error} statusCode={errorCode} onRetry={refresh} />;
   }
 
   return (
@@ -94,20 +80,6 @@ function createStyles(theme: ReturnType<typeof useTheme>["theme"]) {
       alignItems: "center",
       justifyContent: "center",
       backgroundColor: theme.colors.surface.background,
-    },
-    errorText: {
-      color: theme.colors.semantic.error,
-    },
-    retryButton: {
-      marginTop: 12,
-      backgroundColor: theme.colors.brand.primary,
-      paddingHorizontal: 16,
-      paddingVertical: 8,
-      borderRadius: theme.radius.full,
-    },
-    retryText: {
-      color: theme.colors.text.onBrand,
-      fontWeight: "700",
     },
     list: {
       paddingBottom: 48,

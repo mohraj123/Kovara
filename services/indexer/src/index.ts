@@ -3,18 +3,26 @@
  *
  * Connects to a Soroban RPC endpoint, streams contract events from the
  * Kovara contract, writes raw events to PostgreSQL, and dispatches each
- * event to the appropriate typed handler.
+ * event to the appropriate typed handler. Also starts the REST API server
+ * for querying indexed data.
  *
  * Environment variables (all required unless noted):
- *   DATABASE_URL      - PostgreSQL connection string
- *   STELLAR_RPC_URL   - Soroban RPC endpoint
- *   CONTRACT_ID       - Bech32 contract address
- *   START_LEDGER      - Ledger sequence to start streaming from
- *   POLL_INTERVAL_MS  - (optional) polling interval in ms, default 5000
+ *   DATABASE_URL           - PostgreSQL connection string
+ *   STELLAR_RPC_URL        - Soroban RPC endpoint
+ *   CONTRACT_ID            - Bech32 contract address
+ *   START_LEDGER           - Ledger sequence to start streaming from
+ *   HOST                   - (optional) API server host, default 0.0.0.0
+ *   PORT                   - (optional) API server port, default 3000
+ *   TRUST_PROXY            - (optional) Number of proxies to trust (for X-Forwarded-For), default 0 (disabled)
+ *   POLL_INTERVAL_MS       - (optional) Event streaming polling interval in ms, default 5000
+ *   RATE_LIMIT_WINDOW_MS   - (optional) Rate limit window in ms, default 60000 (1 minute)
+ *   RATE_LIMIT_MAX         - (optional) Max requests per IP per rate limit window, default 100
  */
 
 import { Pool } from "pg";
 import { streamEvents, RawEvent } from "./stream";
+import { createApp } from "./api";
+import { runMigrations } from "./migrate";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -23,6 +31,19 @@ function requireEnv(name: string): string {
   if (!value) throw new Error(`Missing required environment variable: ${name}`);
   return value;
 }
+
+function parseEnvNumber(name: string, defaultValue: number): number {
+  const value = process.env[name];
+  if (!value) return defaultValue;
+  const parsed = parseInt(value, 10);
+  if (isNaN(parsed) || parsed < 0) {
+    throw new Error(`Invalid numeric value for environment variable: ${name}`);
+  }
+  return parsed;
+}
+
+const HOST = process.env.HOST ?? "0.0.0.0";
+const PORT = parseEnvNumber("PORT", 3000);
 
 const DATABASE_URL = requireEnv("DATABASE_URL");
 const STELLAR_RPC_URL = requireEnv("STELLAR_RPC_URL");
@@ -53,6 +74,22 @@ async function ensureEventsTable(): Promise<void> {
   await pgPool.query(`
     CREATE INDEX IF NOT EXISTS idx_events_ledger      ON events (ledger);
     CREATE INDEX IF NOT EXISTS idx_events_contract_id ON events (contract_id);
+  `);
+}
+
+async function ensurePostSearchIndex(): Promise<void> {
+  await pgPool.query(`
+    ALTER TABLE posts
+    ADD COLUMN IF NOT EXISTS search_vector TSVECTOR
+  `);
+  await pgPool.query(`
+    UPDATE posts
+    SET search_vector = to_tsvector('simple', coalesce(content, ''))
+    WHERE search_vector IS NULL
+  `);
+  await pgPool.query(`
+    CREATE INDEX IF NOT EXISTS idx_posts_search_vector
+    ON posts USING GIN (search_vector)
   `);
 }
 
@@ -104,10 +141,17 @@ async function main(): Promise<void> {
   console.log(`[indexer] RPC:      ${STELLAR_RPC_URL}`);
   console.log(`[indexer] Contract: ${CONTRACT_ID}`);
   console.log(`[indexer] From ledger: ${START_LEDGER}`);
+  console.log(`[indexer] API server listening on ${HOST}:${PORT}`);
 
   await ensureEventsTable();
+  await runMigrations(pgPool);
 
-  await streamEvents(
+  // Create and start API server
+  const app = createApp(pgPool);
+  const server = app.listen(PORT, HOST);
+
+  // Start event streaming in the background
+  streamEvents(
     {
       rpcUrl: STELLAR_RPC_URL,
       contractId: CONTRACT_ID,
@@ -116,10 +160,31 @@ async function main(): Promise<void> {
     },
     handleEvent,
     abortController.signal
-  );
+  ).catch((err) => {
+    console.error("[indexer] Event streaming error:", err);
+    process.exit(1);
+  });
 
-  await pgPool.end();
-  console.log("[indexer] Shutdown complete.");
+  // Handle graceful shutdown
+  process.on("SIGTERM", () => {
+    server.close(() => {
+      console.log("[indexer] API server closed");
+      pgPool.end().then(() => {
+        console.log("[indexer] Shutdown complete.");
+        process.exit(0);
+      });
+    });
+  });
+
+  process.on("SIGINT", () => {
+    server.close(() => {
+      console.log("[indexer] API server closed");
+      pgPool.end().then(() => {
+        console.log("[indexer] Shutdown complete.");
+        process.exit(0);
+      });
+    });
+  });
 }
 
 main().catch((err) => {

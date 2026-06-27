@@ -9,6 +9,7 @@ This document describes how decisions are made in the Kovara project, how the pr
 3. [Becoming a Maintainer](#3-becoming-a-maintainer)
 4. [Code of Conduct](#4-code-of-conduct)
 5. [Communication Channels](#5-communication-channels)
+6. [Issue Labels and Triage](#6-issue-labels-and-triage)
 
 ---
 
@@ -124,3 +125,28 @@ The full Code of Conduct is available at [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT
 | [Telegram Community](https://t.me/+13csp8G4ccRhY2Zk)                  | Real-time discussion, announcements, and breaking-change notices |
 
 For security disclosures, see [SECURITY.md](../SECURITY.md) — do not use public channels for vulnerability reports.
+
+---
+
+## 6. Issue Labels and Triage
+
+To maintain a healthy and organized repository, we use a specific set of labels and follow a structured triage process for all incoming issues.
+
+### Label Meaning
+
+- **bug**: Indicates an unexpected problem or unintended behavior.
+- **enhancement**: New feature or request.
+- **documentation**: Improvements or additions to documentation.
+- **governance**: Matters related to project governance, process, and community.
+- **good first issue**: Good for newcomers.
+- **help wanted**: Extra attention is needed.
+- **wontfix**: This will not be worked on.
+- **duplicate**: This issue or pull request already exists.
+
+### Issue Assignment Practice
+
+1. **Triage**: All new issues are reviewed by a maintainer within 48 hours. They will be tagged with appropriate labels (e.g., `bug`, `enhancement`).
+2. **Assignment**: 
+   - Issues are generally self-assigned. If you want to work on an issue, please comment on it.
+   - Maintainers may assign issues to specific contributors based on their expertise.
+3. **Stale Issues**: If an assigned issue has no activity for 14 days, the assignee will be pinged. If there is no response in another 7 days, the issue will be unassigned to allow others to pick it up.

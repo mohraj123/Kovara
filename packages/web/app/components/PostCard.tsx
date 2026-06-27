@@ -27,15 +27,15 @@ export function PostCard({
   onTip,
   isLiked = false,
 }: PostCardProps) {
-  const { liked, likeCount, pending, error, like } = useLike({
+  const { liked, likeCount, pending, error, like, unlike } = useLike({
     postId: post.id,
     initialHasLiked: isLiked,
     initialLikeCount: post.like_count,
   });
 
   const handleLike = async () => {
-    if (liked || pending) return;
-    const committed = await like();
+    if (pending) return;
+    const committed = liked ? await unlike() : await like();
     if (committed) onLike?.(post.id);
   };
 
@@ -73,20 +73,20 @@ export function PostCard({
       <div style={styles.content}>{post.content}</div>
 
       <div style={styles.actions}>
-        <button
-          onClick={handleLike}
-          disabled={pending || liked}
-          style={{
-            ...styles.actionButton,
-            ...(liked ? styles.likedButton : {}),
-          }}
-          aria-label={liked ? "Liked" : "Like post"}
-          aria-pressed={liked}
-          title={error ?? undefined}
-        >
-          <span style={styles.icon}>{liked ? "❤️" : "🤍"}</span>
-          <span>{likeCount}</span>
-        </button>
+<button
+           onClick={handleLike}
+           disabled={pending}
+           style={{
+             ...styles.actionButton,
+             ...(liked ? styles.likedButton : {}),
+           }}
+           aria-label={liked ? "Unlike post" : "Like post"}
+           aria-pressed={liked}
+           title={error ?? undefined}
+         >
+           <span style={styles.icon}>{liked ? "❤️" : "🤍"}</span>
+           <span>{likeCount}</span>
+         </button>
 
         <div style={styles.tipBadge}>
           <span style={styles.icon}>💎</span>

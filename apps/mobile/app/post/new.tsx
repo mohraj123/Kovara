@@ -82,13 +82,19 @@ export default function CreatePostScreen() {
   // ── Not connected guard ───────────────────────────────────────────────────
   if (!connected) {
     return (
-      <View style={styles.guard}>
+      <View
+        style={styles.guard}
+        accessibilityRole="summary"
+        accessibilityLabel="Wallet not connected. Connect your wallet to create a post."
+      >
         <Text style={styles.guardText}>Connect your wallet to create a post.</Text>
         <TouchableOpacity
           style={styles.connectBtn}
           onPress={() => router.push("/connect" as Parameters<typeof router.push>[0])}
           accessibilityRole="button"
           accessibilityLabel="Connect wallet"
+          accessibilityHint="Opens the wallet connection screen"
+          accessibilityState={{ disabled: false }}
         >
           <Text style={styles.connectBtnText}>Connect Wallet</Text>
         </TouchableOpacity>
@@ -107,9 +113,18 @@ export default function CreatePostScreen() {
         keyboardShouldPersistTaps="handled"
       >
         {/* Composer */}
-        <View style={styles.composerCard}>
+        <View
+          style={styles.composerCard}
+          accessibilityRole="summary"
+          accessibilityLabel="Compose a new post"
+        >
           {/* Author hint */}
-          <Text style={styles.authorHint} numberOfLines={1} accessibilityLabel="Your address">
+          <Text
+            style={styles.authorHint}
+            numberOfLines={1}
+            accessibilityRole="text"
+            accessibilityLabel={`Posting as ${address!.slice(0, 8)} through ${address!.slice(-6)}`}
+          >
             {`${address!.slice(0, 8)}…${address!.slice(-6)}`}
           </Text>
 
@@ -125,7 +140,8 @@ export default function CreatePostScreen() {
             editable={!submitting}
             autoFocus
             accessibilityLabel="Post content"
-            accessibilityHint={`Maximum ${MAX_CHARS} characters`}
+            accessibilityHint={`Compose the body of your post. Maximum ${MAX_CHARS} characters.`}
+            accessibilityState={{ disabled: submitting }}
           />
 
           {/* Footer: counter + submit */}
@@ -133,7 +149,7 @@ export default function CreatePostScreen() {
             {/* Character counter */}
             <Text
               style={[styles.counter, { color: counterColor }]}
-              accessibilityLabel={`${remaining} characters remaining`}
+              accessibilityLabel={`${remaining} characters remaining of ${MAX_CHARS}`}
               accessibilityLiveRegion="polite"
             >
               {remaining}
@@ -146,6 +162,7 @@ export default function CreatePostScreen() {
               disabled={submitDisabled}
               accessibilityRole="button"
               accessibilityLabel="Publish post"
+              accessibilityHint="Publishes your post to the network"
               accessibilityState={{ disabled: submitDisabled, busy: submitting }}
             >
               {submitting ? (
@@ -156,9 +173,18 @@ export default function CreatePostScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* Over-limit error */}
-          {overLimit && (
+          {/* Validation errors */}
+          {isEmpty && (
             <Text style={styles.errorMsg} accessibilityRole="alert">
+              Post content cannot be empty.
+            </Text>
+          )}
+          {overLimit && (
+            <Text
+              style={styles.errorMsg}
+              accessibilityRole="alert"
+              accessibilityLiveRegion="assertive"
+            >
               {`Post is ${Math.abs(remaining)} character${Math.abs(remaining) === 1 ? "" : "s"} over the limit.`}
             </Text>
           )}

@@ -308,19 +308,10 @@ export class KovaraClient {
     return this.buildTx("unfollow", scvAddress(follower), scvAddress(followed));
   }
 
-  like(liker: string, postId: number): string {
-    return this.buildTx("like", scvAddress(liker), scvU64(postId));
-  }
-
-  unlike(liker: string, postId: number): string {
-    return this.buildTx("unlike", scvAddress(liker), scvU64(postId));
-  }
-
   tip(sender: string, postId: number, amount: number | bigint): string {
     return this.buildTx("tip", scvAddress(sender), scvU64(postId), scvI128(amount));
   }
 
-  createPool(admin: string, token: string, initialAdmins: string[], threshold: number): string {
   // ─── write methods ────────────────────────────────────────────────────────
   //
   // Each write method has two overloads:

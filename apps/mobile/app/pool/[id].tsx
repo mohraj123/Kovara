@@ -11,6 +11,7 @@ import { useLocalSearchParams } from "expo-router";
 import { useWallet } from "../../hooks/useWallet";
 import { usePool } from "../../hooks/usePool";
 import { PoolDepositForm } from "../../components/PoolDepositForm";
+import { ErrorState } from "../../components/states/ErrorState";
 
 type PoolParams = {
   id: string;
@@ -19,7 +20,7 @@ type PoolParams = {
 export default function PoolDetailScreen(): JSX.Element {
   const { id } = useLocalSearchParams<PoolParams>();
   const { wallet } = useWallet();
-  const { pool, loading, error, isAdmin, refresh } = usePool(id || "");
+  const { pool, loading, error, errorCode, isAdmin, refresh } = usePool(id || "");
 
   if (!id) {
     return (
@@ -39,17 +40,11 @@ export default function PoolDetailScreen(): JSX.Element {
 
   if (error || !pool) {
     return (
-      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-        <Text style={styles.error}>{error || "Pool not found"}</Text>
-        <TouchableOpacity
-          style={styles.retryButton}
-          onPress={refresh}
-          accessibilityRole="button"
-          accessibilityLabel="Retry loading pool"
-        >
-          <Text style={styles.retryButtonText}>Retry</Text>
-        </TouchableOpacity>
-      </ScrollView>
+      <ErrorState
+        message={error ?? "Pool not found"}
+        statusCode={errorCode}
+        onRetry={refresh}
+      />
     );
   }
 
@@ -273,17 +268,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#fca5a5",
     marginBottom: 16,
-  },
-  retryButton: {
-    backgroundColor: "#6366f1",
-    borderRadius: 8,
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    alignSelf: "flex-start",
-  },
-  retryButtonText: {
-    color: "#fff",
-    fontSize: 14,
-    fontWeight: "600",
   },
 });

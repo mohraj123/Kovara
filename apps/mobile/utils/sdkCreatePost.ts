@@ -13,6 +13,16 @@ export async function sdkCreatePost(
   content: string,
   walletKit: WalletKitAdapter
 ): Promise<CreatePostResult> {
+  // ── Validation ──────────────────────────────────────────────────────
+  if (!content || content.trim().length === 0) {
+    throw new Error("Post content cannot be empty.");
+  }
+  if (content.length > 280) {
+    throw new Error(
+      `Post content exceeds maximum length of 280 characters (${content.length} chars).`
+    );
+  }
+
   const client = new KovaraClient({ contractId, rpcUrl });
   const txXdr = client.createPost(author, content);
 

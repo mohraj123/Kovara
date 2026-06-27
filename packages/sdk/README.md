@@ -21,6 +21,17 @@ yarn add Kovara-sdk
 
 ---
 
+## Package Structure & Contract Bindings
+
+This SDK is built on top of the auto-generated TypeScript bindings produced by the Stellar CLI from the compiled Kovara Soroban smart contract. 
+
+- **Generated Bindings**: The underlying bindings act as a raw interface to the WASM contract, providing type definitions matching the Rust contract.
+- **SDK Wrapper (`src/` index)**: The SDK wraps these bindings to offer a higher-level, more idiomatic TypeScript interface. It handles connection configuration, error mapping (converting raw contract errors into custom `KovaraError` classes), and data transformation (e.g., handling `BigInt`).
+
+This separation ensures that when the contract changes, only the generated layer needs a rebuild, while the SDK wrapper maintains a stable and predictable API for consumer applications (like the web and mobile frontends).
+
+---
+
 ## Quick Start
 
 ### 1. Instantiate the client

@@ -1,13 +1,20 @@
+import "express-async-errors";
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import rateLimit, { RateLimitRequestHandler } from "express-rate-limit";
 import { Database } from "../db";
+import { ApiErrorResponse, SearchResponse } from "./contracts";
+
+// Enable BigInt JSON serialization (Express res.json uses JSON.stringify).
+(BigInt.prototype as unknown as Record<string, unknown>).toJSON = function () {
+  return String(this);
+};
 import { createProfilesRouter } from "./routes/profiles";
 import { createPostsRouter } from "./routes/posts";
 import { createFollowsRouter } from "./routes/follows";
 import { createPoolsRouter } from "./routes/pools";
 
-// ── Rate-limit configuration (all values are env-overridable) ────────────────
+// ── Runtime configuration (all values are env-overridable) ─────────────────
 
 let RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS ?? "60000", 10);
 let RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX ?? "100", 10);
@@ -45,6 +52,48 @@ function createLimiter(): RateLimitRequestHandler {
     },
   });
 }
+function parseEnvNumber(name: string, defaultValue: number): number {
+  const value = process.env[name];
+  if (!value) return defaultValue;
+  const parsed = parseInt(value, 10);
+  if (isNaN(parsed) || parsed < 0) {
+    throw new Error(`Invalid numeric value for environment variable: ${name}`);
+  }
+  return parsed;
+}
+
+const HOST = process.env.HOST ?? "0.0.0.0";
+const PORT = parseEnvNumber("PORT", 3000);
+const TRUST_PROXY = process.env.TRUST_PROXY ?? "0";
+const RATE_LIMIT_WINDOW_MS = parseEnvNumber("RATE_LIMIT_WINDOW_MS", 60000);
+const RATE_LIMIT_MAX = parseEnvNumber("RATE_LIMIT_MAX", 100);
+
+// ── Rate limiter middleware ───────────────────────────────────────────────────
+
+const apiLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  max: RATE_LIMIT_MAX,
+  standardHeaders: "draft-7", // Sends RateLimit-* headers (RFC 9110 draft-7)
+  legacyHeaders: false,
+  keyGenerator: (req: Request): string => {
+    // Respect X-Forwarded-For when running behind a trusted reverse proxy.
+    // In production, set `app.set("trust proxy", 1)` and ensure only your
+    // load-balancer can set this header.
+    const forwarded = req.headers["x-forwarded-for"];
+    if (typeof forwarded === "string") {
+      return forwarded.split(",")[0].trim();
+    }
+    return req.ip ?? "unknown";
+  },
+  handler: (req: Request, res: Response): void => {
+    const retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
+    res.status(429).set("Retry-After", String(retryAfter)).json({
+      error: "Too many requests. Please retry after the indicated delay.",
+      code: "RATE_LIMIT_EXCEEDED",
+      retryAfterSeconds: retryAfter,
+    });
+  },
+});
 
 // ── App factory ───────────────────────────────────────────────────────────────
 
@@ -56,6 +105,9 @@ export function createApp(db: Database): express.Application {
 
   app.use(express.json());
 
+  if (TRUST_PROXY !== "") {
+    app.set("trust proxy", TRUST_PROXY);
+  }
   // ── Health check (unlimited) ────────────────────────────────────────────────
   app.get("/health", (_req: Request, res: Response): void => {
     res.json({ status: "ok", uptime: process.uptime() });
@@ -79,15 +131,18 @@ export function createApp(db: Database): express.Application {
     offset?: number;
   }
 
+  interface SearchPost {
+    id: string;
+    author: string;
+    content: string;
+    tip_total: string;
+    like_count: number;
+    created_at: string | null;
+    deleted: boolean;
+  }
+
   interface SearchResponse {
-    posts: Array<{
-      id: string;
-      author: string;
-      content: string;
-      tip_total: string;
-      like_count: string;
-      created_ledger: number;
-    }>;
+    posts: SearchPost[];
     total: number;
     has_more: boolean;
   }
@@ -100,6 +155,24 @@ export function createApp(db: Database): express.Application {
   const MAX_LIMIT = 100;
   const DEFAULT_LIMIT = 20;
   const DEFAULT_OFFSET = 0;
+
+  const serializePost = (post: {
+    id: bigint;
+    author: string;
+    content: string;
+    tip_total: bigint;
+    like_count: bigint;
+    created_at?: Date | null;
+    deleted_at?: Date | null;
+  }): SearchPost => ({
+    id: post.id.toString(),
+    author: post.author,
+    content: post.content,
+    tip_total: post.tip_total.toString(),
+    like_count: Number(post.like_count),
+    created_at: post.created_at instanceof Date ? post.created_at.toISOString() : null,
+    deleted: post.deleted_at !== undefined && post.deleted_at !== null,
+  });
 
   app.post(
     "/api/search/posts",
@@ -149,6 +222,19 @@ export function createApp(db: Database): express.Application {
           like_count: String(p.like_count),
           created_ledger: p.created_ledger,
         })),
+      if (typeof db.searchPosts !== "function") {
+        res.status(500).json({ error: "search backend unavailable", code: "SEARCH_UNAVAILABLE" });
+        return;
+      }
+
+      const { posts, total } = await db.searchPosts({
+        query: body.query.trim(),
+        limit,
+        offset,
+      });
+
+      res.json({
+        posts: posts.map(serializePost),
         total,
         has_more: offset + posts.length < total,
       });
@@ -158,10 +244,12 @@ export function createApp(db: Database): express.Application {
   // ── Error handler ─────────────────────────────────────────────────────────────
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction): void => {
-    console.error(err);
-    res.status(500).json({ error: "Internal server error", code: "INTERNAL_ERROR" });
-  });
+  app.use(
+    (err: Error, _req: Request, res: Response<ApiErrorResponse>, _next: NextFunction): void => {
+      console.error(err);
+      res.status(500).json({ error: "Internal server error", code: "INTERNAL_ERROR" });
+    }
+  );
 
   return app;
 }
@@ -171,14 +259,4 @@ export function createApp(db: Database): express.Application {
 const _stub = {} as any;
 export const app = createApp(_stub);
 
-// ── Server bootstrap (skipped when imported in tests) ────────────────────────
-
-if (require.main === module) {
-  const PORT = parseInt(process.env.PORT ?? "3001", 10);
-  app.listen(PORT, () => {
-    console.log(`Indexer API listening on port ${PORT}`);
-    console.log(
-      `Rate limit: ${RATE_LIMIT_MAX} requests per ${RATE_LIMIT_WINDOW_MS / 1000}s per IP`
-    );
-  });
-}
+// Server is now started from the main index.ts entry point

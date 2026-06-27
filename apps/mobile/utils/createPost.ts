@@ -1,7 +1,10 @@
 import { KovaraClient } from "../../../packages/sdk/src/client";
 
 interface WalletKit {
-  signAndSubmitTransaction?: (opts: { txXdr: string; rpcUrl?: string }) => Promise<{ hash?: string; txHash?: string }>;
+  signAndSubmitTransaction?: (opts: {
+    txXdr: string;
+    rpcUrl?: string;
+  }) => Promise<{ hash?: string; txHash?: string }>;
   signTransaction?: (opts: { txXdr: string }) => Promise<{ signedTxXdr: string }>;
 }
 
@@ -14,10 +17,22 @@ export interface CreatePostOptions {
 
 export async function createPost(opts: CreatePostOptions): Promise<string> {
   const { contractId, rpcUrl, author, content } = opts;
+
+  // ── Validation ──────────────────────────────────────────────────────
+  if (!content || content.trim().length === 0) {
+    throw new Error("Post content cannot be empty.");
+  }
+  if (content.length > 280) {
+    throw new Error(
+      `Post content exceeds maximum length of 280 characters (${content.length} chars).`
+    );
+  }
+
   const client = new KovaraClient({ contractId, rpcUrl });
   const txXdr = client.createPost(author, content);
 
-  const kit = (globalThis as unknown as { __Kovara_WALLET_KIT__?: WalletKit }).__Kovara_WALLET_KIT__;
+  const kit = (globalThis as unknown as { __Kovara_WALLET_KIT__?: WalletKit })
+    .__Kovara_WALLET_KIT__;
   if (!kit) throw new Error("Wallet not connected");
 
   if (typeof kit.signAndSubmitTransaction === "function") {

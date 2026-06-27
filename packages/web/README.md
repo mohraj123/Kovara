@@ -38,13 +38,24 @@ pnpm --filter web build
 pnpm --filter web lint
 ```
 
-## Environment Setup
+## Environment Setup and Configuration
 
-Copy the example file and fill in your values:
+The Next.js application relies on environment variables for configuration. 
+
+Copy the example file to create your local environment variables:
 
 ```bash
 cp .env.example .env.local
 ```
+
+### Managing Local Values
+
+Next.js automatically loads environment variables from `.env.local`. This file is ignored by Git, ensuring sensitive credentials or local configurations are not committed to the repository.
+
+- **`.env.example`**: Tracked by Git. Contains dummy values or safe defaults (like Testnet configurations) to document the required variables.
+- **`.env.local`**: Not tracked by Git. Your specific overrides for local development (e.g., local sandbox RPC URL, locally deployed contract ID).
+
+### Required Variables
 
 | Variable                         | Description                                                       |
 | -------------------------------- | ----------------------------------------------------------------- |
@@ -52,9 +63,7 @@ cp .env.example .env.local
 | `NEXT_PUBLIC_NETWORK_PASSPHRASE` | Stellar network passphrase                                        |
 | `NEXT_PUBLIC_CONTRACT_ID`        | Deployed Kovara contract ID                                       |
 
-The app will throw an error at startup if any of these variables are missing.
-
-`.env.example` is pre-filled for Testnet. For local sandbox or Mainnet, update the values accordingly. Never commit `.env.local` or any `.env*.local` file.
+The app validates these variables at startup and will throw an error if any are missing or malformed.
 
 ## End-to-End Testing with Playwright
 

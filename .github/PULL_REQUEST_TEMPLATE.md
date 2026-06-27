@@ -21,9 +21,11 @@
 ## Checklist
 
 - [ ] Changes are focused — one concern per PR
-- [ ] If a contract function was added or changed, the README API table is updated
 - [ ] No unresolved merge conflicts
 - [ ] No secrets or private keys committed
+- [ ] **Tests**: All tests pass locally and new behavior is fully covered by tests (unit and/or E2E)
+- [ ] **Documentation**: Code comments, README files, or other relevant documentation are updated to reflect the changes
+- [ ] **Contract Changes**: If a contract function was added or changed, the storage layout, APIs, and the README API table are updated
 
 ## Related Issue
 
