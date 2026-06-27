@@ -9,6 +9,7 @@ export {
   WalletProvider,
   useWalletContext as useWallet,
   WalletContext,
+  type WalletAvailability,
   type WalletContextType,
   type WalletState,
   type WalletInfo,
