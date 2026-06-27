@@ -8,6 +8,7 @@
  */
 import { useWalletContext } from "../context/WalletContext";
 import type {
+  WalletAvailability,
   WalletInfo,
   WalletNetwork,
   WalletProviderKind,
@@ -35,10 +36,12 @@ export interface UseWalletReturn {
   refresh: () => Promise<void>;
   /** Update the active network preference */
   setNetwork: (network: WalletNetwork) => void;
+  /** Wallet adapter availability detected at runtime */
+  availability: WalletAvailability;
 }
 
 export function useWallet(): UseWalletReturn {
-  const { wallet, network, state, error, connect, disconnect, refresh, setNetwork } =
+  const { wallet, network, state, error, connect, disconnect, refresh, setNetwork, availability } =
     useWalletContext();
 
   return {
@@ -52,6 +55,7 @@ export function useWallet(): UseWalletReturn {
     disconnect,
     refresh,
     setNetwork,
+    availability,
   };
 }
 
@@ -60,6 +64,7 @@ export {
   WalletContext,
   useWalletContext,
   type WalletContextType,
+  type WalletAvailability,
   type WalletInfo,
   type WalletNetwork,
   type WalletProviderKind,
