@@ -4,6 +4,7 @@ import { useState } from 'react';
 import SearchBar from '../../components/SearchBar';
 import EmptyState from '../../components/EmptyState';
 import { PostCardSkeletonList } from '../../components/Skeleton';
+import { env } from '../../config/env';
 
 interface Post {
   id: string;
@@ -29,10 +30,9 @@ export default function ExplorePage() {
     setError(null);
 
     try {
-      const INDEXER_API_URL = 'http://localhost:3001';
-
+      // REPLACED: Used centralized environment tracking configurations
       const response = await fetch(
-        `${INDEXER_API_URL}/api/search/posts`,
+        `${env.indexerApiUrl}/api/search/posts`,
         {
           method: 'POST',
           headers: {
