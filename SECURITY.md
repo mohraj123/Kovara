@@ -70,3 +70,13 @@ This may be revisited as the project matures toward production.
 5. Reporter notified before public disclosure
 6. Security advisory published after fix is deployed
 7. Reporter credited (with permission)
+
+## Known Security Risks
+
+### Unbounded Follower/Following List Growth
+
+The current implementation stores follower and following lists in `Vec` collections within the contract storage. This design presents a potential denial-of-service (DoS) vector and can lead to unbounded gas costs.
+
+- **Risk**: A malicious actor could repeatedly follow and unfollow a user, causing the `followers` or `following` `Vec` to grow indefinitely.
+- **Impact**: As the `Vec` grows, the gas costs for operations that iterate over it (e.g., reading the list, removing a user) will increase. This can make these operations prohibitively expensive, effectively locking the user out of managing their social graph.
+- **Mitigation**: This is a known issue that will be addressed in a future release. Potential solutions include implementing pagination, capping the number of followers/following, or using a more gas-efficient data structure.
