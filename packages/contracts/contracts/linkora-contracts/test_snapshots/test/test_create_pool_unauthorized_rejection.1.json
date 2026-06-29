@@ -26,53 +26,6 @@
         }
       ]
     ],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CACMVW2KK4H5FZDFF2AUCAKQTEJMZZWJUIZF23XMRVYQBSXYLHZ6BKWN",
-              "function_name": "mint",
-              "args": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                },
-                {
-                  "i128": "10000"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "set_profile",
-              "args": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                },
-                {
-                  "string": "abcdefghijklmnopqrstuvwxyz123456"
-                },
-                {
-                  "address": "CACMVW2KK4H5FZDFF2AUCAKQTEJMZZWJUIZF23XMRVYQBSXYLHZ6BKWN"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
     []
   ],
   "ledger": {
@@ -133,85 +86,6 @@
             "contract_data": {
               "ext": "v0",
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "vec": [
-                  {
-                    "symbol": "Profile"
-                  },
-                  {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "map": [
-                  {
-                    "key": {
-                      "symbol": "address"
-                    },
-                    "val": {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "creator_token"
-                    },
-                    "val": {
-                      "address": "CACMVW2KK4H5FZDFF2AUCAKQTEJMZZWJUIZF23XMRVYQBSXYLHZ6BKWN"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "username"
-                    },
-                    "val": {
-                      "string": "abcdefghijklmnopqrstuvwxyz123456"
-                    }
-                  }
-                ]
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 535000
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "vec": [
-                  {
-                    "symbol": "UsernameIndex"
-                  },
-                  {
-                    "string": "abcdefghijklmnopqrstuvwxyz123456"
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 535000
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "key": "ledger_key_contract_instance",
               "durability": "persistent",
               "val": {
@@ -246,14 +120,6 @@
                     },
                     {
                       "key": {
-                        "symbol": "PROF_CT"
-                      },
-                      "val": {
-                        "u64": "1"
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "TIP_CD_W"
                       },
                       "val": {
@@ -276,98 +142,6 @@
           "ext": "v0"
         },
         "live_until": 535000
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-              "key": {
-                "ledger_key_nonce": {
-                  "nonce": "1033654523790656264"
-                }
-              },
-              "durability": "temporary",
-              "val": "void"
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 6311999
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
-              "key": {
-                "ledger_key_nonce": {
-                  "nonce": "5541220902715666415"
-                }
-              },
-              "durability": "temporary",
-              "val": "void"
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 6311999
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CACMVW2KK4H5FZDFF2AUCAKQTEJMZZWJUIZF23XMRVYQBSXYLHZ6BKWN",
-              "key": {
-                "vec": [
-                  {
-                    "symbol": "Balance"
-                  },
-                  {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "map": [
-                  {
-                    "key": {
-                      "symbol": "amount"
-                    },
-                    "val": {
-                      "i128": "10000"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "authorized"
-                    },
-                    "val": {
-                      "bool": true
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "clawback"
-                    },
-                    "val": {
-                      "bool": false
-                    }
-                  }
-                ]
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 518400
       },
       {
         "entry": {

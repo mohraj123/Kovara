@@ -55,16 +55,13 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "set_profile",
+              "function_name": "create_post",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "string": "abcdefghijklmnopqrstuvwxyz123456"
-                },
-                {
-                  "address": "CACMVW2KK4H5FZDFF2AUCAKQTEJMZZWJUIZF23XMRVYQBSXYLHZ6BKWN"
+                  "string": "Test post"
                 }
               ]
             }
@@ -136,7 +133,7 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "Profile"
+                    "symbol": "AuthorPosts"
                   },
                   {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
@@ -145,30 +142,9 @@
               },
               "durability": "persistent",
               "val": {
-                "map": [
+                "vec": [
                   {
-                    "key": {
-                      "symbol": "address"
-                    },
-                    "val": {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "creator_token"
-                    },
-                    "val": {
-                      "address": "CACMVW2KK4H5FZDFF2AUCAKQTEJMZZWJUIZF23XMRVYQBSXYLHZ6BKWN"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "username"
-                    },
-                    "val": {
-                      "string": "abcdefghijklmnopqrstuvwxyz123456"
-                    }
+                    "u64": "1"
                   }
                 ]
               }
@@ -188,16 +164,65 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "UsernameIndex"
+                    "symbol": "Post"
                   },
                   {
-                    "string": "abcdefghijklmnopqrstuvwxyz123456"
+                    "u64": "1"
                   }
                 ]
               },
               "durability": "persistent",
               "val": {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "author"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "content"
+                    },
+                    "val": {
+                      "string": "Test post"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "id"
+                    },
+                    "val": {
+                      "u64": "1"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "like_count"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "tip_total"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  }
+                ]
               }
             }
           },
@@ -233,7 +258,7 @@
                         "symbol": "FEE_BPS"
                       },
                       "val": {
-                        "u32": 0
+                        "u32": 250
                       }
                     },
                     {
@@ -246,7 +271,7 @@
                     },
                     {
                       "key": {
-                        "symbol": "PROF_CT"
+                        "symbol": "POST_CT"
                       },
                       "val": {
                         "u64": "1"
