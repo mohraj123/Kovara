@@ -2,16 +2,58 @@
 
 This guide details how to run the unit, integration, and end-to-end (E2E) tests for each component of the Kovara workspace.
 
+## Running All Tests
+
+To run every test suite across all packages at once, use the root-level `pnpm test` command from the repository root:
+
+```bash
+pnpm test
+```
+
+This invokes `turbo run test`, which runs each package's `test` script in dependency order (packages with `^build` dependencies are built first). Turborepo caches results and only re-runs suites whose inputs have changed.
+
+> **What `turbo run test` does:**
+>
+> 1. Resolves the workspace dependency graph.
+> 2. Builds any packages that are prerequisites (`"dependsOn": ["^build"]`).
+> 3. Runs the `test` script in each package in parallel where possible.
+> 4. Caches passing runs — repeated `pnpm test` with no source changes exits immediately with cached results.
+
+To bypass the cache (e.g. when debugging flaky tests):
+
+```bash
+pnpm test -- --force
+```
+
+---
+
 ## Workspace Test Command Overview
 
-You can run tests for individual workspace packages from the repository root using `pnpm --filter`, or navigate to the package directory and run the commands locally.
+You can also run tests for a single package using `pnpm --filter`, or navigate to the package directory and run the commands locally.
 
-| Package       | Testing Domain         | Target Directory     | Root Command                        | Local Command            |
+| Package       | Testing Domain         | Target Directory     | Root-scoped Command                 | Local Command            |
 | ------------- | ---------------------- | -------------------- | ----------------------------------- | ------------------------ |
 | **Contracts** | Smart Contracts (Rust) | `packages/contracts` | `pnpm --filter contracts test`      | `cargo test`             |
 | **Web**       | Web Frontend (Next.js) | `packages/web`       | `pnpm --filter web test`            | `pnpm test`              |
 | **Web (E2E)** | Playwright E2E Tests   | `packages/web`       | `pnpm --filter web test:e2e`        | `pnpm test:e2e`          |
 | **Mobile**    | Mobile App (Expo)      | `apps/mobile`        | `pnpm --filter @Kovara/mobile test` | `npm test` / `pnpm test` |
+
+### Running a single package's tests
+
+Scope any Turborepo task to one package with `--filter`:
+
+```bash
+# Smart contracts only
+pnpm turbo test --filter=contracts
+
+# Web unit tests only
+pnpm turbo test --filter=web
+
+# Mobile only
+pnpm turbo test --filter=@Kovara/mobile
+```
+
+`--filter` accepts the package `name` field from its `package.json`, a directory glob, or a `[git-ref]` diff expression — see the [Turborepo filter docs](https://turbo.build/repo/docs/crafting-your-repository/running-tasks#using-filters) for advanced patterns.
 
 ---
 
