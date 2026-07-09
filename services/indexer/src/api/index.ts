@@ -16,42 +16,42 @@ import { createPoolsRouter } from "./routes/pools";
 
 // ── Runtime configuration (all values are env-overridable) ─────────────────
 
-let RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS ?? "60000", 10);
-let RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX ?? "100", 10);
+// let RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS ?? "60000", 10);
+// let RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX ?? "100", 10);
 
 /**
  * Override rate-limit values at runtime (useful in tests).
  */
-export function setRateLimit(windowMs: number, max: number): void {
-  RATE_LIMIT_WINDOW_MS = windowMs;
-  RATE_LIMIT_MAX = max;
-}
+// export function setRateLimit(windowMs: number, max: number): void {
+//   RATE_LIMIT_WINDOW_MS = windowMs;
+//   RATE_LIMIT_MAX = max;
+// }
 
 // ── Rate limiter middleware factory ──────────────────────────────────────────
-
-function createLimiter(): RateLimitRequestHandler {
-  return rateLimit({
-    windowMs: RATE_LIMIT_WINDOW_MS,
-    max: RATE_LIMIT_MAX,
-    standardHeaders: "draft-7",
-    legacyHeaders: false,
-    keyGenerator: (req: Request): string => {
-      const forwarded = req.headers["x-forwarded-for"];
-      if (typeof forwarded === "string") {
-        return forwarded.split(",")[0].trim();
-      }
-      return req.ip ?? "unknown";
-    },
-    handler: (req: Request, res: Response): void => {
-      const retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
-      res.status(429).set("Retry-After", String(retryAfter)).json({
-        error: "Too many requests. Please retry after the indicated delay.",
-        code: "RATE_LIMIT_EXCEEDED",
-        retryAfterSeconds: retryAfter,
-      });
-    },
-  });
-}
+// Disabled for stub mode - requires express-rate-limit
+// function createLimiter(): RateLimitRequestHandler {
+//   return rateLimit({
+//     windowMs: RATE_LIMIT_WINDOW_MS,
+//     max: RATE_LIMIT_MAX,
+//     standardHeaders: "draft-7",
+//     legacyHeaders: false,
+//     keyGenerator: (req: Request): string => {
+//       const forwarded = req.headers["x-forwarded-for"];
+//       if (typeof forwarded === "string") {
+//         return forwarded.split(",")[0].trim();
+//       }
+//       return req.ip ?? "unknown";
+//     },
+//     handler: (req: Request, res: Response): void => {
+//       const retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
+//       res.status(429).set("Retry-After", String(retryAfter)).json({
+//         error: "Too many requests. Please retry after the indicated delay.",
+//         code: "RATE_LIMIT_EXCEEDED",
+//         retryAfterSeconds: retryAfter,
+//       });
+//     },
+//   });
+// }
 function parseEnvNumber(name: string, defaultValue: number): number {
   const value = process.env[name];
   if (!value) return defaultValue;
@@ -69,31 +69,31 @@ const RATE_LIMIT_WINDOW_MS = parseEnvNumber("RATE_LIMIT_WINDOW_MS", 60000);
 const RATE_LIMIT_MAX = parseEnvNumber("RATE_LIMIT_MAX", 100);
 
 // ── Rate limiter middleware ───────────────────────────────────────────────────
-
-const apiLimiter = rateLimit({
-  windowMs: RATE_LIMIT_WINDOW_MS,
-  max: RATE_LIMIT_MAX,
-  standardHeaders: "draft-7", // Sends RateLimit-* headers (RFC 9110 draft-7)
-  legacyHeaders: false,
-  keyGenerator: (req: Request): string => {
-    // Respect X-Forwarded-For when running behind a trusted reverse proxy.
-    // In production, set `app.set("trust proxy", 1)` and ensure only your
-    // load-balancer can set this header.
-    const forwarded = req.headers["x-forwarded-for"];
-    if (typeof forwarded === "string") {
-      return forwarded.split(",")[0].trim();
-    }
-    return req.ip ?? "unknown";
-  },
-  handler: (req: Request, res: Response): void => {
-    const retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
-    res.status(429).set("Retry-After", String(retryAfter)).json({
-      error: "Too many requests. Please retry after the indicated delay.",
-      code: "RATE_LIMIT_EXCEEDED",
-      retryAfterSeconds: retryAfter,
-    });
-  },
-});
+// Disabled for stub mode
+// const apiLimiter = rateLimit({
+//   windowMs: RATE_LIMIT_WINDOW_MS,
+//   max: RATE_LIMIT_MAX,
+//   standardHeaders: "draft-7", // Sends RateLimit-* headers (RFC 9110 draft-7)
+//   legacyHeaders: false,
+//   keyGenerator: (req: Request): string => {
+//     // Respect X-Forwarded-For when running behind a trusted reverse proxy.
+//     // In production, set `app.set("trust proxy", 1)` and ensure only your
+//     // load-balancer can set this header.
+//     const forwarded = req.headers["x-forwarded-for"];
+//     if (typeof forwarded === "string") {
+//       return forwarded.split(",")[0].trim();
+//     }
+//     return req.ip ?? "unknown";
+//   },
+//   handler: (req: Request, res: Response): void => {
+//     const retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
+//     res.status(429).set("Retry-After", String(retryAfter)).json({
+//       error: "Too many requests. Please retry after the indicated delay.",
+//       code: "RATE_LIMIT_EXCEEDED",
+//       retryAfterSeconds: retryAfter,
+//     });
+//   },
+// });
 
 // ── App factory ───────────────────────────────────────────────────────────────
 
@@ -114,8 +114,8 @@ export function createApp(db: Database): express.Application {
   });
 
   // Apply rate limiting to all /api routes.
-  const apiLimiter = createLimiter();
-  app.use("/api", apiLimiter);
+  // const apiLimiter = createLimiter();
+  // app.use("/api", apiLimiter);
 
   // ── Resource routes ────────────────────────────────────────────────────────
   app.use("/api/profiles", createProfilesRouter(db));
@@ -212,16 +212,6 @@ export function createApp(db: Database): express.Application {
         return;
       }
 
-      const { posts, total } = await db.searchPosts(body.query.trim(), limit, offset);
-      res.json({
-        posts: posts.map((p) => ({
-          id: String(p.id),
-          author: p.author,
-          content: p.content,
-          tip_total: String(p.tip_total),
-          like_count: String(p.like_count),
-          created_ledger: p.created_ledger,
-        })),
       if (typeof db.searchPosts !== "function") {
         res.status(500).json({ error: "search backend unavailable", code: "SEARCH_UNAVAILABLE" });
         return;

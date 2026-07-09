@@ -4,7 +4,7 @@ import { useState } from 'react';
 import SearchBar from '../../components/SearchBar';
 import EmptyState from '../../components/EmptyState';
 import { PostCardSkeletonList } from '../../components/Skeleton';
-import { env } from '../../config/env';
+import { env } from '../../../config';
 
 interface Post {
   id: string;
