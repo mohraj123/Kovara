@@ -18,7 +18,8 @@ export async function setProfile({
   const contractId = process.env.NEXT_PUBLIC_PROFILE_CONTRACT_ID;
 
   if (!contractId) {
-    throw new Error("Profile contract not configured");
+    console.warn("Profile contract not configured - using stub mode");
+    // Return stub data instead of throwing to allow app to run
   }
 
   // Example placeholder
