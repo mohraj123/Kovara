@@ -2,6 +2,7 @@ import "express-async-errors";
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import rateLimit, { RateLimitRequestHandler } from "express-rate-limit";
+import crypto from "crypto";
 import { Database } from "../db";
 import { ApiErrorResponse, SearchResponse } from "./contracts";
 
@@ -9,6 +10,24 @@ import { ApiErrorResponse, SearchResponse } from "./contracts";
 (BigInt.prototype as unknown as Record<string, unknown>).toJSON = function () {
   return String(this);
 };
+
+/**
+ * Recursively convert all BigInt values in an object to strings.
+ * Useful when sending responses without relying on the global toJSON override.
+ */
+export function serializeBigInt<T>(obj: T): T {
+  if (typeof obj === "bigint") return String(obj) as unknown as T;
+  if (obj === null || obj === undefined) return obj;
+  if (Array.isArray(obj)) return obj.map((item) => serializeBigInt(item)) as unknown as T;
+  if (typeof obj === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+      result[key] = serializeBigInt(value);
+    }
+    return result as T;
+  }
+  return obj;
+}
 import { createProfilesRouter } from "./routes/profiles";
 import { createPostsRouter } from "./routes/posts";
 import { createFollowsRouter } from "./routes/follows";
@@ -16,42 +35,6 @@ import { createPoolsRouter } from "./routes/pools";
 
 // ── Runtime configuration (all values are env-overridable) ─────────────────
 
-// let RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS ?? "60000", 10);
-// let RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX ?? "100", 10);
-
-/**
- * Override rate-limit values at runtime (useful in tests).
- */
-// export function setRateLimit(windowMs: number, max: number): void {
-//   RATE_LIMIT_WINDOW_MS = windowMs;
-//   RATE_LIMIT_MAX = max;
-// }
-
-// ── Rate limiter middleware factory ──────────────────────────────────────────
-// Disabled for stub mode - requires express-rate-limit
-// function createLimiter(): RateLimitRequestHandler {
-//   return rateLimit({
-//     windowMs: RATE_LIMIT_WINDOW_MS,
-//     max: RATE_LIMIT_MAX,
-//     standardHeaders: "draft-7",
-//     legacyHeaders: false,
-//     keyGenerator: (req: Request): string => {
-//       const forwarded = req.headers["x-forwarded-for"];
-//       if (typeof forwarded === "string") {
-//         return forwarded.split(",")[0].trim();
-//       }
-//       return req.ip ?? "unknown";
-//     },
-//     handler: (req: Request, res: Response): void => {
-//       const retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
-//       res.status(429).set("Retry-After", String(retryAfter)).json({
-//         error: "Too many requests. Please retry after the indicated delay.",
-//         code: "RATE_LIMIT_EXCEEDED",
-//         retryAfterSeconds: retryAfter,
-//       });
-//     },
-//   });
-// }
 function parseEnvNumber(name: string, defaultValue: number): number {
   const value = process.env[name];
   if (!value) return defaultValue;
@@ -68,32 +51,40 @@ const TRUST_PROXY = process.env.TRUST_PROXY ?? "0";
 const RATE_LIMIT_WINDOW_MS = parseEnvNumber("RATE_LIMIT_WINDOW_MS", 60000);
 const RATE_LIMIT_MAX = parseEnvNumber("RATE_LIMIT_MAX", 100);
 
-// ── Rate limiter middleware ───────────────────────────────────────────────────
-// Disabled for stub mode
-// const apiLimiter = rateLimit({
-//   windowMs: RATE_LIMIT_WINDOW_MS,
-//   max: RATE_LIMIT_MAX,
-//   standardHeaders: "draft-7", // Sends RateLimit-* headers (RFC 9110 draft-7)
-//   legacyHeaders: false,
-//   keyGenerator: (req: Request): string => {
-//     // Respect X-Forwarded-For when running behind a trusted reverse proxy.
-//     // In production, set `app.set("trust proxy", 1)` and ensure only your
-//     // load-balancer can set this header.
-//     const forwarded = req.headers["x-forwarded-for"];
-//     if (typeof forwarded === "string") {
-//       return forwarded.split(",")[0].trim();
-//     }
-//     return req.ip ?? "unknown";
-//   },
-//   handler: (req: Request, res: Response): void => {
-//     const retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
-//     res.status(429).set("Retry-After", String(retryAfter)).json({
-//       error: "Too many requests. Please retry after the indicated delay.",
-//       code: "RATE_LIMIT_EXCEEDED",
-//       retryAfterSeconds: retryAfter,
-//     });
-//   },
-// });
+// ── Database error detection ───────────────────────────────────────────────
+
+const DB_ERROR_PATTERNS = [
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "connection refused",
+  "connection terminated",
+  "unable to connect",
+  "database unavailable",
+];
+
+export function isDatabaseError(err: unknown): boolean {
+  if (err instanceof Error) {
+    const msg = `${err.name} ${err.message}`.toLowerCase();
+    if (DB_ERROR_PATTERNS.some((p) => msg.includes(p.toLowerCase()))) return true;
+    if ("code" in err && typeof (err as { code: string }).code === "string") {
+      const code = (err as { code: string }).code;
+      if (["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN"].includes(code)) return true;
+    }
+  }
+  return false;
+}
+
+// ── Request correlation ID ─────────────────────────────────────────────────
+
+declare global {
+  namespace Express {
+    interface Request {
+      correlationId?: string;
+    }
+  }
+}
 
 // ── App factory ───────────────────────────────────────────────────────────────
 
@@ -108,9 +99,29 @@ export function createApp(db: Database): express.Application {
   if (TRUST_PROXY !== "") {
     app.set("trust proxy", TRUST_PROXY);
   }
+
+  // ── Correlation ID middleware ────────────────────────────────────────────────
+  app.use((req: Request, _res: Response, next: NextFunction): void => {
+    const id = (req.headers["x-correlation-id"] as string) || crypto.randomUUID();
+    req.correlationId = id;
+    next();
+  });
+
   // ── Health check (unlimited) ────────────────────────────────────────────────
-  app.get("/health", (_req: Request, res: Response): void => {
-    res.json({ status: "ok", uptime: process.uptime() });
+  app.get("/health", async (_req: Request, res: Response): Promise<void> => {
+    let dbStatus = "ok";
+    try {
+      await db.getProfile("__health_check_probe__");
+    } catch {
+      dbStatus = "unavailable";
+    }
+
+    const status = dbStatus === "ok" ? "ok" : "degraded";
+    res.json({
+      status,
+      uptime: process.uptime(),
+      db: dbStatus,
+    });
   });
 
   // Apply rate limiting to all /api routes.
@@ -145,16 +156,20 @@ export function createApp(db: Database): express.Application {
     posts: SearchPost[];
     total: number;
     has_more: boolean;
+    next_offset: number | null;
+    prev_offset: number | null;
   }
 
   interface ErrorResponse {
     error: string;
     code: string;
+    correlationId?: string;
   }
 
   const MAX_LIMIT = 100;
   const DEFAULT_LIMIT = 20;
   const DEFAULT_OFFSET = 0;
+  const MAX_QUERY_LENGTH = 500;
 
   const serializePost = (post: {
     id: bigint;
@@ -186,6 +201,24 @@ export function createApp(db: Database): express.Application {
         body.query.trim() === ""
       ) {
         res.status(400).json({ error: "query is required", code: "INVALID_QUERY" });
+        return;
+      }
+
+      if (body.query.length > MAX_QUERY_LENGTH) {
+        res.status(400).json({
+          error: `query cannot exceed ${MAX_QUERY_LENGTH} characters`,
+          code: "QUERY_TOO_LONG",
+        });
+        return;
+      }
+
+      if (body.limit !== undefined && body.limit !== null && typeof body.limit !== "number") {
+        res.status(400).json({ error: "limit must be a number", code: "INVALID_QUERY" });
+        return;
+      }
+
+      if (body.offset !== undefined && body.offset !== null && typeof body.offset !== "number") {
+        res.status(400).json({ error: "offset must be a number", code: "INVALID_QUERY" });
         return;
       }
 
@@ -223,10 +256,14 @@ export function createApp(db: Database): express.Application {
         offset,
       });
 
+      const has_more = offset + posts.length < total;
+
       res.json({
         posts: posts.map(serializePost),
         total,
-        has_more: offset + posts.length < total,
+        has_more,
+        next_offset: has_more ? offset + posts.length : null,
+        prev_offset: offset > 0 ? offset - limit : null,
       });
     }
   );
@@ -235,9 +272,24 @@ export function createApp(db: Database): express.Application {
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use(
-    (err: Error, _req: Request, res: Response<ApiErrorResponse>, _next: NextFunction): void => {
-      console.error(err);
-      res.status(500).json({ error: "Internal server error", code: "INTERNAL_ERROR" });
+    (err: Error, req: Request, res: Response<ApiErrorResponse>, _next: NextFunction): void => {
+      const correlationId = req.correlationId;
+      console.error(`[${correlationId}]`, err);
+
+      if (isDatabaseError(err)) {
+        res.status(503).json({
+          error: "Database unavailable",
+          code: "DATABASE_UNAVAILABLE",
+          correlationId,
+        } as ApiErrorResponse & { correlationId?: string });
+        return;
+      }
+
+      res.status(500).json({
+        error: "Internal server error",
+        code: "INTERNAL_ERROR",
+        correlationId,
+      } as ApiErrorResponse & { correlationId?: string });
     }
   );
 

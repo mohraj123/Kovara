@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { Database } from "../../db";
 import { ApiErrorResponse, PostListResponse, PostResponse } from "../contracts";
+import { serializeBigInt } from "../index";
 
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 20;
@@ -16,6 +17,10 @@ export function createPostsRouter(db: Database): Router {
   router.get(
     "/",
     async (req: Request, res: Response<PostListResponse | ApiErrorResponse>): Promise<void> => {
+      if (req.correlationId) {
+        res.set("X-Correlation-Id", req.correlationId);
+      }
+
       const author = typeof req.query.author === "string" ? req.query.author : undefined;
 
       const rawLimit = req.query.limit !== undefined ? Number(req.query.limit) : DEFAULT_LIMIT;
@@ -37,13 +42,15 @@ export function createPostsRouter(db: Database): Router {
       }
 
       const { posts, total } = await db.listPosts({ author, limit: rawLimit, offset: rawOffset });
-      res.json({
-        posts,
-        total,
-        limit: rawLimit,
-        offset: rawOffset,
-        has_more: rawOffset + posts.length < total,
-      });
+      res.json(
+        serializeBigInt({
+          posts,
+          total,
+          limit: rawLimit,
+          offset: rawOffset,
+          has_more: rawOffset + posts.length < total,
+        })
+      );
     }
   );
 
@@ -54,6 +61,10 @@ export function createPostsRouter(db: Database): Router {
   router.get(
     "/:id",
     async (req: Request, res: Response<PostResponse | ApiErrorResponse>): Promise<void> => {
+      if (req.correlationId) {
+        res.set("X-Correlation-Id", req.correlationId);
+      }
+
       const rawId = req.params.id;
 
       let postId: bigint;
@@ -71,7 +82,7 @@ export function createPostsRouter(db: Database): Router {
         return;
       }
 
-      res.json(post);
+      res.json(serializeBigInt(post));
     }
   );
 
