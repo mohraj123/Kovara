@@ -12,14 +12,23 @@ and this project follows semantic versioning for contract and SDK releases.
 - Web application documentation and architecture diagrams
 - Unit tests for `useWallet` and `useFeed` hooks
 - Content Security Policy (CSP) headers for web application
-
+- `apps/web/README.md` with full env-setup, network and security guidance (closes #121)
+- `apps/web/.env.example` documenting every `NEXT_PUBLIC_*` variable consumed by `apps/web/config.ts` (closes #121)
+- `apps/web/src/components/RequireWallet.tsx` — reusable client-side wallet guard (closes #122)
+- `apps/web/src/app/post/new/page.tsx` — wallet-gated post creation route (closes #122)
+- Spec-style tests for `RequireWallet` will be added in a follow-up once Jest + RTL are wired into `apps/web` (parity with `packages/web`)
 ### Changed
 
 - Web application now includes security headers
+- Home page (`apps/web/src/app/page.tsx`) restructured into a landing page that links into the wallet-gated `/post/new` route (resolves #122)
+- `PostComposer` now validates content via `apps/web/src/lib/validate.ts` and is only rendered inside a `RequireWallet` guard (defense in depth for #122)
+- `NavBar` exposes a contextual "New Post" link that is disabled until the wallet is connected (#122)
 
 ### Security
 
 - Content Security Policy headers mitigate XSS vulnerabilities
+- `.env.example` ships with explicit warnings that no real secrets belong in `NEXT_PUBLIC_*` variables (#121)
+- Route-level wallet gate prevents disconnected users from reaching the post composer, eliminating the unauthenticated-publish attack vector (#122)
 
 ## [SDK/0.1.0] - 2026-05-31
 

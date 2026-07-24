@@ -16,25 +16,11 @@ import { useRouter } from "expo-router";
 import { useWallet } from "../../hooks/useWallet";
 import { useTheme } from "../../theme/useTheme";
 import { useToast } from "../../context/ToastContext";
+import { useCreatePost } from "../../hooks/useCreatePost";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const MAX_CHARS = 280;
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Stub for the real contract call.
- * Replace with `KovaraClient.createPost(author, content)` once the SDK is wired.
- */
-async function submitCreatePost(_author: string, _content: string): Promise<string> {
-  // TODO: replace with real SDK call, e.g.:
-  // const client = new KovaraClient({ contractId: CONTRACT_ID, rpcUrl: RPC_URL });
-  // const postId = await client.createPost(author, content);
-  // return String(postId);
-  await new Promise((r) => setTimeout(r, 1200)); // simulate network
-  return String(Math.floor(Math.random() * 10_000) + 1);
-}
 
 // ── Screen ───────────────────────────────────────────────────────────────────
 
@@ -43,9 +29,9 @@ export default function CreatePostScreen() {
   const { theme } = useTheme();
   const { address, connected } = useWallet();
   const { showPending, showSuccess, showError, dismissToast } = useToast();
+  const { submitting, submit } = useCreatePost();
 
   const [content, setContent] = useState("");
-  const [submitting, setSubmitting] = useState(false);
 
   const remaining = MAX_CHARS - content.length;
   const overLimit = remaining < 0;
@@ -61,21 +47,42 @@ export default function CreatePostScreen() {
   const handleSubmit = useCallback(async () => {
     if (submitDisabled || !address) return;
 
-    setSubmitting(true);
     showPending();
 
-    try {
-      const postId = await submitCreatePost(address, content.trim());
-      dismissToast();
-      showSuccess(postId);
-      // Navigate to the new post detail screen
-      router.replace(`/post/${postId}` as Parameters<typeof router.replace>[0]);
-    } catch (err) {
-      dismissToast();
-      showError(err instanceof Error ? err.message : "Failed to publish post.");
-      setSubmitting(false);
+    const result = await submit({ content });
+
+    // The pending toast must be dismissed in every flow: success, error, or
+    // already shown validation message.
+    dismissToast();
+
+    if (result.ok) {
+      showSuccess(result.txHash || result.postId);
+      router.replace(`/post/${result.postId}` as Parameters<typeof router.replace>[0]);
+      setContent("");
+    } else {
+      // Different failure categories get a slightly different title so the
+      // user has a hint about whether retrying will help.
+      const title =
+        result.code === "USER_REJECTED"
+          ? "Transaction canceled"
+          : result.code === "WALLET_DISCONNECTED"
+            ? "Wallet not connected"
+            : result.code === "NETWORK"
+              ? "Network error"
+              : "Failed to publish post";
+      showError(result.message, title);
     }
-  }, [submitDisabled, address, content, router, showPending, showSuccess, showError, dismissToast]);
+  }, [
+    submitDisabled,
+    address,
+    content,
+    router,
+    showPending,
+    showSuccess,
+    showError,
+    dismissToast,
+    submit,
+  ]);
 
   const styles = useMemo(() => createStyles(theme), [theme]);
 

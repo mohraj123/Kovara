@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useWallet } from "@/hooks/useWallet";
 
 /** Truncates a Stellar address to G…XXXX format */
@@ -14,12 +15,43 @@ export function NavBar() {
     <header className="sticky top-0 z-50 w-full border-b border-[var(--border)] bg-[var(--background)]/80 backdrop-blur-sm">
       <nav className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
         {/* Brand */}
-        <a
+        <Link
           href="/"
           className="text-xl font-extrabold tracking-tight text-violet-500 hover:text-violet-400 transition-colors"
         >
           Kovara
-        </a>
+        </Link>
+
+        {/* Center: navigation links (post creation route is wallet-gated) */}
+        <ul className="hidden items-center gap-1 sm:flex" aria-label="Primary">
+          <li>
+            {connected ? (
+              <Link
+                href="/post/new"
+                className="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors hover:bg-[var(--muted)] hover:text-violet-300"
+                aria-label="Create a new post (wallet connected)"
+              >
+                New Post
+              </Link>
+            ) : (
+              <span
+                aria-disabled="true"
+                title="Connect your wallet to create a post"
+                className="cursor-not-allowed rounded-lg px-3 py-1.5 text-sm font-medium text-[var(--text-muted)] opacity-60"
+              >
+                New Post
+              </span>
+            )}
+          </li>
+          <li>
+            <Link
+              href="/explore"
+              className="rounded-lg px-3 py-1.5 text-sm font-medium transition-colors hover:bg-[var(--muted)] hover:text-violet-300"
+            >
+              Explore
+            </Link>
+          </li>
+        </ul>
 
         {/* Right side */}
         <div className="flex items-center gap-3">
@@ -43,6 +75,7 @@ export function NavBar() {
 
               {/* Disconnect */}
               <button
+                type="button"
                 onClick={disconnect}
                 className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--text-muted)] hover:border-red-500/60 hover:text-red-400 transition-colors"
                 aria-label="Disconnect wallet"
@@ -52,6 +85,7 @@ export function NavBar() {
             </>
           ) : (
             <button
+              type="button"
               onClick={connect}
               className="rounded-lg bg-violet-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-violet-500 transition-colors"
               aria-label="Connect Freighter wallet"

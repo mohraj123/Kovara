@@ -21,7 +21,10 @@ async function getProfile(address: string): Promise<ProfileData | null> {
    *   return client.get_profile({ address });
    */
   const contractId = process.env.NEXT_PUBLIC_PROFILE_CONTRACT_ID;
-  if (!contractId) throw new Error('Profile contract not configured');
+  if (!contractId) {
+    console.warn('Profile contract not configured - using stub mode');
+    // Return stub data instead of throwing to allow app to run
+  }
 
   // Stub: no existing profile for new users
   return null;

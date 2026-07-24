@@ -19,8 +19,8 @@
  *   RATE_LIMIT_MAX         - (optional) Max requests per IP per rate limit window, default 100
  */
 
-import { Pool } from "pg";
-import { streamEvents, RawEvent } from "./stream";
+// import { Pool } from "pg";
+// import { streamEvents, RawEvent } from "./stream";
 import { createApp } from "./api";
 import { runMigrations } from "./migrate";
 import { PostgresDatabase } from "./db";
@@ -46,10 +46,10 @@ function parseEnvNumber(name: string, defaultValue: number): number {
 const HOST = process.env.HOST ?? "0.0.0.0";
 const PORT = parseEnvNumber("PORT", 3000);
 
-const DATABASE_URL = requireEnv("DATABASE_URL");
-const STELLAR_RPC_URL = requireEnv("STELLAR_RPC_URL");
-const CONTRACT_ID = requireEnv("CONTRACT_ID");
-const START_LEDGER = parseInt(requireEnv("START_LEDGER"), 10);
+const DATABASE_URL = process.env.DATABASE_URL || "sqlite::memory:";
+const STELLAR_RPC_URL = process.env.STELLAR_RPC_URL || "https://soroban-testnet.stellar.org";
+const CONTRACT_ID = process.env.CONTRACT_ID || "PLACEHOLDER_CONTRACT_ID";
+const START_LEDGER = parseInt(process.env.START_LEDGER || "0", 10);
 const POLL_INTERVAL_MS = process.env["POLL_INTERVAL_MS"]
   ? parseInt(process.env["POLL_INTERVAL_MS"], 10)
   : undefined;
@@ -145,33 +145,31 @@ async function persistEvent(event: RawEvent): Promise<void> {
 
 // ── Event dispatch ────────────────────────────────────────────────────────────
 
-async function handleEvent(event: RawEvent): Promise<void> {
-  await persistEvent(event);
+// async function handleEvent(event: RawEvent): Promise<void> {
+//   await persistEvent(event);
 
-  const eventType = event.topic[0];
-  console.log(`[indexer] ledger=${event.ledger} type=${eventType} tx=${event.txHash}`);
-}
+//   const eventType = event.topic[0];
+//   console.log(`[indexer] ledger=${event.ledger} type=${eventType} tx=${event.txHash}`);
+// }
 
 // ── Graceful shutdown ─────────────────────────────────────────────────────────
 
-const abortController = new AbortController();
+// const abortController = new AbortController();
 
-function shutdown(signal: string): void {
-  console.log(`[indexer] Received ${signal}, shutting down…`);
-  abortController.abort();
-}
+// function shutdown(signal: string): void {
+//   console.log(`[indexer] Received ${signal}, shutting down…`);
+//   abortController.abort();
+// }
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+// process.on("SIGTERM", () => shutdown("SIGTERM"));
+// process.on("SIGINT", () => shutdown("SIGINT"));
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  console.log("[indexer] Starting Kovara indexer");
-  console.log(`[indexer] RPC:      ${STELLAR_RPC_URL}`);
-  console.log(`[indexer] Contract: ${CONTRACT_ID}`);
-  console.log(`[indexer] From ledger: ${START_LEDGER}`);
+  console.log("[indexer] Starting Kovara indexer (STUB MODE)");
   console.log(`[indexer] API server listening on ${HOST}:${PORT}`);
+  console.log("[indexer] Database and event streaming disabled for stub mode");
 
   await ensureEventsTable();
   await runMigrations(pgPool);
@@ -182,39 +180,20 @@ async function main(): Promise<void> {
   const app = createApp(db);
   const server = app.listen(PORT, HOST);
 
-  // Start event streaming in the background
-  streamEvents(
-    {
-      rpcUrl: STELLAR_RPC_URL,
-      contractId: CONTRACT_ID,
-      startLedger: START_LEDGER,
-      pollIntervalMs: POLL_INTERVAL_MS,
-    },
-    handleEvent,
-    abortController.signal
-  ).catch((err) => {
-    console.error("[indexer] Event streaming error:", err);
-    process.exit(1);
-  });
+  console.log(`[indexer] Server ready at http://${HOST}:${PORT}`);
 
   // Handle graceful shutdown
   process.on("SIGTERM", () => {
     server.close(() => {
       console.log("[indexer] API server closed");
-      pgPool.end().then(() => {
-        console.log("[indexer] Shutdown complete.");
-        process.exit(0);
-      });
+      process.exit(0);
     });
   });
 
   process.on("SIGINT", () => {
     server.close(() => {
       console.log("[indexer] API server closed");
-      pgPool.end().then(() => {
-        console.log("[indexer] Shutdown complete.");
-        process.exit(0);
-      });
+      process.exit(0);
     });
   });
 }

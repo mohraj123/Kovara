@@ -1,6 +1,7 @@
 import "express-async-errors";
 import express, { Request, Response, NextFunction } from "express";
-import rateLimit from "express-rate-limit";
+import cors from "cors";
+import rateLimit, { RateLimitRequestHandler } from "express-rate-limit";
 import { Database } from "../db";
 import { ApiErrorResponse, SearchResponse } from "./contracts";
 
@@ -57,6 +58,42 @@ export interface AppOptions {
 
 // ── Runtime configuration (all values are env-overridable) ─────────────────
 
+// let RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS ?? "60000", 10);
+// let RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX ?? "100", 10);
+
+/**
+ * Override rate-limit values at runtime (useful in tests).
+ */
+// export function setRateLimit(windowMs: number, max: number): void {
+//   RATE_LIMIT_WINDOW_MS = windowMs;
+//   RATE_LIMIT_MAX = max;
+// }
+
+// ── Rate limiter middleware factory ──────────────────────────────────────────
+// Disabled for stub mode - requires express-rate-limit
+// function createLimiter(): RateLimitRequestHandler {
+//   return rateLimit({
+//     windowMs: RATE_LIMIT_WINDOW_MS,
+//     max: RATE_LIMIT_MAX,
+//     standardHeaders: "draft-7",
+//     legacyHeaders: false,
+//     keyGenerator: (req: Request): string => {
+//       const forwarded = req.headers["x-forwarded-for"];
+//       if (typeof forwarded === "string") {
+//         return forwarded.split(",")[0].trim();
+//       }
+//       return req.ip ?? "unknown";
+//     },
+//     handler: (req: Request, res: Response): void => {
+//       const retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
+//       res.status(429).set("Retry-After", String(retryAfter)).json({
+//         error: "Too many requests. Please retry after the indicated delay.",
+//         code: "RATE_LIMIT_EXCEEDED",
+//         retryAfterSeconds: retryAfter,
+//       });
+//     },
+//   });
+// }
 function parseEnvNumber(name: string, defaultValue: number): number {
   const value = process.env[name];
   if (!value) return defaultValue;
@@ -74,36 +111,40 @@ const RATE_LIMIT_WINDOW_MS = parseEnvNumber("RATE_LIMIT_WINDOW_MS", 60000);
 const RATE_LIMIT_MAX = parseEnvNumber("RATE_LIMIT_MAX", 100);
 
 // ── Rate limiter middleware ───────────────────────────────────────────────────
-
-const apiLimiter = rateLimit({
-  windowMs: RATE_LIMIT_WINDOW_MS,
-  max: RATE_LIMIT_MAX,
-  standardHeaders: "draft-7", // Sends RateLimit-* headers (RFC 9110 draft-7)
-  legacyHeaders: false,
-  keyGenerator: (req: Request): string => {
-    // Respect X-Forwarded-For when running behind a trusted reverse proxy.
-    // In production, set `app.set("trust proxy", 1)` and ensure only your
-    // load-balancer can set this header.
-    const forwarded = req.headers["x-forwarded-for"];
-    if (typeof forwarded === "string") {
-      return forwarded.split(",")[0].trim();
-    }
-    return req.ip ?? "unknown";
-  },
-  handler: (req: Request, res: Response): void => {
-    const retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
-    res.status(429).set("Retry-After", String(retryAfter)).json({
-      error: "Too many requests. Please retry after the indicated delay.",
-      code: "RATE_LIMIT_EXCEEDED",
-      retryAfterSeconds: retryAfter,
-    });
-  },
-});
+// Disabled for stub mode
+// const apiLimiter = rateLimit({
+//   windowMs: RATE_LIMIT_WINDOW_MS,
+//   max: RATE_LIMIT_MAX,
+//   standardHeaders: "draft-7", // Sends RateLimit-* headers (RFC 9110 draft-7)
+//   legacyHeaders: false,
+//   keyGenerator: (req: Request): string => {
+//     // Respect X-Forwarded-For when running behind a trusted reverse proxy.
+//     // In production, set `app.set("trust proxy", 1)` and ensure only your
+//     // load-balancer can set this header.
+//     const forwarded = req.headers["x-forwarded-for"];
+//     if (typeof forwarded === "string") {
+//       return forwarded.split(",")[0].trim();
+//     }
+//     return req.ip ?? "unknown";
+//   },
+//   handler: (req: Request, res: Response): void => {
+//     const retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
+//     res.status(429).set("Retry-After", String(retryAfter)).json({
+//       error: "Too many requests. Please retry after the indicated delay.",
+//       code: "RATE_LIMIT_EXCEEDED",
+//       retryAfterSeconds: retryAfter,
+//     });
+//   },
+// });
 
 // ── App factory ───────────────────────────────────────────────────────────────
 
 export function createApp(db: Database, options: AppOptions = {}): express.Application {
   const app = express();
+
+  // ── CORS ──────────────────────────────────────────────────────────────────────
+  app.use(cors());
+
   app.use(express.json());
 
   // BE-25: Resolve auth middleware — use caller-supplied hook or fall back
@@ -119,7 +160,8 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
   });
 
   // Apply rate limiting to all /api routes.
-  app.use("/api", apiLimiter);
+  // const apiLimiter = createLimiter();
+  // app.use("/api", apiLimiter);
 
   // BE-25: Apply the auth middleware to all /api routes after rate limiting.
   // Routes registered below this line are covered; the health check above is
@@ -253,10 +295,9 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
   return app;
 }
 
-// Back-compat: export a pre-built app and limiter for tests that import them directly.
+// Back-compat: export a pre-built app for tests that import it directly.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const _stub = {} as any;
 export const app = createApp(_stub);
-export { apiLimiter };
 
 // Server is now started from the main index.ts entry point

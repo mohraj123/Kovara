@@ -2,6 +2,9 @@
 
 import { useState } from 'react';
 import SearchBar from '../../components/SearchBar';
+import EmptyState from '../../components/EmptyState';
+import { PostCardSkeletonList } from '../../components/Skeleton';
+import { env } from '../../../config';
 
 interface Post {
   id: string;
@@ -27,10 +30,9 @@ export default function ExplorePage() {
     setError(null);
 
     try {
-      const INDEXER_API_URL = 'http://localhost:3001';
-
+      // REPLACED: Used centralized environment tracking configurations
       const response = await fetch(
-        `${INDEXER_API_URL}/api/search/posts`,
+        `${env.indexerApiUrl}/api/search/posts`,
         {
           method: 'POST',
           headers: {
@@ -80,19 +82,17 @@ export default function ExplorePage() {
         <SearchBar onSearch={handleSearch} />
       </div>
 
-      <div
-        aria-live="polite"
-        aria-atomic="true"
-      >
+      <div>
         {loading && (
-          <div className="text-center py-8">
-            Searching posts...
+          <div className="my-4">
+            <PostCardSkeletonList count={3} />
           </div>
         )}
 
         {error && (
           <div
             role="alert"
+            aria-live="assertive"
             className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4"
           >
             {error}
@@ -139,9 +139,11 @@ export default function ExplorePage() {
       {!loading &&
         !error &&
         posts.length === 0 && (
-          <div className="text-center py-8 text-gray-600">
-            Enter a search query to find posts
-          </div>
+          <EmptyState
+            icon="🔍"
+            title="No posts yet"
+            description="Enter a search query above to discover posts from across the network."
+          />
         )}
     </main>
   );

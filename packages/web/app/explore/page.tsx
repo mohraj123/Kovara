@@ -3,6 +3,8 @@
 import { useState, useCallback } from "react";
 import Link from "next/link";
 import { SearchBar } from "../components/SearchBar";
+import EmptyState from "../components/EmptyState";
+import { PostCardSkeletonList } from "../components/Skeleton";
 
 interface SearchProfile {
   address: string;
@@ -87,7 +89,11 @@ export default function ExplorePage() {
       <div style={styles.container}>
         <SearchBar onSearch={handleSearch} />
 
-        {searching && <div style={styles.loading}>Searching...</div>}
+        {searching && (
+          <div style={styles.skeletonWrap}>
+            <PostCardSkeletonList count={3} />
+          </div>
+        )}
 
         {error && (
           <div style={styles.errorBanner} role="alert">
@@ -100,17 +106,19 @@ export default function ExplorePage() {
         )}
 
         {showInitial && (
-          <div style={styles.emptyState}>
-            <span style={styles.emptyIcon} aria-hidden="true">🔍</span>
-            <p>Search for profiles and pools</p>
-          </div>
+          <EmptyState
+            icon="🔍"
+            title="Start exploring"
+            description="Search for profiles and pools above."
+          />
         )}
 
         {showNoResults && (
-          <div style={styles.emptyState}>
-            <span style={styles.emptyIcon} aria-hidden="true">🔍</span>
-            <p>No results found for &ldquo;{query}&rdquo;</p>
-          </div>
+          <EmptyState
+            icon="🔍"
+            title="No results"
+            description={`No profiles or pools matched “${query}”.`}
+          />
         )}
 
         {!searching && !error && hasResults && (
@@ -190,10 +198,8 @@ const styles: Record<string, React.CSSProperties> = {
     margin: "0 auto",
     padding: "var(--spacing-lg)",
   },
-  loading: {
-    textAlign: "center",
-    padding: "var(--spacing-lg)",
-    color: "var(--color-text-secondary)",
+  skeletonWrap: {
+    marginTop: "var(--spacing-md)",
   },
   errorBanner: {
     display: "flex",
@@ -216,16 +222,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: "inherit",
     fontWeight: 600,
     cursor: "pointer",
-  },
-  emptyState: {
-    textAlign: "center",
-    padding: "var(--spacing-xl)",
-    color: "var(--color-text-secondary)",
-  },
-  emptyIcon: {
-    fontSize: "2rem",
-    display: "block",
-    marginBottom: "var(--spacing-sm)",
   },
   section: {
     marginTop: "var(--spacing-xl)",

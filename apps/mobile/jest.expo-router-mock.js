@@ -1,4 +1,5 @@
 const router = {
+  back: jest.fn(),
   push: jest.fn(),
   replace: jest.fn(),
 };

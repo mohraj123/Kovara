@@ -13,19 +13,11 @@ import {
 import { useRouter } from "expo-router";
 
 import { useToast } from "../../context/ToastContext";
+import { useNetwork } from "../../hooks/useNetwork";
 import { useWallet } from "../../hooks/useWallet";
+import { submitProfileTransaction } from "../../hooks/profileContract";
 
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,32}$/;
-
-async function setProfileTransaction(
-  _user: string,
-  _username: string,
-  _creatorToken: string
-): Promise<string> {
-  // Replace with SDK-backed set_profile submission once signing is wired.
-  await new Promise<void>((resolve) => setTimeout(resolve, 800));
-  return `mock_tx_${Date.now().toString(36)}`;
-}
 
 function validateUsername(value: string): string | null {
   if (!value.trim()) return "Username is required.";
@@ -38,6 +30,7 @@ function validateUsername(value: string): string | null {
 export default function EditProfileScreen() {
   const router = useRouter();
   const { address, connected } = useWallet();
+  const { rpcUrl, contractId } = useNetwork();
   const { showPending, showSuccess, showError } = useToast();
 
   const [username, setUsername] = useState("");
@@ -68,7 +61,13 @@ export default function EditProfileScreen() {
     showPending();
 
     try {
-      const txHash = await setProfileTransaction(address, username.trim(), creatorToken.trim());
+      const txHash = await submitProfileTransaction(
+        address,
+        username.trim(),
+        creatorToken.trim(),
+        rpcUrl,
+        contractId
+      );
       showSuccess(txHash);
       router.back();
     } catch (err) {
