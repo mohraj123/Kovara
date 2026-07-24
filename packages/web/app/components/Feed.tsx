@@ -1,6 +1,8 @@
 "use client";
 
 import { PostCard, Post } from "./PostCard";
+import EmptyState from "./EmptyState";
+import { PostCardSkeletonList } from "./Skeleton";
 
 interface FeedProps {
   posts: Post[];
@@ -20,19 +22,19 @@ export function Feed({
   if (loading) {
     return (
       <div style={styles.container}>
-        {[1, 2, 3].map((i) => (
-          <div key={i} style={styles.skeleton}></div>
-        ))}
+        <PostCardSkeletonList count={3} />
       </div>
     );
   }
 
   if (posts.length === 0) {
     return (
-      <div style={styles.empty}>
-        <div style={styles.emptyIcon}>📝</div>
-        <h3>No posts yet</h3>
-        <p style={styles.emptyText}>Be the first to share something!</p>
+      <div style={styles.container}>
+        <EmptyState
+          icon="👥"
+          title="No posts yet"
+          description="Follow accounts to see their updates in your feed."
+        />
       </div>
     );
   }
@@ -57,24 +59,5 @@ const styles: Record<string, React.CSSProperties> = {
     maxWidth: "600px",
     margin: "0 auto",
     padding: "var(--spacing-md)",
-  },
-  skeleton: {
-    height: "200px",
-    background: "var(--color-bg-secondary)",
-    borderRadius: "12px",
-    marginBottom: "var(--spacing-md)",
-    animation: "pulse 1.5s ease-in-out infinite",
-  },
-  empty: {
-    textAlign: "center",
-    padding: "var(--spacing-xl)",
-    color: "var(--color-text-secondary)",
-  },
-  emptyIcon: {
-    fontSize: "3rem",
-    marginBottom: "var(--spacing-md)",
-  },
-  emptyText: {
-    marginTop: "var(--spacing-sm)",
   },
 };
