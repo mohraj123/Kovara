@@ -85,5 +85,46 @@ describe("Post Event Handlers", () => {
 
       await expect(handlePostDeleted(mockPool, event, context)).rejects.toThrow("DB error");
     });
+
+    // ── Soft-delete semantics (issue #74) ──────────────────────────────────────
+    //
+    // The contract emits PostDeleted for every successful on-chain delete, but
+    // the on-chain `delete_post` is a hard-remove (the post entry is removed
+    // from storage entirely).  This means the indexer's soft-delete is a
+    // *defensive* signal: when the DB row still exists at the time of the
+    // event (e.g. replication lag), the handler should set `deleted_at`.  When
+    // the row has already been removed the idempotent skip is safe.  These
+    // tests pin that semantics so regressions in either direction are loud.
+
+    it("issues the same UPDATE shape for both first delete and replay", async () => {
+      const { event, context } = createMockPostDeletedEvent(7n, "GTEST123");
+      mockQuery.mockResolvedValueOnce({ rowCount: 1 });
+
+      await handlePostDeleted(mockPool, event, context);
+      const firstCall = mockQuery.mock.calls[0];
+
+      mockQuery.mockResolvedValueOnce({ rowCount: 0 });
+      await handlePostDeleted(mockPool, event, context);
+      const secondCall = mockQuery.mock.calls[1];
+
+      // The SQL shape and parameter order must be identical for both
+      // branches — only the rowCount changes.
+      expect(firstCall[0]).toBe(secondCall[0]);
+      expect(firstCall[1]).toEqual(secondCall[1]);
+    });
+
+    it("uses provided timestamp for deleted_at (not NOW()) for deterministic event-time semantics", async () => {
+      const fixedDate = new Date("2026-01-15T12:00:00.000Z");
+      const { event, context } = createMockPostDeletedEvent(1n, "GTEST123");
+      const customized = { ...context, timestamp: fixedDate };
+      mockQuery.mockResolvedValueOnce({ rowCount: 1 });
+
+      await handlePostDeleted(mockPool, event, customized);
+
+      // The first parameter must be the event timestamp, not the current
+      // server time, so the soft-delete reflects when the on-chain event
+      // happened (not when the indexer saw it).
+      expect(mockQuery.mock.calls[0][1][0]).toBe(fixedDate);
+    });
   });
 });

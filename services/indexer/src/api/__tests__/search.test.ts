@@ -70,6 +70,8 @@ describe("POST /api/search/posts", () => {
         ],
         total: 1,
         has_more: false,
+        next_offset: null,
+        prev_offset: null,
       });
     } finally {
       await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));

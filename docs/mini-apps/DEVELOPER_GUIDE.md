@@ -181,6 +181,147 @@ Add the missing permission to `Kovara-manifest.json` and reload.
 
 ---
 
+## Host Permission Enforcement
+
+The Kovara host enforces the permission model at the bridge layer — **before** any call reaches the wallet or profile service. This section explains exactly how enforcement works and shows examples for every available permission.
+
+### How it works
+
+When a mini app sends a bridge message, the host:
+
+1. Reads the `permissions` array from the mini app's loaded `Kovara-manifest.json`.
+2. Checks whether the called method is in that array.
+3. If the permission is **not declared**, the host rejects the call immediately and sends back a `PermissionDenied` error — the wallet is never touched.
+4. If the permission **is declared**, the call is forwarded and the user may be prompted to approve (for signing operations).
+
+This means there is no way for a mini app to silently access wallet or profile data beyond what the user has consented to at launch.
+
+### Permission enforcement examples
+
+#### `wallet.read` — read the connected Stellar address
+
+Manifest declaration required:
+
+```json
+{ "permissions": ["wallet.read"] }
+```
+
+Calling without the declaration:
+
+```js
+// manifest permissions: []
+const address = await KovaraSDK.wallet.getAddress();
+// → BridgeError { code: "PermissionDenied", message: "Mini app has not declared wallet.read" }
+```
+
+Calling with the declaration:
+
+```js
+// manifest permissions: ["wallet.read"]
+const address = await KovaraSDK.wallet.getAddress();
+// → "GBBDQJ3QSXH2XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+```
+
+---
+
+#### `wallet.sign` — sign a Stellar transaction
+
+Manifest declaration required:
+
+```json
+{ "permissions": ["wallet.sign"] }
+```
+
+Calling without the declaration:
+
+```js
+// manifest permissions: ["wallet.read"]
+const result = await KovaraSDK.wallet.sign({ xdr: "AAAAAgAAAAD..." });
+// → BridgeError { code: "PermissionDenied", message: "Mini app has not declared wallet.sign" }
+```
+
+Calling with the declaration (host prompts the user for approval):
+
+```js
+// manifest permissions: ["wallet.read", "wallet.sign"]
+const result = await KovaraSDK.wallet.sign({ xdr: "AAAAAgAAAAD..." });
+// → { signedXdr: "AAAAAgAAAAD..." }
+```
+
+---
+
+#### `profile.read` — read the user's Kovara profile
+
+Manifest declaration required:
+
+```json
+{ "permissions": ["profile.read"] }
+```
+
+Calling without the declaration:
+
+```js
+// manifest permissions: ["wallet.read"]
+const profile = await KovaraSDK.profile.get();
+// → BridgeError { code: "PermissionDenied", message: "Mini app has not declared profile.read" }
+```
+
+Calling with the declaration:
+
+```js
+// manifest permissions: ["wallet.read", "profile.read"]
+const profile = await KovaraSDK.profile.get();
+// → { username: "stellar_dev", displayName: "Stellar Dev", avatarUrl: "https://..." }
+```
+
+---
+
+#### `post.create` — publish a post to the user's feed
+
+Manifest declaration required:
+
+```json
+{ "permissions": ["post.create"] }
+```
+
+Calling without the declaration:
+
+```js
+// manifest permissions: ["wallet.read"]
+const result = await KovaraSDK.post.create({ content: "Hello Kovara!" });
+// → BridgeError { code: "PermissionDenied", message: "Mini app has not declared post.create" }
+```
+
+Calling with the declaration (host prompts the user for approval):
+
+```js
+// manifest permissions: ["wallet.read", "post.create"]
+const result = await KovaraSDK.post.create({ content: "Hello Kovara!" });
+// → { success: true, postId: "987" }
+```
+
+---
+
+### Handling `PermissionDenied` in your app
+
+Always wrap bridge calls in try/catch and handle `PermissionDenied` explicitly so users see a useful message rather than a silent failure:
+
+```js
+try {
+  const address = await KovaraSDK.wallet.getAddress();
+} catch (err) {
+  if (err.code === "PermissionDenied") {
+    // The manifest is missing the required permission — fix Kovara-manifest.json
+    console.error("Permission not declared:", err.message);
+  } else {
+    // Some other bridge or network error
+    console.error("Unexpected error:", err.message);
+  }
+}
+```
+
+---
+
 ## Submitting to the Mini App Registry
 
 1. **Host your mini app** — deploy to any static host (GitHub Pages, Vercel, IPFS, etc.).

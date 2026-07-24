@@ -23,6 +23,23 @@ export interface PostEventContext {
 }
 
 /**
+ * Validate a raw event object has the shape expected for a PostCreated event.
+ * Throws a descriptive error for any missing or incorrectly typed field.
+ */
+export function validatePostCreatedEvent(event: unknown): asserts event is PostCreatedEvent {
+  if (!event || typeof event !== "object") {
+    throw new Error("PostCreated event must be a non-null object");
+  }
+  const e = event as Record<string, unknown>;
+  if (typeof e.id !== "bigint" && typeof e.id !== "number" && typeof e.id !== "string") {
+    throw new Error("PostCreated event missing or invalid field: id");
+  }
+  if (typeof e.author !== "string" || e.author.trim() === "") {
+    throw new Error("PostCreated event missing or invalid field: author");
+  }
+}
+
+/**
  * Handle PostCreatedEvent
  * Inserts a new post row into the posts table
  * Idempotent: Uses ON CONFLICT DO NOTHING to handle duplicate events
@@ -69,8 +86,11 @@ export async function handlePostCreated(
 
 /**
  * Handle PostDeletedEvent
- * Marks a post as deleted (soft delete) by setting deleted_at timestamp
- * Idempotent: Only updates if deleted_at is NULL
+ * Marks a post as deleted (soft delete) by setting deleted_at timestamp.
+ * Uses the event timestamp (from ledger close time) rather than NOW() so
+ * that the recorded deletion time is consistent with on-chain data, even
+ * when the indexer replays old events.
+ * Idempotent: Only updates if deleted_at is NULL.
  */
 export async function handlePostDeleted(
   pool: Pool,
@@ -78,7 +98,11 @@ export async function handlePostDeleted(
   context: PostEventContext
 ): Promise<void> {
   const { post_id, author } = event;
-  const { timestamp } = context;
+  // Use the event's ledger timestamp, falling back to now only if unavailable.
+  // This ensures replayed events preserve the original deletion time.
+  const deletedAt: Date = context.timestamp instanceof Date && !isNaN(context.timestamp.getTime())
+    ? context.timestamp
+    : new Date();
 
   const query = `
     UPDATE posts
@@ -86,7 +110,7 @@ export async function handlePostDeleted(
     WHERE id = $2 AND author = $3 AND deleted_at IS NULL
   `;
 
-  const values = [timestamp, post_id.toString(), author];
+  const values = [deletedAt, post_id.toString(), author];
 
   try {
     const result = await pool.query(query, values);

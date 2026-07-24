@@ -131,3 +131,9 @@ function requireEnv(key: string): string {
   /** Set to "true" to enable the experimental verifier voting UI */
   export const FEATURE_VERIFY_QUEUE =
     optionalEnv("NEXT_PUBLIC_FEATURE_VERIFY_QUEUE", "false") === "true";
+
+    export const env = {
+  apiUrl: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001',
+  indexerApiUrl: process.env.NEXT_PUBLIC_INDEXER_API_URL || 'http://localhost:3002',
+  isDevelopment: process.env.NODE_ENV === 'development',
+};

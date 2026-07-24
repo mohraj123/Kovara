@@ -1,6 +1,8 @@
 import "express-async-errors";
 import express, { Request, Response, NextFunction } from "express";
-import rateLimit from "express-rate-limit";
+import cors from "cors";
+import rateLimit, { RateLimitRequestHandler } from "express-rate-limit";
+import crypto from "crypto";
 import { Database } from "../db";
 import { ApiErrorResponse } from "./contracts";
 
@@ -8,10 +10,70 @@ import { ApiErrorResponse } from "./contracts";
 (BigInt.prototype as unknown as Record<string, unknown>).toJSON = function () {
   return String(this);
 };
+
+/**
+ * Recursively convert all BigInt values in an object to strings.
+ * Useful when sending responses without relying on the global toJSON override.
+ */
+export function serializeBigInt<T>(obj: T): T {
+  if (typeof obj === "bigint") return String(obj) as unknown as T;
+  if (obj === null || obj === undefined) return obj;
+  if (Array.isArray(obj)) return obj.map((item) => serializeBigInt(item)) as unknown as T;
+  if (typeof obj === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+      result[key] = serializeBigInt(value);
+    }
+    return result as T;
+  }
+  return obj;
+}
 import { createProfilesRouter } from "./routes/profiles";
 import { createPostsRouter } from "./routes/posts";
 import { createFollowsRouter } from "./routes/follows";
 import { createPoolsRouter } from "./routes/pools";
+
+// ── Auth middleware (BE-25) ───────────────────────────────────────────────────
+
+/**
+ * Type signature for an authorization middleware factory.
+ *
+ * BE-25: Centralizes authorization logic so individual routes do not
+ * duplicate checks. By default a no-op middleware is used, keeping
+ * anonymous access unchanged. Deployments that require authentication can
+ * supply their own implementation via `AppOptions.authMiddleware`.
+ *
+ * Example — Bearer-token guard:
+ *
+ *   createApp(db, {
+ *     authMiddleware: (req, res, next) => {
+ *       const token = req.headers.authorization?.replace("Bearer ", "");
+ *       if (!token || token !== process.env.API_SECRET) {
+ *         res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED" });
+ *         return;
+ *       }
+ *       next();
+ *     },
+ *   });
+ */
+export type AuthMiddleware = (req: Request, res: Response, next: NextFunction) => void;
+
+/**
+ * A no-op middleware used when no auth is configured.
+ * Passes every request straight through, preserving existing anonymous access.
+ */
+const noopAuthMiddleware: AuthMiddleware = (_req, _res, next) => next();
+
+// ── App options ───────────────────────────────────────────────────────────────
+
+export interface AppOptions {
+  /**
+   * BE-25: Optional authorization middleware applied to all /api routes
+   * before request handlers are invoked.  Defaults to a no-op so existing
+   * deployments are unaffected.
+   */
+  authMiddleware?: AuthMiddleware;
+}
 
 // ── Runtime configuration (all values are env-overridable) ─────────────────
 
@@ -31,49 +93,94 @@ const TRUST_PROXY = process.env.TRUST_PROXY ?? "0";
 const RATE_LIMIT_WINDOW_MS = parseEnvNumber("RATE_LIMIT_WINDOW_MS", 60000);
 const RATE_LIMIT_MAX = parseEnvNumber("RATE_LIMIT_MAX", 100);
 
-// ── Rate limiter middleware ───────────────────────────────────────────────────
+// ── Database error detection ───────────────────────────────────────────────
 
-const apiLimiter = rateLimit({
-  windowMs: RATE_LIMIT_WINDOW_MS,
-  max: RATE_LIMIT_MAX,
-  standardHeaders: "draft-7", // Sends RateLimit-* headers (RFC 9110 draft-7)
-  legacyHeaders: false,
-  keyGenerator: (req: Request): string => {
-    // Respect X-Forwarded-For when running behind a trusted reverse proxy.
-    // In production, set `app.set("trust proxy", 1)` and ensure only your
-    // load-balancer can set this header.
-    const forwarded = req.headers["x-forwarded-for"];
-    if (typeof forwarded === "string") {
-      return forwarded.split(",")[0].trim();
+const DB_ERROR_PATTERNS = [
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "connection refused",
+  "connection terminated",
+  "unable to connect",
+  "database unavailable",
+];
+
+export function isDatabaseError(err: unknown): boolean {
+  if (err instanceof Error) {
+    const msg = `${err.name} ${err.message}`.toLowerCase();
+    if (DB_ERROR_PATTERNS.some((p) => msg.includes(p.toLowerCase()))) return true;
+    if ("code" in err && typeof (err as { code: string }).code === "string") {
+      const code = (err as { code: string }).code;
+      if (["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN"].includes(code)) return true;
     }
-    return req.ip ?? "unknown";
-  },
-  handler: (req: Request, res: Response): void => {
-    const retryAfter = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
-    res.status(429).set("Retry-After", String(retryAfter)).json({
-      error: "Too many requests. Please retry after the indicated delay.",
-      code: "RATE_LIMIT_EXCEEDED",
-      retryAfterSeconds: retryAfter,
-    });
-  },
-});
+  }
+  return false;
+}
+
+// ── Request correlation ID ─────────────────────────────────────────────────
+
+declare global {
+  namespace Express {
+    interface Request {
+      correlationId?: string;
+    }
+  }
+}
 
 // ── App factory ───────────────────────────────────────────────────────────────
 
-export function createApp(db: Database): express.Application {
+export function createApp(db: Database, options: AppOptions = {}): express.Application {
   const app = express();
+
+  // ── CORS ──────────────────────────────────────────────────────────────────────
+  app.use(cors());
+
   app.use(express.json());
+
+  // BE-25: Resolve auth middleware — use caller-supplied hook or fall back
+  // to the no-op so anonymous access is unchanged by default.
+  const authMiddleware: AuthMiddleware = options.authMiddleware ?? noopAuthMiddleware;
 
   if (TRUST_PROXY !== "") {
     app.set("trust proxy", TRUST_PROXY);
   }
+
+  // ── Correlation ID middleware ────────────────────────────────────────────────
+  app.use((req: Request, _res: Response, next: NextFunction): void => {
+    const id = (req.headers["x-correlation-id"] as string) || crypto.randomUUID();
+    req.correlationId = id;
+    next();
+  });
+
   // ── Health check (unlimited) ────────────────────────────────────────────────
+  app.get("/health", async (_req: Request, res: Response): Promise<void> => {
+    let dbStatus = "ok";
+    try {
+      await db.getProfile("__health_check_probe__");
+    } catch {
+      dbStatus = "unavailable";
+    }
+
+    const status = dbStatus === "ok" ? "ok" : "degraded";
+    res.json({
+      status,
+      uptime: process.uptime(),
+      db: dbStatus,
+    });
+  // ── Health check (unlimited, no auth required) ──────────────────────────────
   app.get("/health", (_req: Request, res: Response): void => {
     res.json({ status: "ok", uptime: process.uptime() });
   });
 
   // Apply rate limiting to all /api routes.
-  app.use("/api", apiLimiter);
+  // const apiLimiter = createLimiter();
+  // app.use("/api", apiLimiter);
+
+  // BE-25: Apply the auth middleware to all /api routes after rate limiting.
+  // Routes registered below this line are covered; the health check above is
+  // intentionally excluded.
+  app.use("/api", authMiddleware);
 
   // ── Resource routes ────────────────────────────────────────────────────────
   app.use("/api/profiles", createProfilesRouter(db));
@@ -103,16 +210,20 @@ export function createApp(db: Database): express.Application {
     posts: SearchPost[];
     total: number;
     has_more: boolean;
+    next_offset: number | null;
+    prev_offset: number | null;
   }
 
   interface ErrorResponse {
     error: string;
     code: string;
+    correlationId?: string;
   }
 
   const MAX_LIMIT = 100;
   const DEFAULT_LIMIT = 20;
   const DEFAULT_OFFSET = 0;
+  const MAX_QUERY_LENGTH = 500;
 
   const serializePost = (post: {
     id: bigint;
@@ -144,6 +255,24 @@ export function createApp(db: Database): express.Application {
         body.query.trim() === ""
       ) {
         res.status(400).json({ error: "query is required", code: "INVALID_QUERY" });
+        return;
+      }
+
+      if (body.query.length > MAX_QUERY_LENGTH) {
+        res.status(400).json({
+          error: `query cannot exceed ${MAX_QUERY_LENGTH} characters`,
+          code: "QUERY_TOO_LONG",
+        });
+        return;
+      }
+
+      if (body.limit !== undefined && body.limit !== null && typeof body.limit !== "number") {
+        res.status(400).json({ error: "limit must be a number", code: "INVALID_QUERY" });
+        return;
+      }
+
+      if (body.offset !== undefined && body.offset !== null && typeof body.offset !== "number") {
+        res.status(400).json({ error: "offset must be a number", code: "INVALID_QUERY" });
         return;
       }
 
@@ -181,10 +310,14 @@ export function createApp(db: Database): express.Application {
         offset,
       });
 
+      const has_more = offset + posts.length < total;
+
       res.json({
         posts: posts.map(serializePost),
         total,
-        has_more: offset + posts.length < total,
+        has_more,
+        next_offset: has_more ? offset + posts.length : null,
+        prev_offset: offset > 0 ? offset - limit : null,
       });
     }
   );
@@ -217,19 +350,33 @@ export function createApp(db: Database): express.Application {
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use(
-    (err: Error, _req: Request, res: Response<ApiErrorResponse>, _next: NextFunction): void => {
-      console.error(err);
-      res.status(500).json({ error: "Internal server error", code: "INTERNAL_ERROR" });
+    (err: Error, req: Request, res: Response<ApiErrorResponse>, _next: NextFunction): void => {
+      const correlationId = req.correlationId;
+      console.error(`[${correlationId}]`, err);
+
+      if (isDatabaseError(err)) {
+        res.status(503).json({
+          error: "Database unavailable",
+          code: "DATABASE_UNAVAILABLE",
+          correlationId,
+        } as ApiErrorResponse & { correlationId?: string });
+        return;
+      }
+
+      res.status(500).json({
+        error: "Internal server error",
+        code: "INTERNAL_ERROR",
+        correlationId,
+      } as ApiErrorResponse & { correlationId?: string });
     }
   );
 
   return app;
 }
 
-// Back-compat: export a pre-built app and limiter for tests that import them directly.
+// Back-compat: export a pre-built app for tests that import it directly.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const _stub = {} as any;
 export const app = createApp(_stub);
-export { apiLimiter };
 
 // Server is now started from the main index.ts entry point

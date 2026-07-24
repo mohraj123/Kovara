@@ -214,6 +214,8 @@ See [`.env.example`](.env.example) for all required variables.
 | `TRUST_PROXY`          | Express trust-proxy setting; set to `1` only behind a trusted proxy |
 | `RATE_LIMIT_WINDOW_MS` | Rate-limit window in milliseconds (default: `60000`)                |
 | `RATE_LIMIT_MAX`       | Maximum requests per window per IP (default: `100`)                |
+| `CORS_ORIGIN`          | Allowed CORS origin(s) (default: all)  |
+
 
 ### Secure environment configuration
 
@@ -246,6 +248,7 @@ npm install
 # Apply migrations manually
 psql "$DATABASE_URL" -f migrations/001_profiles.sql
 psql "$DATABASE_URL" -f migrations/002_posts.sql
+psql "$DATABASE_URL" -f migrations/003_follows.sql
 psql "$DATABASE_URL" -f migrations/004_tips_likes.sql
 psql "$DATABASE_URL" -f migrations/005_pools.sql
 ```
@@ -292,243 +295,67 @@ All event handlers are designed to be idempotent:
 
 This ensures the indexer can safely replay events without data corruption.
 
-## API Routes
+## CORS
 
-The indexer exposes a REST API on port `3001` (configurable via `PORT`). All endpoints are prefixed with `/api` and return `application/json`. Large integers (post IDs, token amounts) are serialised as strings to avoid floating-point loss.
+The API uses the [`cors`](https://www.npmjs.com/package/cors) middleware and allows
+all origins by default. To restrict access in production, set the `CORS_ORIGIN`
+environment variable:
 
-**Base URL:** `http://localhost:3001`
+```bash
+# Allow a single origin
+CORS_ORIGIN=https://app.example.com
 
-> **Rate limit:** 100 requests per 60 seconds per IP by default (overridable via `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW_MS`). Exceeding the limit returns `429` with a `Retry-After` header.
+# Allow multiple origins (comma-separated)
+CORS_ORIGIN=https://app.example.com,https://admin.example.com
+```
 
-### Profiles
+When `CORS_ORIGIN` is not set, all origins are permitted (useful during development).
+See `.env.example` for the full list of environment variables.
 
-#### `GET /api/profiles/:address`
+## Rate Limiting
 
-Returns the on-chain profile for a Stellar account address.
+All `/api/*` routes are protected by a rate limiter (express-rate-limit). The
+default window is 60 seconds with 100 requests per IP. Configurable via:
 
-**Path parameter**
+| Variable               | Default | Description                          |
+| ---------------------- | ------- | ------------------------------------ |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Window duration in milliseconds      |
+| `RATE_LIMIT_MAX`       | `100`   | Maximum requests per window per IP   |
 
-| Param     | Type     | Description                      |
-| --------- | -------- | -------------------------------- |
-| `address` | `string` | Stellar account address (`G...`) |
+When the limit is exceeded, the API returns `429 Too Many Requests` with a
+`Retry-After` header and a JSON body containing `RATE_LIMIT_EXCEEDED`.
 
-**Response `200`**
+## Full-Text Search
+
+Search across indexed post content:
+
+```bash
+curl -X POST http://localhost:3000/api/search/posts \
+  -H "Content-Type: application/json" \
+  -d '{"query": "stellar", "limit": 10, "offset": 0}'
+```
+
+The search uses PostgreSQL full-text search (`tsvector`/`tsquery`) for efficient
+content matching. Results include `id`, `author`, `content`, `tip_total`,
+`like_count`, and `created_ledger`.
+
+## Token Metadata Enrichment
+
+Pool responses include optional token metadata when available:
 
 ```json
 {
-  "address": "GABC...XYZ",
-  "username": "alice",
-  "creator_token": "CABC...TOKEN",
-  "updated_ledger": 12100000
+  "pool_id": "...",
+  "token": "GABCD...",
+  "token_name": "Kovara Token",
+  "token_symbol": "KOVA",
+  "token_decimals": 7,
+  ...
 }
 ```
 
-**Response `404`** — profile not found.
-
----
-
-### Posts
-
-#### `GET /api/posts`
-
-Paginated list of posts. Optionally filtered by author.
-
-**Query parameters**
-
-| Param    | Type     | Default | Constraints | Description                    |
-| -------- | -------- | ------- | ----------- | ------------------------------ |
-| `author` | `string` | —       | —           | Filter by Stellar address      |
-| `limit`  | `number` | `20`    | 1–100       | Maximum items to return        |
-| `offset` | `number` | `0`     | ≥ 0         | Items to skip before returning |
-
-**Response `200`**
-
-```json
-{
-  "posts": [
-    {
-      "id": "42",
-      "author": "GABC...XYZ",
-      "content": "Hello Kovara!",
-      "tip_total": "500000000",
-      "like_count": "3",
-      "created_ledger": 12200000,
-      "deleted": false,
-      "deleted_ledger": null
-    }
-  ],
-  "total": 1,
-  "limit": 20,
-  "offset": 0,
-  "has_more": false
-}
-```
-
-**Error codes:** `INVALID_QUERY`, `LIMIT_EXCEEDED`
-
----
-
-#### `GET /api/posts/:id`
-
-Returns a single post by its numeric ID.
-
-**Path parameter**
-
-| Param | Type  | Description                      |
-| ----- | ----- | -------------------------------- |
-| `id`  | `u64` | Post ID assigned by the contract |
-
-**Response `200`** — same shape as a single item in the list above.
-
-**Response `400`** — `INVALID_ID` (non-numeric or negative ID).
-
-**Response `404`** — post not found.
-
----
-
-#### `POST /api/search/posts`
-
-Full-text search over post content.
-
-**Request body**
-
-```json
-{
-  "query": "stellar soroban",
-  "limit": 20,
-  "offset": 0
-}
-```
-
-| Field    | Type     | Required | Default | Constraints      |
-| -------- | -------- | -------- | ------- | ---------------- |
-| `query`  | `string` | yes      | —       | non-empty string |
-| `limit`  | `number` | no       | `20`    | 1–100            |
-| `offset` | `number` | no       | `0`     | ≥ 0              |
-
-**Response `200`**
-
-```json
-{
-  "posts": [...],
-  "total": 1,
-  "has_more": false
-}
-```
-
-**Error codes:** `INVALID_QUERY`, `LIMIT_EXCEEDED`
-
----
-
-### Follows
-
-#### `GET /api/follows/:address/followers`
-
-Paginated list of accounts that follow `:address`.
-
-**Path parameter**
-
-| Param     | Type     | Description                      |
-| --------- | -------- | -------------------------------- |
-| `address` | `string` | Stellar account address (`G...`) |
-
-**Query parameters**
-
-| Param    | Type     | Default | Constraints |
-| -------- | -------- | ------- | ----------- |
-| `limit`  | `number` | `20`    | 1–100       |
-| `offset` | `number` | `0`     | ≥ 0         |
-
-**Response `200`**
-
-```json
-{
-  "address": "GABC...XYZ",
-  "followers": ["GBOB...XYZ", "GCAR...XYZ"],
-  "total": 2,
-  "limit": 20,
-  "offset": 0,
-  "has_more": false
-}
-```
-
----
-
-#### `GET /api/follows/:address/following`
-
-Paginated list of accounts that `:address` follows.
-
-**Query parameters:** same as `/followers`.
-
-**Response `200`**
-
-```json
-{
-  "address": "GABC...XYZ",
-  "following": ["GDAVE...XYZ"],
-  "total": 1,
-  "limit": 20,
-  "offset": 0,
-  "has_more": false
-}
-```
-
----
-
-### Pools
-
-#### `GET /api/pools/:id`
-
-Returns the current state of a community pool.
-
-**Path parameter**
-
-| Param | Type     | Description            |
-| ----- | -------- | ---------------------- |
-| `id`  | `string` | Pool symbol identifier |
-
-**Response `200`**
-
-```json
-{
-  "pool_id": "CREATOR_FUND",
-  "token": "CABC...TOKEN",
-  "balance": "5000000000",
-  "admins": ["GABC...XYZ"],
-  "threshold": 2,
-  "created_ledger": 12300000,
-  "updated_ledger": 12350000
-}
-```
-
-**Response `400`** — `INVALID_ID` (empty ID).
-
-**Response `404`** — pool not found.
-
----
-
-### Error format
-
-All error responses share the same shape:
-
-```json
-{
-  "error": "human-readable message",
-  "code": "MACHINE_READABLE_CODE"
-}
-```
-
-| Code                  | HTTP status | Meaning                                |
-| --------------------- | ----------- | -------------------------------------- |
-| `NOT_FOUND`           | 404         | Resource does not exist in the index   |
-| `INVALID_QUERY`       | 400         | Missing or malformed request parameter |
-| `INVALID_ID`          | 400         | Missing or malformed path ID           |
-| `INVALID_ADDRESS`     | 400         | Missing or malformed Stellar address   |
-| `LIMIT_EXCEEDED`      | 400         | `limit` parameter exceeds the maximum  |
-| `RATE_LIMIT_EXCEEDED` | 429         | Too many requests from this IP         |
-| `INTERNAL_ERROR`      | 500         | Unexpected server error                |
-
----
+Metadata is fetched via the `getTokenMetadata` database method, which can be
+populated from on-chain contract data or a supplementary table.
 
 ## Monitoring
 
@@ -537,6 +364,8 @@ All error responses share the same shape:
 ```bash
 curl http://localhost:3000/health
 ```
+
+Returns `200 OK` with `{ "status": "ok", "uptime": <seconds> }`.
 
 ### Metrics
 

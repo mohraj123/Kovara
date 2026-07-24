@@ -20,7 +20,7 @@ interface ToastContextValue {
   showPending: () => void;
   showSuccess: (txHash: string) => void;
   /** Show an error toast for failed transactions or wallet operations. */
-  showError: (message: string) => void;
+  showError: (message: string, title?: string) => void;
   /** Show an error toast specifically for indexer / data-fetch failures (non-200 responses). */
   showIndexerError: (message?: string) => void;
 }
@@ -60,10 +60,10 @@ export function ToastProvider({ children }: { children: React.ReactNode }): JSX.
   );
 
   const showError = useCallback(
-    (message: string) => {
+    (message: string, title?: string) => {
       showToast({
         kind: "error",
-        title: "Transaction failed",
+        title: title ?? "Transaction failed",
         message,
       });
     },

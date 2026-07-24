@@ -88,6 +88,18 @@ export interface PoolRecord {
   threshold: number;
   created_ledger: number;
   updated_ledger: number;
+  token_name?: string;
+  token_symbol?: string;
+  token_decimals?: number;
+}
+
+export interface SearchedPost {
+  id: bigint;
+  author: string;
+  content: string;
+  tip_total: bigint;
+  like_count: bigint;
+  created_ledger: number;
 }
 
 export interface Database {
@@ -95,12 +107,13 @@ export interface Database {
   upsertProfile(profile: Profile): Promise<void>;
 
   // Follows
+  getFollow(follower: string, followee: string): Promise<Follow | null>;
   insertFollow(follow: Follow): Promise<void>;
   deleteFollow(follower: string, followee: string): Promise<void>;
 
   // Posts
   insertPost(post: Post): Promise<void>;
-  markPostDeleted(post_id: bigint, deleted_ledger: number): Promise<void>;
+  markPostDeleted(post_id: bigint, deleted_ledger: number, deleted_at?: Date): Promise<void>;
   incrementPostLikeCount(post_id: bigint): Promise<void>;
   addPostTipTotal(post_id: bigint, net_amount: bigint): Promise<void>;
   getPost(post_id: bigint): Promise<Post | null>;
@@ -141,6 +154,19 @@ export interface Database {
     limit: number,
     offset: number
   ): Promise<{ following: string[]; total: number }>;
+
+  // Search
+  searchPosts(query: string, limit: number, offset: number): Promise<{
+    posts: SearchedPost[];
+    total: number;
+  }>;
+
+  // Token metadata
+  getTokenMetadata(token: string): Promise<{
+    name: string;
+    symbol: string;
+    decimals: number;
+  } | null>;
 }
 
 export class PostgresDatabase implements Database {
@@ -203,6 +229,20 @@ export class PostgresDatabase implements Database {
     );
   }
 
+  async getFollow(follower: string, followee: string): Promise<Follow | null> {
+    const result = await this.pool.query(
+      `SELECT follower, followee, ledger FROM follows WHERE follower = $1 AND followee = $2`,
+      [follower, followee]
+    );
+    if (!result.rowCount) return null;
+    const row = result.rows[0];
+    return {
+      follower: String(row.follower),
+      followee: String(row.followee),
+      ledger: Number(row.ledger),
+    };
+  }
+
   async insertFollow(follow: Follow): Promise<void> {
     await this.pool.query(
       `
@@ -226,7 +266,7 @@ export class PostgresDatabase implements Database {
     await this.pool.query(
       `
       INSERT INTO posts (id, author, content, tip_total, like_count, created_at)
-      VALUES ($1, $2, $3, $4, $5, NOW())
+      VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))
       ON CONFLICT (id) DO NOTHING
       `,
       [
@@ -244,10 +284,10 @@ export class PostgresDatabase implements Database {
     await this.pool.query(
       `
       UPDATE posts
-      SET deleted_at = NOW(), deleted_ledger = $2
+      SET deleted_at = COALESCE($3, NOW()), deleted_ledger = $2
       WHERE id = $1 AND deleted_at IS NULL
       `,
-      [post_id.toString(), deleted_ledger]
+      [post_id.toString(), deleted_ledger, ts]
     );
   }
 
@@ -368,6 +408,26 @@ export class PostgresDatabase implements Database {
   async getPool(pool_id: string): Promise<PoolRecord | null> {
     const result = await this.pool.query(`SELECT * FROM pools WHERE pool_id = $1`, [pool_id]);
     return result.rowCount ? (result.rows[0] as PoolRecord) : null;
+  }
+
+  async getTokenMetadata(
+    token: string
+  ): Promise<{ name: string; symbol: string; decimals: number } | null> {
+    try {
+      const result = await this.pool.query(
+        `SELECT name, symbol, decimals FROM token_metadata WHERE token_address = $1`,
+        [token]
+      );
+      if (!result.rowCount) return null;
+      const row = result.rows[0];
+      return {
+        name: String(row.name ?? "unknown"),
+        symbol: String(row.symbol ?? "UNK"),
+        decimals: Number(row.decimals ?? 7),
+      };
+    } catch {
+      return null;
+    }
   }
 
   async addPoolAdmin(pool_id: string, admin: string, ledger: number): Promise<void> {

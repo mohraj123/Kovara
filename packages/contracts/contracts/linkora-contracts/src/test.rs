@@ -3513,3 +3513,81 @@ fn test_get_posts_by_author_zero_limit_panics() {
     let author = Address::generate(&env);
     client.get_posts_by_author(&author, &0, &0);
 }
+// ── Issue: update_profile preserves address and updates stored fields ────────
+//
+// set_profile() writes a new `Profile { address, username, creator_token }`
+// record under the storage key `Profile(user)`. Because the storage key is
+// derived from the authenticated `user` address, and the new `Profile.address`
+// field is set to `user.clone()`, calling set_profile() for an existing user
+// overwrites the prior record in place — the address of the on-chain profile
+// remains tied to that user. The other stored fields must reflect the most
+// recent call's arguments.
+
+#[test]
+fn test_update_profile_preserves_address_and_updates_fields() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+
+    let user = Address::generate(&env);
+    let username_v1 = String::from_str(&env, "alice_v1");
+    let username_v2 = String::from_str(&env, "alice_v2");
+    let token_v1 = make_token(&env);
+    let token_v2 = make_token(&env);
+
+    // Initial profile creation.
+    client.set_profile(&user, &username_v1, &token_v1);
+
+    let profile_v1 = client.get_profile(&user).unwrap();
+    assert_eq!(
+        profile_v1.address, user,
+        "initial profile address must match caller"
+    );
+    assert_eq!(profile_v1.username, username_v1);
+    assert_eq!(profile_v1.creator_token, token_v1);
+
+    // Update the profile with a different username AND a different creator_token.
+    client.set_profile(&user, &username_v2, &token_v2);
+
+    let profile_v2 = client.get_profile(&user).unwrap();
+
+    // The address must be preserved across the update — the storage key is
+    // derived from `user`, so the profile on file is still keyed by the same
+    // address.
+    assert_eq!(
+        profile_v2.address, user,
+        "updating an existing profile must preserve the same address"
+    );
+
+    // The stored fields must reflect the most recent call's arguments.
+    assert_eq!(
+        profile_v2.username, username_v2,
+        "username must reflect the new value after update"
+    );
+    assert_eq!(
+        profile_v2.creator_token, token_v2,
+        "creator_token must reflect the new value after update"
+    );
+
+    // Old username must be freed from the reverse index. The new username must
+    // resolve to the same address.
+    assert_eq!(
+        client.get_address_by_username(&username_v1),
+        None,
+        "old username must be freed after profile update"
+    );
+    assert_eq!(
+        client.get_address_by_username(&username_v2),
+        Some(user.clone()),
+        "new username must resolve to the same user"
+    );
+
+    // The total profile-creation counter must NOT be incremented on update;
+    // it tracks unique addresses that have ever registered a profile.
+    assert_eq!(
+        client.get_profile_count(),
+        1,
+        "updating an existing profile must not increment the profile count"
+    );
+
+}
