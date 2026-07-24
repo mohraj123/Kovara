@@ -16,6 +16,7 @@ jest.mock("../../db");
 function makeMockDb(): jest.Mocked<Database> {
   return {
     upsertProfile: jest.fn().mockResolvedValue(undefined),
+    getFollow: jest.fn(),
     insertFollow: jest.fn(),
     deleteFollow: jest.fn(),
     insertPost: jest.fn(),

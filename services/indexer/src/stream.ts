@@ -33,6 +33,24 @@ export interface StreamConfig {
 
 export type EventHandler = (event: RawEvent) => Promise<void>;
 
+/**
+ * Validate that a raw event has the minimum required structure before dispatch.
+ * Returns true if the event is structurally valid, false otherwise.
+ */
+export function validateEventPayload(event: unknown): event is RawEvent {
+  if (!event || typeof event !== "object") return false;
+  const e = event as Record<string, unknown>;
+  if (typeof e.type !== "string" || e.type.trim() === "") return false;
+  if (typeof e.ledger !== "number" || !Number.isInteger(e.ledger)) return false;
+  if (typeof e.contractId !== "string" || e.contractId.trim() === "") return false;
+  if (typeof e.id !== "string" || e.id.trim() === "") return false;
+  if (typeof e.pagingToken !== "string" || e.pagingToken.trim() === "") return false;
+  if (!Array.isArray(e.topic)) return false;
+  if (typeof e.value !== "string") return false;
+  if (typeof e.txHash !== "string" || e.txHash.trim() === "") return false;
+  return true;
+}
+
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const MAX_EVENTS_PER_PAGE = 100;
 /**
@@ -147,6 +165,19 @@ export async function streamEvents(
 
       for (const event of events) {
         if (signal.aborted) break;
+        if (!validateEventPayload(event)) {
+          console.error("[stream] Skipping invalid event payload:", JSON.stringify(event));
+          cursor = event.pagingToken;
+          continue;
+        }
+        try {
+          await handler(event);
+        } catch (err) {
+          console.error(
+            `[stream] Handler error for event ${event.id} (type=${event.type}):`,
+            err
+          );
+        }
 
         // BE-24: Skip already-processed events before hitting the handler or DB.
         if (seenEventIds.has(event.id)) {
