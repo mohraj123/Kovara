@@ -70,7 +70,7 @@ export interface Database {
 
   // Posts
   insertPost(post: Post): Promise<void>;
-  markPostDeleted(post_id: bigint, deleted_ledger: number): Promise<void>;
+  markPostDeleted(post_id: bigint, deleted_ledger: number, deleted_at?: Date): Promise<void>;
   incrementPostLikeCount(post_id: bigint): Promise<void>;
   addPostTipTotal(post_id: bigint, net_amount: bigint): Promise<void>;
   getPost(post_id: bigint): Promise<Post | null>;
@@ -171,24 +171,43 @@ export class PostgresDatabase implements Database {
   }
 
   async insertPost(post: Post): Promise<void> {
+    // BE-23: Use the caller-supplied created_at (derived from ledger close
+    // time) instead of NOW() so replayed events preserve the original
+    // on-chain timestamp.  Fall back to NOW() only when the timestamp is
+    // absent so existing callers that omit it are not broken.
+    const createdAt =
+      post.created_at instanceof Date && !isNaN(post.created_at.getTime())
+        ? post.created_at
+        : null;
     await this.pool.query(
       `
       INSERT INTO posts (id, author, content, tip_total, like_count, created_at)
-      VALUES ($1, $2, $3, $4, $5, NOW())
+      VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))
       ON CONFLICT (id) DO NOTHING
       `,
-      [post.id.toString(), post.author, post.content, post.tip_total.toString(), post.like_count.toString()]
+      [
+        post.id.toString(),
+        post.author,
+        post.content,
+        post.tip_total.toString(),
+        post.like_count.toString(),
+        createdAt,
+      ]
     );
   }
 
-  async markPostDeleted(post_id: bigint, deleted_ledger: number): Promise<void> {
+  async markPostDeleted(post_id: bigint, deleted_ledger: number, deleted_at?: Date): Promise<void> {
+    // BE-23: Accept an explicit timestamp so callers can pass the ledger
+    // close time.  Fall back to NOW() for backwards compatibility.
+    const ts =
+      deleted_at instanceof Date && !isNaN(deleted_at.getTime()) ? deleted_at : null;
     await this.pool.query(
       `
       UPDATE posts
-      SET deleted_at = NOW(), deleted_ledger = $2
+      SET deleted_at = COALESCE($3, NOW()), deleted_ledger = $2
       WHERE id = $1 AND deleted_at IS NULL
       `,
-      [post_id.toString(), deleted_ledger]
+      [post_id.toString(), deleted_ledger, ts]
     );
   }
 

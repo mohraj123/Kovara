@@ -23,6 +23,7 @@ import { Pool } from "pg";
 import { streamEvents, RawEvent } from "./stream";
 import { createApp } from "./api";
 import { runMigrations } from "./migrate";
+import { PostgresDatabase } from "./db";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -58,39 +59,68 @@ const POLL_INTERVAL_MS = process.env["POLL_INTERVAL_MS"]
 const pgPool = new Pool({ connectionString: DATABASE_URL });
 
 async function ensureEventsTable(): Promise<void> {
-  await pgPool.query(`
-    CREATE TABLE IF NOT EXISTS events (
-      id            BIGSERIAL   PRIMARY KEY,
-      event_id      TEXT        NOT NULL UNIQUE,
-      ledger        INTEGER     NOT NULL,
-      contract_id   TEXT        NOT NULL,
-      topic         TEXT[]      NOT NULL,
-      value         TEXT        NOT NULL,
-      tx_hash       TEXT        NOT NULL,
-      closed_at     TIMESTAMPTZ NOT NULL,
-      indexed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-  await pgPool.query(`
-    CREATE INDEX IF NOT EXISTS idx_events_ledger      ON events (ledger);
-    CREATE INDEX IF NOT EXISTS idx_events_contract_id ON events (contract_id);
-  `);
+  // BE-28: Wrap in try/catch so a pre-existing table with a slightly
+  // different layout (schema drift) does not crash startup. The IF NOT
+  // EXISTS guards make the statement idempotent; the outer catch logs the
+  // discrepancy and allows the service to continue with whatever schema is
+  // present.
+  try {
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS events (
+        id            BIGSERIAL   PRIMARY KEY,
+        event_id      TEXT        NOT NULL UNIQUE,
+        ledger        INTEGER     NOT NULL,
+        contract_id   TEXT        NOT NULL,
+        topic         TEXT[]      NOT NULL,
+        value         TEXT        NOT NULL,
+        tx_hash       TEXT        NOT NULL,
+        closed_at     TIMESTAMPTZ NOT NULL,
+        indexed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await pgPool.query(`
+      CREATE INDEX IF NOT EXISTS idx_events_ledger      ON events (ledger);
+      CREATE INDEX IF NOT EXISTS idx_events_contract_id ON events (contract_id);
+    `);
+  } catch (err) {
+    // BE-28: Non-fatal — log and continue. If the events table is genuinely
+    // missing the service will fail later when it tries to insert, giving a
+    // clearer error at that point.
+    console.warn("[indexer] ensureEventsTable: schema drift detected, continuing:", err);
+  }
 }
 
 async function ensurePostSearchIndex(): Promise<void> {
-  await pgPool.query(`
-    ALTER TABLE posts
-    ADD COLUMN IF NOT EXISTS search_vector TSVECTOR
-  `);
-  await pgPool.query(`
-    UPDATE posts
-    SET search_vector = to_tsvector('simple', coalesce(content, ''))
-    WHERE search_vector IS NULL
-  `);
-  await pgPool.query(`
-    CREATE INDEX IF NOT EXISTS idx_posts_search_vector
-    ON posts USING GIN (search_vector)
-  `);
+  // BE-28: Each statement is wrapped individually so a failure on one step
+  // (e.g. the column already exists with a different type) does not prevent
+  // the remaining steps from running.
+  try {
+    await pgPool.query(`
+      ALTER TABLE posts
+      ADD COLUMN IF NOT EXISTS search_vector TSVECTOR
+    `);
+  } catch (err) {
+    console.warn("[indexer] ensurePostSearchIndex: could not add search_vector column:", err);
+  }
+
+  try {
+    await pgPool.query(`
+      UPDATE posts
+      SET search_vector = to_tsvector('simple', coalesce(content, ''))
+      WHERE search_vector IS NULL
+    `);
+  } catch (err) {
+    console.warn("[indexer] ensurePostSearchIndex: could not populate search_vector:", err);
+  }
+
+  try {
+    await pgPool.query(`
+      CREATE INDEX IF NOT EXISTS idx_posts_search_vector
+      ON posts USING GIN (search_vector)
+    `);
+  } catch (err) {
+    console.warn("[indexer] ensurePostSearchIndex: could not create search index:", err);
+  }
 }
 
 async function persistEvent(event: RawEvent): Promise<void> {
@@ -145,9 +175,11 @@ async function main(): Promise<void> {
 
   await ensureEventsTable();
   await runMigrations(pgPool);
+  await ensurePostSearchIndex();
 
   // Create and start API server
-  const app = createApp(pgPool);
+  const db = new PostgresDatabase(pgPool);
+  const app = createApp(db);
   const server = app.listen(PORT, HOST);
 
   // Start event streaming in the background
