@@ -32,7 +32,11 @@ export interface FollowingResponse extends PaginationResponse {
   total: number;
 }
 
-export interface PoolResponse extends Pool {}
+export interface PoolResponse extends Pool {
+  token_name?: string;
+  token_symbol?: string;
+  token_decimals?: number;
+}
 
 export interface SearchPost {
   id: number;
@@ -46,4 +50,6 @@ export interface SearchResponse {
   posts: SearchPost[];
   total: number;
   has_more: boolean;
+  next_offset: number | null;
+  prev_offset: number | null;
 }

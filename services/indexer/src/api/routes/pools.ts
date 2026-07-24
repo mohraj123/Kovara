@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { Database } from "../../db";
 import { ApiErrorResponse, PoolResponse } from "../contracts";
+import { serializeBigInt } from "../index";
 
 export function createPoolsRouter(db: Database): Router {
   const router = Router();
@@ -25,7 +26,30 @@ export function createPoolsRouter(db: Database): Router {
         return;
       }
 
-      res.json(pool);
+      let token_name: string | undefined;
+      let token_symbol: string | undefined;
+      let token_decimals: number | undefined;
+      try {
+        const meta = await db.getTokenMetadata(pool.token);
+        if (meta) {
+          token_name = meta.name;
+          token_symbol = meta.symbol;
+          token_decimals = meta.decimals;
+        }
+      } catch {
+        token_name = "unknown";
+        token_symbol = "UNK";
+        token_decimals = 7;
+      }
+
+      res.json(
+        serializeBigInt({
+          ...pool,
+          token_name,
+          token_symbol,
+          token_decimals,
+        })
+      );
     }
   );
 
