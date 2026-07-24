@@ -68,6 +68,27 @@ export async function runMigrations(pool: Pool): Promise<void> {
     }
   } finally {
     await pool.query("SELECT pg_advisory_unlock($1)", [LOCK_KEY]);
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(sql);
+        await client.query(
+          `INSERT INTO ${TABLE_NAME} (version, name) VALUES ($1, $2)`,
+          [version, file]
+        );
+        await client.query("COMMIT");
+        console.log(`[migrate] Applied ${file}`);
+      } catch (err) {
+        await client.query("ROLLBACK");
+        console.error(`[migrate] Failed to apply ${file}: ${err}`);
+        // Continue to the next migration instead of crashing.
+      } finally {
+        client.release();
+      }
+    }
+  } finally {
+    await pool.query("SELECT pg_advisory_unlock($1)", [LOCK_KEY]);
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf-8");
 
     // BE-28: Run each migration inside a transaction so it is atomic. If the
