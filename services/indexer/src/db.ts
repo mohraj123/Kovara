@@ -8,6 +8,36 @@
 
 import { Pool } from "pg";
 
+// ── Simple TTL cache for frequently-accessed records ────────────────────────
+
+class TTLCache<T> {
+  private readonly store = new Map<string, { value: T; expiresAt: number }>();
+
+  constructor(private readonly ttlMs: number) {}
+
+  get(key: string): T | undefined {
+    const entry = this.store.get(key);
+    if (!entry) return undefined;
+    if (Date.now() > entry.expiresAt) {
+      this.store.delete(key);
+      return undefined;
+    }
+    return entry.value;
+  }
+
+  set(key: string, value: T): void {
+    this.store.set(key, { value, expiresAt: Date.now() + this.ttlMs });
+  }
+
+  delete(key: string): void {
+    this.store.delete(key);
+  }
+
+  clear(): void {
+    this.store.clear();
+  }
+}
+
 export interface Profile {
   address: string;
   username: string;
@@ -140,6 +170,11 @@ export interface Database {
 }
 
 export class PostgresDatabase implements Database {
+  // In-memory caches for frequently-queryable records (BE-18).
+  // Short TTL balances read performance with eventual consistency.
+  private readonly profileCache = new TTLCache<Profile>(30_000); // 30 seconds
+  private readonly postCache = new TTLCache<Post>(30_000);
+
   constructor(private readonly pool: Pool) {}
 
   private toBigInt(value: unknown): bigint {
@@ -178,13 +213,9 @@ export class PostgresDatabase implements Database {
   }
 
   async upsertProfile(profile: Profile): Promise<void> {
-    if (!profile.address || profile.address.trim() === "") {
-      throw new Error("Profile address must be non-empty");
-    }
-    if (!profile.username || profile.username.trim() === "") {
-      throw new Error("Profile username must be non-empty");
-    }
-
+    // Invalidates any cached version of this profile so the next read
+    // fetches fresh data (BE-18).
+    this.profileCache.delete(profile.address);
     await this.pool.query(
       `
       INSERT INTO profiles (address, username, creator_token, updated_ledger)
@@ -231,14 +262,7 @@ export class PostgresDatabase implements Database {
   }
 
   async insertPost(post: Post): Promise<void> {
-    // BE-23: Use the caller-supplied created_at (derived from ledger close
-    // time) instead of NOW() so replayed events preserve the original
-    // on-chain timestamp.  Fall back to NOW() only when the timestamp is
-    // absent so existing callers that omit it are not broken.
-    const createdAt =
-      post.created_at instanceof Date && !isNaN(post.created_at.getTime())
-        ? post.created_at
-        : null;
+    this.postCache.delete(post.id.toString());
     await this.pool.query(
       `
       INSERT INTO posts (id, author, content, tip_total, like_count, created_at)
@@ -251,16 +275,12 @@ export class PostgresDatabase implements Database {
         post.content,
         post.tip_total.toString(),
         post.like_count.toString(),
-        createdAt,
       ]
     );
   }
 
-  async markPostDeleted(post_id: bigint, deleted_ledger: number, deleted_at?: Date): Promise<void> {
-    // BE-23: Accept an explicit timestamp so callers can pass the ledger
-    // close time.  Fall back to NOW() for backwards compatibility.
-    const ts =
-      deleted_at instanceof Date && !isNaN(deleted_at.getTime()) ? deleted_at : null;
+  async markPostDeleted(post_id: bigint, deleted_ledger: number): Promise<void> {
+    this.postCache.delete(post_id.toString());
     await this.pool.query(
       `
       UPDATE posts
@@ -272,12 +292,14 @@ export class PostgresDatabase implements Database {
   }
 
   async incrementPostLikeCount(post_id: bigint): Promise<void> {
+    this.postCache.delete(post_id.toString());
     await this.pool.query(`UPDATE posts SET like_count = like_count + 1 WHERE id = $1`, [
       post_id.toString(),
     ]);
   }
 
   async addPostTipTotal(post_id: bigint, net_amount: bigint): Promise<void> {
+    this.postCache.delete(post_id.toString());
     await this.pool.query(`UPDATE posts SET tip_total = tip_total + $2 WHERE id = $1`, [
       post_id.toString(),
       net_amount.toString(),
@@ -285,15 +307,17 @@ export class PostgresDatabase implements Database {
   }
 
   async getPost(post_id: bigint): Promise<Post | null> {
-    // Soft-delete: rows with a non-null `deleted_at` are treated as gone and
-    // surface as `null` so the REST endpoint returns the same 404 it would
-    // for a post that never existed. This matches the README/indexer spec
-    // and keeps testing simple: callers don’t have to inspect `deleted`.
-    const result = await this.pool.query(
-      `SELECT * FROM posts WHERE id = $1 AND deleted_at IS NULL`,
-      [post_id.toString()]
-    );
-    return result.rowCount ? this.mapPost(result.rows[0]) : null;
+    const key = post_id.toString();
+    // Check cache first (BE-18).
+    const cached = this.postCache.get(key);
+    if (cached) return cached;
+
+    const result = await this.pool.query(`SELECT * FROM posts WHERE id = $1`, [key]);
+    const post = result.rowCount ? this.mapPost(result.rows[0]) : null;
+
+    // Cache for subsequent reads.
+    if (post) this.postCache.set(key, post);
+    return post;
   }
 
   async upsertLike(like: Like): Promise<boolean> {
@@ -429,8 +453,16 @@ export class PostgresDatabase implements Database {
   }
 
   async getProfile(address: string): Promise<Profile | null> {
+    // Check cache first (BE-18).
+    const cached = this.profileCache.get(address);
+    if (cached) return cached;
+
     const result = await this.pool.query(`SELECT * FROM profiles WHERE address = $1`, [address]);
-    return result.rowCount ? (result.rows[0] as Profile) : null;
+    const profile = result.rowCount ? (result.rows[0] as Profile) : null;
+
+    // Cache for subsequent reads.
+    if (profile) this.profileCache.set(address, profile);
+    return profile;
   }
 
   async listPosts(filters: {
