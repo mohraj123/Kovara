@@ -20,6 +20,7 @@ function makeMockDb(): jest.Mocked<Database> {
     getPool: jest.fn(),
     addPoolAdmin: jest.fn(),
     removePoolAdmin: jest.fn(),
+    searchPosts: jest.fn(),
     getProfile: jest.fn(),
     listPosts: jest.fn(),
     getFollowers: jest.fn(),
@@ -102,9 +103,7 @@ describe("API Routes", () => {
       db.listPosts.mockResolvedValueOnce({ posts: [], total: 0 });
 
       await request(app).get("/api/posts?author=GABC123");
-      expect(db.listPosts).toHaveBeenCalledWith(
-        expect.objectContaining({ author: "GABC123" })
-      );
+      expect(db.listPosts).toHaveBeenCalledWith(expect.objectContaining({ author: "GABC123" }));
     });
 
     it("returns 400 for invalid limit", async () => {
@@ -131,6 +130,7 @@ describe("API Routes", () => {
       db.getPost.mockResolvedValueOnce({
         id: BigInt(42),
         author: "GABC123",
+        content: "Hello, world!",
         deleted: false,
         tip_total: BigInt(100),
         like_count: BigInt(5),
@@ -172,7 +172,11 @@ describe("API Routes", () => {
 
       const res = await request(app).get("/api/follows/GABC123/followers");
       expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({ address: "GABC123", total: 2, followers: ["GUSER1", "GUSER2"] });
+      expect(res.body).toMatchObject({
+        address: "GABC123",
+        total: 2,
+        followers: ["GUSER1", "GUSER2"],
+      });
     });
 
     it("returns empty list when no followers", async () => {
@@ -261,9 +265,7 @@ describe("API Routes", () => {
     });
 
     it("returns 400 for negative offset", async () => {
-      const res = await request(app)
-        .post("/api/search/posts")
-        .send({ query: "test", offset: -1 });
+      const res = await request(app).post("/api/search/posts").send({ query: "test", offset: -1 });
       expect(res.status).toBe(400);
     });
   });
@@ -279,9 +281,36 @@ describe("API Routes", () => {
       expect(res.body).toMatchObject({ code: "INTERNAL_ERROR" });
     });
 
-    it("handles 404 for unknown routes", async () => {
+    it("handles 404 for unknown routes with JSON body (BE-26)", async () => {
       const res = await request(app).get("/api/nonexistent");
       expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ error: "Route not found", code: "NOT_FOUND" });
+    });
+
+    it("returns 405-style JSON for unsupported HTTP methods on existing routes (BE-26)", async () => {
+      // POST on a GET-only route
+      const res = await request(app).post("/api/profiles/GABC123");
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ error: "Route not found", code: "NOT_FOUND" });
+    });
+  });
+
+  // ── Malformed JSON (BE-19) ────────────────────────────────────────────────
+
+  describe("POST /api/search/posts (malformed JSON)", () => {
+    it("returns 400 with MALFORMED_JSON code for invalid JSON body (BE-19)", async () => {
+      const res = await request(app)
+        .post("/api/search/posts")
+        .set("Content-Type", "application/json")
+        .send("{invalid json}");
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ code: "MALFORMED_JSON" });
+    });
+
+    it("still handles valid JSON correctly (BE-19)", async () => {
+      const res = await request(app).post("/api/search/posts").send({ query: "" });
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ code: "INVALID_QUERY" });
     });
   });
 });

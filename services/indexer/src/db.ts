@@ -8,6 +8,36 @@
 
 import { Pool } from "pg";
 
+// ── Simple TTL cache for frequently-accessed records ────────────────────────
+
+class TTLCache<T> {
+  private readonly store = new Map<string, { value: T; expiresAt: number }>();
+
+  constructor(private readonly ttlMs: number) {}
+
+  get(key: string): T | undefined {
+    const entry = this.store.get(key);
+    if (!entry) return undefined;
+    if (Date.now() > entry.expiresAt) {
+      this.store.delete(key);
+      return undefined;
+    }
+    return entry.value;
+  }
+
+  set(key: string, value: T): void {
+    this.store.set(key, { value, expiresAt: Date.now() + this.ttlMs });
+  }
+
+  delete(key: string): void {
+    this.store.delete(key);
+  }
+
+  clear(): void {
+    this.store.clear();
+  }
+}
+
 export interface Profile {
   address: string;
   username: string;
@@ -114,6 +144,11 @@ export interface Database {
 }
 
 export class PostgresDatabase implements Database {
+  // In-memory caches for frequently-queryable records (BE-18).
+  // Short TTL balances read performance with eventual consistency.
+  private readonly profileCache = new TTLCache<Profile>(30_000); // 30 seconds
+  private readonly postCache = new TTLCache<Post>(30_000);
+
   constructor(private readonly pool: Pool) {}
 
   private toBigInt(value: unknown): bigint {
@@ -132,13 +167,29 @@ export class PostgresDatabase implements Database {
       tip_total: this.toBigInt(row.tip_total ?? 0),
       like_count: this.toBigInt(row.like_count ?? 0),
       created_ledger: Number(row.created_ledger ?? 0),
-      deleted_ledger: row.deleted_ledger === null || row.deleted_ledger === undefined ? null : Number(row.deleted_ledger),
-      created_at: row.created_at instanceof Date ? row.created_at : row.created_at ? new Date(String(row.created_at)) : null,
-      deleted_at: row.deleted_at instanceof Date ? row.deleted_at : row.deleted_at ? new Date(String(row.deleted_at)) : null,
+      deleted_ledger:
+        row.deleted_ledger === null || row.deleted_ledger === undefined
+          ? null
+          : Number(row.deleted_ledger),
+      created_at:
+        row.created_at instanceof Date
+          ? row.created_at
+          : row.created_at
+            ? new Date(String(row.created_at))
+            : null,
+      deleted_at:
+        row.deleted_at instanceof Date
+          ? row.deleted_at
+          : row.deleted_at
+            ? new Date(String(row.deleted_at))
+            : null,
     };
   }
 
   async upsertProfile(profile: Profile): Promise<void> {
+    // Invalidates any cached version of this profile so the next read
+    // fetches fresh data (BE-18).
+    this.profileCache.delete(profile.address);
     await this.pool.query(
       `
       INSERT INTO profiles (address, username, creator_token, updated_ledger)
@@ -171,17 +222,25 @@ export class PostgresDatabase implements Database {
   }
 
   async insertPost(post: Post): Promise<void> {
+    this.postCache.delete(post.id.toString());
     await this.pool.query(
       `
       INSERT INTO posts (id, author, content, tip_total, like_count, created_at)
       VALUES ($1, $2, $3, $4, $5, NOW())
       ON CONFLICT (id) DO NOTHING
       `,
-      [post.id.toString(), post.author, post.content, post.tip_total.toString(), post.like_count.toString()]
+      [
+        post.id.toString(),
+        post.author,
+        post.content,
+        post.tip_total.toString(),
+        post.like_count.toString(),
+      ]
     );
   }
 
   async markPostDeleted(post_id: bigint, deleted_ledger: number): Promise<void> {
+    this.postCache.delete(post_id.toString());
     await this.pool.query(
       `
       UPDATE posts
@@ -193,12 +252,14 @@ export class PostgresDatabase implements Database {
   }
 
   async incrementPostLikeCount(post_id: bigint): Promise<void> {
+    this.postCache.delete(post_id.toString());
     await this.pool.query(`UPDATE posts SET like_count = like_count + 1 WHERE id = $1`, [
       post_id.toString(),
     ]);
   }
 
   async addPostTipTotal(post_id: bigint, net_amount: bigint): Promise<void> {
+    this.postCache.delete(post_id.toString());
     await this.pool.query(`UPDATE posts SET tip_total = tip_total + $2 WHERE id = $1`, [
       post_id.toString(),
       net_amount.toString(),
@@ -206,8 +267,17 @@ export class PostgresDatabase implements Database {
   }
 
   async getPost(post_id: bigint): Promise<Post | null> {
-    const result = await this.pool.query(`SELECT * FROM posts WHERE id = $1`, [post_id.toString()]);
-    return result.rowCount ? this.mapPost(result.rows[0]) : null;
+    const key = post_id.toString();
+    // Check cache first (BE-18).
+    const cached = this.postCache.get(key);
+    if (cached) return cached;
+
+    const result = await this.pool.query(`SELECT * FROM posts WHERE id = $1`, [key]);
+    const post = result.rowCount ? this.mapPost(result.rows[0]) : null;
+
+    // Cache for subsequent reads.
+    if (post) this.postCache.set(key, post);
+    return post;
   }
 
   async upsertLike(like: Like): Promise<boolean> {
@@ -230,7 +300,14 @@ export class PostgresDatabase implements Database {
       VALUES ($1, $2, $3, $4, $5, $6)
       ON CONFLICT (tx_hash) DO NOTHING
       `,
-      [tip.tipper, tip.post_id.toString(), tip.amount.toString(), tip.fee.toString(), tip.ledger, tip.tx_hash]
+      [
+        tip.tipper,
+        tip.post_id.toString(),
+        tip.amount.toString(),
+        tip.fee.toString(),
+        tip.ledger,
+        tip.tx_hash,
+      ]
     );
   }
 
@@ -246,7 +323,15 @@ export class PostgresDatabase implements Database {
         threshold = EXCLUDED.threshold,
         updated_ledger = EXCLUDED.updated_ledger
       `,
-      [pool.pool_id, pool.token, pool.balance.toString(), pool.admins, pool.threshold, pool.created_ledger, pool.updated_ledger]
+      [
+        pool.pool_id,
+        pool.token,
+        pool.balance.toString(),
+        pool.admins,
+        pool.threshold,
+        pool.created_ledger,
+        pool.updated_ledger,
+      ]
     );
   }
 
@@ -268,7 +353,15 @@ export class PostgresDatabase implements Database {
       VALUES ($1, $2, $3, $4, $5, $6, $7)
       ON CONFLICT (pool_id) DO NOTHING
       `,
-      [pool.pool_id, pool.token, pool.balance.toString(), pool.admins, pool.threshold, pool.created_ledger, pool.updated_ledger]
+      [
+        pool.pool_id,
+        pool.token,
+        pool.balance.toString(),
+        pool.admins,
+        pool.threshold,
+        pool.created_ledger,
+        pool.updated_ledger,
+      ]
     );
   }
 
@@ -300,11 +393,23 @@ export class PostgresDatabase implements Database {
   }
 
   async getProfile(address: string): Promise<Profile | null> {
+    // Check cache first (BE-18).
+    const cached = this.profileCache.get(address);
+    if (cached) return cached;
+
     const result = await this.pool.query(`SELECT * FROM profiles WHERE address = $1`, [address]);
-    return result.rowCount ? (result.rows[0] as Profile) : null;
+    const profile = result.rowCount ? (result.rows[0] as Profile) : null;
+
+    // Cache for subsequent reads.
+    if (profile) this.profileCache.set(address, profile);
+    return profile;
   }
 
-  async listPosts(filters: { author?: string; limit: number; offset: number }): Promise<{ posts: Post[]; total: number }> {
+  async listPosts(filters: {
+    author?: string;
+    limit: number;
+    offset: number;
+  }): Promise<{ posts: Post[]; total: number }> {
     const { author, limit, offset } = filters;
     const values: unknown[] = [];
     let whereClause = "WHERE deleted_at IS NULL";
@@ -314,7 +419,10 @@ export class PostgresDatabase implements Database {
       whereClause += ` AND author = $${values.length}`;
     }
 
-    const countResult = await this.pool.query(`SELECT COUNT(*)::int AS total FROM posts ${whereClause}`, values);
+    const countResult = await this.pool.query(
+      `SELECT COUNT(*)::int AS total FROM posts ${whereClause}`,
+      values
+    );
     const result = await this.pool.query(
       `SELECT * FROM posts ${whereClause} ORDER BY created_at DESC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
       [...values, limit, offset]
@@ -326,7 +434,11 @@ export class PostgresDatabase implements Database {
     };
   }
 
-  async searchPosts(filters: { query: string; limit: number; offset: number }): Promise<{ posts: Post[]; total: number }> {
+  async searchPosts(filters: {
+    query: string;
+    limit: number;
+    offset: number;
+  }): Promise<{ posts: Post[]; total: number }> {
     const { query, limit, offset } = filters;
     const normalizedQuery = query.trim();
 
@@ -364,8 +476,15 @@ export class PostgresDatabase implements Database {
     };
   }
 
-  async getFollowers(address: string, limit: number, offset: number): Promise<{ followers: string[]; total: number }> {
-    const countResult = await this.pool.query(`SELECT COUNT(*)::int AS total FROM follows WHERE followee = $1`, [address]);
+  async getFollowers(
+    address: string,
+    limit: number,
+    offset: number
+  ): Promise<{ followers: string[]; total: number }> {
+    const countResult = await this.pool.query(
+      `SELECT COUNT(*)::int AS total FROM follows WHERE followee = $1`,
+      [address]
+    );
     const result = await this.pool.query(
       `SELECT follower FROM follows WHERE followee = $1 ORDER BY follower LIMIT $2 OFFSET $3`,
       [address, limit, offset]
@@ -377,8 +496,15 @@ export class PostgresDatabase implements Database {
     };
   }
 
-  async getFollowing(address: string, limit: number, offset: number): Promise<{ following: string[]; total: number }> {
-    const countResult = await this.pool.query(`SELECT COUNT(*)::int AS total FROM follows WHERE follower = $1`, [address]);
+  async getFollowing(
+    address: string,
+    limit: number,
+    offset: number
+  ): Promise<{ following: string[]; total: number }> {
+    const countResult = await this.pool.query(
+      `SELECT COUNT(*)::int AS total FROM follows WHERE follower = $1`,
+      [address]
+    );
     const result = await this.pool.query(
       `SELECT followee FROM follows WHERE follower = $1 ORDER BY followee LIMIT $2 OFFSET $3`,
       [address, limit, offset]

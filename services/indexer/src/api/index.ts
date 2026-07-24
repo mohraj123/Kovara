@@ -2,7 +2,7 @@ import "express-async-errors";
 import express, { Request, Response, NextFunction } from "express";
 import rateLimit from "express-rate-limit";
 import { Database } from "../db";
-import { ApiErrorResponse, SearchResponse } from "./contracts";
+import { ApiErrorResponse } from "./contracts";
 
 // Enable BigInt JSON serialization (Express res.json uses JSON.stringify).
 (BigInt.prototype as unknown as Record<string, unknown>).toJSON = function () {
@@ -25,8 +25,8 @@ function parseEnvNumber(name: string, defaultValue: number): number {
   return parsed;
 }
 
-const HOST = process.env.HOST ?? "0.0.0.0";
-const PORT = parseEnvNumber("PORT", 3000);
+const _HOST = process.env.HOST ?? "0.0.0.0";
+const _PORT = parseEnvNumber("PORT", 3000);
 const TRUST_PROXY = process.env.TRUST_PROXY ?? "0";
 const RATE_LIMIT_WINDOW_MS = parseEnvNumber("RATE_LIMIT_WINDOW_MS", 60000);
 const RATE_LIMIT_MAX = parseEnvNumber("RATE_LIMIT_MAX", 100);
@@ -189,7 +189,31 @@ export function createApp(db: Database): express.Application {
     }
   );
 
+  // ── 404 catch-all for API routes (BE-26) ───────────────────────────────────
+  // Returns a consistent JSON error body instead of the default Express HTML.
+  app.use("/api/*", (_req: Request, res: Response): void => {
+    res.status(404).json({ error: "Route not found", code: "NOT_FOUND" });
+  });
+
   // ── Error handler ─────────────────────────────────────────────────────────────
+
+  // Catch malformed JSON payloads (BE-19).
+  app.use((err: Error, _req: Request, res: Response, next: NextFunction): void => {
+    // express.json() throws a SyntaxError with status=400 for malformed JSON.
+    // We use a type assertion because SyntaxError does not declare `status`.
+    if (
+      err instanceof SyntaxError &&
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (err as any).status === 400
+    ) {
+      res.status(400).json({
+        error: "Invalid JSON in request body",
+        code: "MALFORMED_JSON",
+      });
+      return;
+    }
+    next(err);
+  });
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use(
