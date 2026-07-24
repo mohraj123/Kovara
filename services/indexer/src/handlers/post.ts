@@ -23,6 +23,23 @@ export interface PostEventContext {
 }
 
 /**
+ * Validate a raw event object has the shape expected for a PostCreated event.
+ * Throws a descriptive error for any missing or incorrectly typed field.
+ */
+export function validatePostCreatedEvent(event: unknown): asserts event is PostCreatedEvent {
+  if (!event || typeof event !== "object") {
+    throw new Error("PostCreated event must be a non-null object");
+  }
+  const e = event as Record<string, unknown>;
+  if (typeof e.id !== "bigint" && typeof e.id !== "number" && typeof e.id !== "string") {
+    throw new Error("PostCreated event missing or invalid field: id");
+  }
+  if (typeof e.author !== "string" || e.author.trim() === "") {
+    throw new Error("PostCreated event missing or invalid field: author");
+  }
+}
+
+/**
  * Handle PostCreatedEvent
  * Inserts a new post row into the posts table
  * Idempotent: Uses ON CONFLICT DO NOTHING to handle duplicate events

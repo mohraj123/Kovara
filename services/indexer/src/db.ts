@@ -77,6 +77,7 @@ export interface Database {
   upsertProfile(profile: Profile): Promise<void>;
 
   // Follows
+  getFollow(follower: string, followee: string): Promise<Follow | null>;
   insertFollow(follow: Follow): Promise<void>;
   deleteFollow(follower: string, followee: string): Promise<void>;
 
@@ -177,6 +178,13 @@ export class PostgresDatabase implements Database {
   }
 
   async upsertProfile(profile: Profile): Promise<void> {
+    if (!profile.address || profile.address.trim() === "") {
+      throw new Error("Profile address must be non-empty");
+    }
+    if (!profile.username || profile.username.trim() === "") {
+      throw new Error("Profile username must be non-empty");
+    }
+
     await this.pool.query(
       `
       INSERT INTO profiles (address, username, creator_token, updated_ledger)
@@ -188,6 +196,20 @@ export class PostgresDatabase implements Database {
       `,
       [profile.address, profile.username, profile.creator_token, profile.updated_ledger]
     );
+  }
+
+  async getFollow(follower: string, followee: string): Promise<Follow | null> {
+    const result = await this.pool.query(
+      `SELECT follower, followee, ledger FROM follows WHERE follower = $1 AND followee = $2`,
+      [follower, followee]
+    );
+    if (!result.rowCount) return null;
+    const row = result.rows[0];
+    return {
+      follower: String(row.follower),
+      followee: String(row.followee),
+      ledger: Number(row.ledger),
+    };
   }
 
   async insertFollow(follow: Follow): Promise<void> {
@@ -349,6 +371,26 @@ export class PostgresDatabase implements Database {
   async getPool(pool_id: string): Promise<PoolRecord | null> {
     const result = await this.pool.query(`SELECT * FROM pools WHERE pool_id = $1`, [pool_id]);
     return result.rowCount ? (result.rows[0] as PoolRecord) : null;
+  }
+
+  async getTokenMetadata(
+    token: string
+  ): Promise<{ name: string; symbol: string; decimals: number } | null> {
+    try {
+      const result = await this.pool.query(
+        `SELECT name, symbol, decimals FROM token_metadata WHERE token_address = $1`,
+        [token]
+      );
+      if (!result.rowCount) return null;
+      const row = result.rows[0];
+      return {
+        name: String(row.name ?? "unknown"),
+        symbol: String(row.symbol ?? "UNK"),
+        decimals: Number(row.decimals ?? 7),
+      };
+    } catch {
+      return null;
+    }
   }
 
   async addPoolAdmin(pool_id: string, admin: string, ledger: number): Promise<void> {
