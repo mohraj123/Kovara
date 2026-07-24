@@ -86,8 +86,11 @@ export async function handlePostCreated(
 
 /**
  * Handle PostDeletedEvent
- * Marks a post as deleted (soft delete) by setting deleted_at timestamp
- * Idempotent: Only updates if deleted_at is NULL
+ * Marks a post as deleted (soft delete) by setting deleted_at timestamp.
+ * Uses the event timestamp (from ledger close time) rather than NOW() so
+ * that the recorded deletion time is consistent with on-chain data, even
+ * when the indexer replays old events.
+ * Idempotent: Only updates if deleted_at is NULL.
  */
 export async function handlePostDeleted(
   pool: Pool,
@@ -95,7 +98,11 @@ export async function handlePostDeleted(
   context: PostEventContext
 ): Promise<void> {
   const { post_id, author } = event;
-  const { timestamp } = context;
+  // Use the event's ledger timestamp, falling back to now only if unavailable.
+  // This ensures replayed events preserve the original deletion time.
+  const deletedAt: Date = context.timestamp instanceof Date && !isNaN(context.timestamp.getTime())
+    ? context.timestamp
+    : new Date();
 
   const query = `
     UPDATE posts
@@ -103,7 +110,7 @@ export async function handlePostDeleted(
     WHERE id = $2 AND author = $3 AND deleted_at IS NULL
   `;
 
-  const values = [timestamp, post_id.toString(), author];
+  const values = [deletedAt, post_id.toString(), author];
 
   try {
     const result = await pool.query(query, values);

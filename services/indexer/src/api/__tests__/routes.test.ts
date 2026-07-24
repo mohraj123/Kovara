@@ -28,6 +28,7 @@ function makeMockDb(): jest.Mocked<Database> {
     getFollowing: jest.fn(),
     searchPosts: jest.fn(),
     getTokenMetadata: jest.fn(),
+    searchPosts: jest.fn().mockResolvedValue({ posts: [], total: 0 }),
   } as jest.Mocked<Database>;
 }
 
@@ -242,6 +243,7 @@ describe("API Routes", () => {
         id: BigInt(42),
         author: "GABC123",
         content: "Hello world",
+        content: "Test post content",
         deleted: false,
         tip_total: BigInt(100),
         like_count: BigInt(5),

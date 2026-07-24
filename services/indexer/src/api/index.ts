@@ -33,6 +33,48 @@ import { createPostsRouter } from "./routes/posts";
 import { createFollowsRouter } from "./routes/follows";
 import { createPoolsRouter } from "./routes/pools";
 
+// ── Auth middleware (BE-25) ───────────────────────────────────────────────────
+
+/**
+ * Type signature for an authorization middleware factory.
+ *
+ * BE-25: Centralizes authorization logic so individual routes do not
+ * duplicate checks. By default a no-op middleware is used, keeping
+ * anonymous access unchanged. Deployments that require authentication can
+ * supply their own implementation via `AppOptions.authMiddleware`.
+ *
+ * Example — Bearer-token guard:
+ *
+ *   createApp(db, {
+ *     authMiddleware: (req, res, next) => {
+ *       const token = req.headers.authorization?.replace("Bearer ", "");
+ *       if (!token || token !== process.env.API_SECRET) {
+ *         res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED" });
+ *         return;
+ *       }
+ *       next();
+ *     },
+ *   });
+ */
+export type AuthMiddleware = (req: Request, res: Response, next: NextFunction) => void;
+
+/**
+ * A no-op middleware used when no auth is configured.
+ * Passes every request straight through, preserving existing anonymous access.
+ */
+const noopAuthMiddleware: AuthMiddleware = (_req, _res, next) => next();
+
+// ── App options ───────────────────────────────────────────────────────────────
+
+export interface AppOptions {
+  /**
+   * BE-25: Optional authorization middleware applied to all /api routes
+   * before request handlers are invoked.  Defaults to a no-op so existing
+   * deployments are unaffected.
+   */
+  authMiddleware?: AuthMiddleware;
+}
+
 // ── Runtime configuration (all values are env-overridable) ─────────────────
 
 function parseEnvNumber(name: string, defaultValue: number): number {
@@ -88,13 +130,17 @@ declare global {
 
 // ── App factory ───────────────────────────────────────────────────────────────
 
-export function createApp(db: Database): express.Application {
+export function createApp(db: Database, options: AppOptions = {}): express.Application {
   const app = express();
 
   // ── CORS ──────────────────────────────────────────────────────────────────────
   app.use(cors());
 
   app.use(express.json());
+
+  // BE-25: Resolve auth middleware — use caller-supplied hook or fall back
+  // to the no-op so anonymous access is unchanged by default.
+  const authMiddleware: AuthMiddleware = options.authMiddleware ?? noopAuthMiddleware;
 
   if (TRUST_PROXY !== "") {
     app.set("trust proxy", TRUST_PROXY);
@@ -122,11 +168,19 @@ export function createApp(db: Database): express.Application {
       uptime: process.uptime(),
       db: dbStatus,
     });
+  // ── Health check (unlimited, no auth required) ──────────────────────────────
+  app.get("/health", (_req: Request, res: Response): void => {
+    res.json({ status: "ok", uptime: process.uptime() });
   });
 
   // Apply rate limiting to all /api routes.
   // const apiLimiter = createLimiter();
   // app.use("/api", apiLimiter);
+
+  // BE-25: Apply the auth middleware to all /api routes after rate limiting.
+  // Routes registered below this line are covered; the health check above is
+  // intentionally excluded.
+  app.use("/api", authMiddleware);
 
   // ── Resource routes ────────────────────────────────────────────────────────
   app.use("/api/profiles", createProfilesRouter(db));

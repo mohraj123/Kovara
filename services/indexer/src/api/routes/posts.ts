@@ -1,11 +1,44 @@
 import { Router, Request, Response } from "express";
-import { Database } from "../../db";
+import { Database, Post } from "../../db";
 import { ApiErrorResponse, PostListResponse, PostResponse } from "../contracts";
 import { serializeBigInt } from "../index";
 
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 20;
 const DEFAULT_OFFSET = 0;
+
+/**
+ * Serialize a Post record to its API representation.
+ *
+ * BE-23: All date fields are serialized as ISO 8601 strings so consumers
+ * receive a consistent, timezone-unambiguous format. Null/undefined dates
+ * are surfaced as null rather than being omitted or coerced to an empty
+ * string.
+ */
+function serializePost(post: Post): Record<string, unknown> {
+  return {
+    id: post.id.toString(),
+    author: post.author,
+    content: post.content,
+    deleted: post.deleted,
+    tip_total: post.tip_total.toString(),
+    like_count: post.like_count.toString(),
+    created_ledger: post.created_ledger,
+    deleted_ledger: post.deleted_ledger ?? null,
+    created_at:
+      post.created_at instanceof Date && !isNaN(post.created_at.getTime())
+        ? post.created_at.toISOString()
+        : post.created_at != null
+          ? String(post.created_at)
+          : null,
+    deleted_at:
+      post.deleted_at instanceof Date && !isNaN(post.deleted_at.getTime())
+        ? post.deleted_at.toISOString()
+        : post.deleted_at != null
+          ? String(post.deleted_at)
+          : null,
+  };
+}
 
 export function createPostsRouter(db: Database): Router {
   const router = Router();
@@ -51,6 +84,13 @@ export function createPostsRouter(db: Database): Router {
           has_more: rawOffset + posts.length < total,
         })
       );
+      res.json({
+        posts: posts.map(serializePost),
+        total,
+        limit: rawLimit,
+        offset: rawOffset,
+        has_more: rawOffset + posts.length < total,
+      } as unknown as PostListResponse);
     }
   );
 
@@ -83,6 +123,7 @@ export function createPostsRouter(db: Database): Router {
       }
 
       res.json(serializeBigInt(post));
+      res.json(serializePost(post) as unknown as PostResponse);
     }
   );
 
