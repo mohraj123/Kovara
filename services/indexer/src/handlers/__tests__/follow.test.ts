@@ -34,8 +34,7 @@ function makeMockDb(): jest.Mocked<Database> {
     listPosts: jest.fn(),
     getFollowers: jest.fn(),
     getFollowing: jest.fn(),
-    searchPosts: jest.fn(),
-    getTokenMetadata: jest.fn(),
+    searchPosts: jest.fn().mockResolvedValue({ posts: [], total: 0 }),
   } as jest.Mocked<Database>;
 }
 
