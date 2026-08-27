@@ -57,9 +57,14 @@ impl KovaraContract {
 
         let stake_key = StorageKey::VerifierStake(verifier.clone(), token.clone());
         let current: i128 = env.storage().persistent().get(&stake_key).unwrap_or(0);
-        let balance = current.checked_add(amount).unwrap_or_else(|| {
+        let minimum_stake = Self::minimum_verifier_stake(&env);
+        let new_balance = current.checked_add(amount).unwrap_or_else(|| {
             panic_with_error!(&env, ContractError::StakeBalanceOverflow);
         });
+        if new_balance < minimum_stake {
+            panic_with_error!(&env, ContractError::InsufficientVerifierStake);
+        }
+        let balance = new_balance;
 
         soroban_sdk::token::Client::new(&env, &token).transfer(
             &verifier,
@@ -194,12 +199,39 @@ impl KovaraContract {
         balance
     }
 
+    /// Set the minimum balance required for a verifier's stake in one token.
+    /// Existing balances are not modified; the new value applies to future deposits.
+    pub fn set_minimum_verifier_stake(env: Env, minimum_stake: i128) {
+        Self::require_initialized(&env);
+        Self::bump_instance(&env);
+        Self::require_admin(&env);
+        if minimum_stake <= 0 {
+            panic_with_error!(&env, ContractError::MinimumVerifierStakeMustBePositive);
+        }
+        env.storage().instance().set(&crate::MIN_VERIFIER_STAKE, &minimum_stake);
+    }
+
+    /// Return the configured minimum verifier stake.
+    pub fn get_minimum_verifier_stake(env: Env) -> i128 {
+        Self::require_initialized(&env);
+        Self::minimum_verifier_stake(&env)
+    }
+
     /// Return whether `verifier` has registered.
     pub fn is_verifier(env: Env, verifier: Address) -> bool {
         Self::require_initialized(&env);
         env.storage()
             .persistent()
             .has(&StorageKey::Verifier(verifier))
+    }
+
+    fn minimum_verifier_stake(env: &Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&crate::MIN_VERIFIER_STAKE)
+            .unwrap_or(1)
+    }
+
     /// Resolve quorum for a submission and emit one immutable outcome.
     ///
     /// # Panics

@@ -43,12 +43,52 @@ fn test_verifier_registration_and_stake_balance() {
     assert_eq!(client.get_verifier_stake(&verifier, &token), 0);
 
     client.register_verifier(&verifier);
+    client.set_minimum_verifier_stake(&250);
     client.deposit_stake(&verifier, &token, &250);
     client.deposit_stake(&verifier, &token, &100);
 
     assert!(client.is_verifier(&verifier));
     assert_eq!(client.get_verifier_stake(&verifier, &token), 350);
     assert_eq!(TokenClient::new(&env, &token).balance(&verifier), 650);
+}
+
+#[test]
+fn test_verifier_stake_boundary_is_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+    let verifier = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env.register_stellar_asset_contract_v2(token_admin).address();
+    StellarAssetClient::new(&env, &token).mint(&verifier, &250);
+
+    client.set_minimum_verifier_stake(&250);
+    client.register_verifier(&verifier);
+    client.deposit_stake(&verifier, &token, &250);
+
+    assert_eq!(client.get_verifier_stake(&verifier, &token), 250);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #53)")]
+fn test_verifier_stake_below_minimum_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+    let verifier = Address::generate(&env);
+    let token = make_token(&env);
+    client.set_minimum_verifier_stake(&250);
+    client.register_verifier(&verifier);
+    client.deposit_stake(&verifier, &token, &249);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #52)")]
+fn test_minimum_verifier_stake_must_be_positive() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _) = setup_contract(&env);
+    client.set_minimum_verifier_stake(&0);
 }
 
 #[test]
