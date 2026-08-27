@@ -1,9 +1,13 @@
-//! Tests for CT-035 (complete daily index events) and CT-036 (storage
-//! versioning).
+//! Tests for the full CT-030..CT-037 daily-index series: storage and range
+//! queries (CT-030), rounding rules (CT-031), deterministic aggregation
+//! (CT-032), immutable history (CT-033), authorization (CT-034), events
+//! (CT-035), storage versioning (CT-036), and admin transfer/recovery
+//! (CT-037).
 
 use crate::{
-    DailyIndex, DailyIndexUpdated, DataKey, Error, KovaraIndex, KovaraIndexClient, PendingRecovery,
-    PendingTransfer, RECOVERY_DELAY_LEDGERS, SCHEMA_VERSION,
+    round_half_away, DailyIndex, DailyIndexUpdated, DataKey, Error, KovaraIndex, KovaraIndexClient,
+    Observation, PendingRecovery, PendingTransfer, KVI_BASELINE, KVI_SCALE, KVI_VALUE_MAX,
+    MAX_HISTORY_WINDOW, RECOVERY_DELAY_LEDGERS, SCHEMA_VERSION,
 };
 use soroban_sdk::testutils::Ledger as _;
 use soroban_sdk::testutils::{Address as _, Events};
@@ -567,8 +571,9 @@ fn records_are_kept_per_country_and_per_date() {
     );
 }
 
-/// Negative values are storable. Whether the index may go negative is CT-031
-/// and CT-032's decision; this crate must not pre-empt it by rejecting them.
+/// Negative values within the CT-031 bounds ([`KVI_VALUE_MAX`]) are storable
+/// as given; the rounding and aggregation rules decide what is produced, not
+/// whether a signed value may be stored.
 #[test]
 fn a_negative_value_is_stored_as_given() {
     let f = deploy_initialized();
@@ -822,8 +827,17 @@ fn rotation_revokes_the_old_roster_and_installs_the_new_one() {
         Err(Ok(Error::NotASentinel))
     );
 
+    // A fresh day (CT-033 made NG@DATE immutable after the first write).
     assert_eq!(
-        update_with!(&f, &vec![&f.env, new.get(0).unwrap(), new.get(1).unwrap()]),
+        f.client.try_set_daily_index(
+            &vec![&f.env, new.get(0).unwrap(), new.get(1).unwrap()],
+            &NG,
+            &(DATE + 1),
+            &VALUE,
+            &BASKET,
+            &PERIOD_START,
+            &PERIOD_END,
+        ),
         Ok(Ok(()))
     );
 }
@@ -848,7 +862,15 @@ fn rotation_can_raise_and_lower_the_threshold() {
 
     f.client.set_sentinels(&f.admin, &s, &1);
     assert_eq!(
-        update_with!(&f, &vec![&f.env, s.get(0).unwrap()]),
+        f.client.try_set_daily_index(
+            &vec![&f.env, s.get(0).unwrap()],
+            &NG,
+            &(DATE + 1),
+            &VALUE,
+            &BASKET,
+            &PERIOD_START,
+            &PERIOD_END,
+        ),
         Ok(Ok(()))
     );
 }
@@ -1397,5 +1419,651 @@ fn a_rotated_out_sentinel_cannot_propose_a_recovery() {
             &Address::generate(&f.env)
         ),
         Err(Ok(Error::NotASentinel))
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CT-030 — daily KovaraIndex storage (#505)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Three consecutive days for the fixture country, written in order.
+fn write_three_days(f: &Fixture) {
+    f.client.set_daily_index(
+        &solo(f),
+        &NG,
+        &DATE,
+        &100,
+        &BASKET,
+        &PERIOD_START,
+        &PERIOD_END,
+    );
+    f.client.set_daily_index(
+        &solo(f),
+        &NG,
+        &(DATE + 1),
+        &200,
+        &BASKET,
+        &PERIOD_START,
+        &PERIOD_END,
+    );
+    f.client.set_daily_index(
+        &solo(f),
+        &NG,
+        &(DATE + 2),
+        &300,
+        &BASKET,
+        &PERIOD_START,
+        &PERIOD_END,
+    );
+}
+
+#[test]
+fn latest_is_none_before_any_write() {
+    let f = deploy_initialized();
+
+    assert_eq!(f.client.latest_daily_index(&NG), None);
+}
+
+#[test]
+fn latest_returns_the_most_recent_record() {
+    let f = deploy_initialized();
+    write_three_days(&f);
+
+    let latest = f.client.latest_daily_index(&NG).unwrap();
+
+    assert_eq!(latest.date, DATE + 2);
+    assert_eq!(latest.value, 300);
+}
+
+#[test]
+fn history_returns_the_requested_range_ascending() {
+    let f = deploy_initialized();
+    write_three_days(&f);
+
+    let records = f.client.daily_index_history(&NG, &DATE, &(DATE + 2));
+
+    assert_eq!(records.len(), 3);
+    assert_eq!(records.get(0).unwrap().date, DATE);
+    assert_eq!(records.get(1).unwrap().date, DATE + 1);
+    assert_eq!(records.get(2).unwrap().date, DATE + 2);
+
+    let subset = f.client.daily_index_history(&NG, &(DATE + 1), &(DATE + 2));
+    assert_eq!(subset.len(), 2);
+    assert_eq!(subset.get(0).unwrap().date, DATE + 1);
+}
+
+#[test]
+fn history_is_empty_when_nothing_matches() {
+    let f = deploy_initialized();
+    write_three_days(&f);
+
+    assert_eq!(
+        f.client
+            .daily_index_history(&NG, &(DATE + 5), &(DATE + 6))
+            .len(),
+        0
+    );
+    assert_eq!(
+        f.client
+            .daily_index_history(&symbol_short!("ZZ"), &DATE, &(DATE + 2))
+            .len(),
+        0
+    );
+}
+
+#[test]
+fn an_inverted_history_range_is_rejected() {
+    let f = deploy_initialized();
+
+    assert_eq!(
+        f.client.try_daily_index_history(&NG, &(DATE + 2), &DATE),
+        Err(Ok(Error::InvalidHistoryRange))
+    );
+}
+
+#[test]
+fn a_history_range_wider_than_the_max_window_is_rejected() {
+    let f = deploy_initialized();
+
+    assert_eq!(
+        f.client
+            .try_daily_index_history(&NG, &DATE, &(DATE + MAX_HISTORY_WINDOW + 1)),
+        Err(Ok(Error::HistoryWindowTooLarge))
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CT-031 — KVI rounding rules (#506)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The scale and the baseline are pinned so consumers can reproduce values.
+#[test]
+fn the_scale_and_baseline_are_pinned() {
+    assert_eq!(KVI_SCALE, 10_000);
+    assert_eq!(KVI_BASELINE, 100 * KVI_SCALE);
+}
+
+#[test]
+fn rounding_is_half_away_from_zero() {
+    assert_eq!(round_half_away(5, 2), 3); //   2.5  ->  3
+    assert_eq!(round_half_away(-5, 2), -3); //  -2.5  -> -3
+    assert_eq!(round_half_away(4, 2), 2); //   2.0  ->  2
+    assert_eq!(round_half_away(-4, 2), -2); //  -2.0  -> -2
+    assert_eq!(round_half_away(1, 2), 1); //   0.5  ->  1
+    assert_eq!(round_half_away(-1, 2), -1); //  -0.5  -> -1
+    assert_eq!(round_half_away(7, 3), 2); //   2.33 ->  2
+    assert_eq!(round_half_away(-7, 3), -2); //  -2.33 -> -2
+}
+
+/// The overflow rule: values outside the documented bounds are rejected
+/// rather than stored, and nothing is persisted by the rejected writes.
+#[test]
+fn a_value_beyond_the_documented_bounds_is_rejected() {
+    let f = deploy_initialized();
+
+    assert_eq!(
+        f.client.try_set_daily_index(
+            &solo(&f),
+            &NG,
+            &DATE,
+            &(KVI_VALUE_MAX + 1),
+            &BASKET,
+            &PERIOD_START,
+            &PERIOD_END
+        ),
+        Err(Ok(Error::ValueOutOfRange))
+    );
+
+    assert_eq!(
+        f.client.try_set_daily_index(
+            &solo(&f),
+            &NG,
+            &DATE,
+            &(-KVI_VALUE_MAX - 1),
+            &BASKET,
+            &PERIOD_START,
+            &PERIOD_END
+        ),
+        Err(Ok(Error::ValueOutOfRange))
+    );
+
+    assert_eq!(f.client.get_daily_index(&NG, &DATE), None);
+}
+
+#[test]
+fn a_value_out_of_bounds_emits_no_event() {
+    let f = deploy_initialized();
+
+    assert!(f
+        .client
+        .try_set_daily_index(
+            &solo(&f),
+            &NG,
+            &DATE,
+            &(KVI_VALUE_MAX + 1),
+            &BASKET,
+            &PERIOD_START,
+            &PERIOD_END
+        )
+        .is_err());
+
+    assert_eq!(emitted_count(&f), 0);
+}
+
+#[test]
+fn the_boundary_values_are_storable() {
+    let f = deploy_initialized();
+
+    f.client.set_daily_index(
+        &solo(&f),
+        &NG,
+        &DATE,
+        &KVI_VALUE_MAX,
+        &BASKET,
+        &PERIOD_START,
+        &PERIOD_END,
+    );
+    f.client.set_daily_index(
+        &solo(&f),
+        &NG,
+        &(DATE + 1),
+        &(-KVI_VALUE_MAX),
+        &BASKET,
+        &PERIOD_START,
+        &PERIOD_END,
+    );
+
+    assert_eq!(
+        f.client.get_daily_index(&NG, &DATE).unwrap().value,
+        KVI_VALUE_MAX
+    );
+    assert_eq!(
+        f.client.get_daily_index(&NG, &(DATE + 1)).unwrap().value,
+        -KVI_VALUE_MAX
+    );
+}
+
+/// The baseline value (100.0000) is an ordinary storable number, which is
+/// what lets the first published day of a country serve as its reference.
+#[test]
+fn the_baseline_value_is_storable() {
+    let f = deploy_initialized();
+
+    f.client.set_daily_index(
+        &solo(&f),
+        &NG,
+        &DATE,
+        &KVI_BASELINE,
+        &BASKET,
+        &PERIOD_START,
+        &PERIOD_END,
+    );
+
+    assert_eq!(
+        f.client.get_daily_index(&NG, &DATE).unwrap().value,
+        KVI_BASELINE
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CT-032 — deterministic aggregation (#507)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Observations with unit weights, from plain values.
+fn observations(f: &Fixture, values: &[i128]) -> Vec<Observation> {
+    let mut out = Vec::new(&f.env);
+    for value in values {
+        out.push_back(Observation {
+            value: *value,
+            weight: 1,
+        });
+    }
+    out
+}
+
+/// Observations from `(value, weight)` pairs.
+fn weighted(f: &Fixture, pairs: &[(i128, u32)]) -> Vec<Observation> {
+    let mut out = Vec::new(&f.env);
+    for (value, weight) in pairs {
+        out.push_back(Observation {
+            value: *value,
+            weight: *weight,
+        });
+    }
+    out
+}
+
+#[test]
+fn the_median_of_an_odd_count_is_the_middle_value() {
+    let f = deploy_initialized();
+
+    assert_eq!(
+        f.client
+            .compute_daily_index(&observations(&f, &[10, 20, 30])),
+        20
+    );
+    assert_eq!(
+        f.client
+            .compute_daily_index(&observations(&f, &[30, 10, 20])),
+        20
+    );
+}
+
+#[test]
+fn the_median_of_an_even_count_averages_the_two_middle_values() {
+    let f = deploy_initialized();
+
+    // (20 + 30) / 2 = 25
+    assert_eq!(
+        f.client
+            .compute_daily_index(&observations(&f, &[10, 20, 30, 40])),
+        25
+    );
+
+    // (11 + 12) / 2 = 11.5 -> 12, half away from zero (CT-031)
+    assert_eq!(
+        f.client
+            .compute_daily_index(&observations(&f, &[10, 11, 12, 13])),
+        12
+    );
+
+    // Negative halves round away from zero too: (-11 + -12) / 2 = -11.5 -> -12
+    assert_eq!(
+        f.client
+            .compute_daily_index(&observations(&f, &[-13, -12, -11, -10])),
+        -12
+    );
+}
+
+/// Outlier semantics: with 10 observations the 10% trim drops the single
+/// lowest and single highest, so one wild value at each end changes nothing.
+#[test]
+fn outliers_are_trimmed_before_the_median() {
+    let f = deploy_initialized();
+
+    let obs = observations(&f, &[1, 100, 100, 100, 100, 100, 100, 100, 100, 1000]);
+    assert_eq!(f.client.compute_daily_index(&obs), 100);
+}
+
+#[test]
+fn weights_pull_the_median_toward_them() {
+    let f = deploy_initialized();
+
+    // Unweighted median of {10, 20, 30} is 20, but with 30 carrying most of
+    // the weight the weighted median is 30.
+    let obs = weighted(&f, &[(10, 1), (20, 1), (30, 8)]);
+    assert_eq!(f.client.compute_daily_index(&obs), 30);
+
+    // A heavily weighted middle observation is picked outright.
+    let obs = weighted(&f, &[(10, 1), (20, 6), (30, 1)]);
+    assert_eq!(f.client.compute_daily_index(&obs), 20);
+}
+
+/// Tie behaviour: equal values are interchangeable, and an even split on
+/// equal values returns that value.
+#[test]
+fn ties_between_equal_values_are_stable() {
+    let f = deploy_initialized();
+
+    assert_eq!(
+        f.client
+            .compute_daily_index(&observations(&f, &[7, 7, 7, 7])),
+        7
+    );
+    assert_eq!(
+        f.client.compute_daily_index(&observations(&f, &[3, 3, 3])),
+        3
+    );
+}
+
+/// Determinism: the same multiset in a different order yields the same value.
+#[test]
+fn identical_inputs_in_any_order_give_the_identical_result() {
+    let f = deploy_initialized();
+
+    let a = observations(&f, &[1, 5, 2, 9, 4, 8, 3, 7, 6]);
+    let b = observations(&f, &[9, 1, 8, 2, 7, 3, 6, 4, 5]);
+
+    assert_eq!(
+        f.client.compute_daily_index(&a),
+        f.client.compute_daily_index(&b)
+    );
+}
+
+#[test]
+fn aggregating_no_observations_is_rejected() {
+    let f = deploy_initialized();
+
+    assert_eq!(
+        f.client.try_compute_daily_index(&Vec::new(&f.env)),
+        Err(Ok(Error::EmptyObservations))
+    );
+}
+
+#[test]
+fn a_zero_weight_observation_is_rejected() {
+    let f = deploy_initialized();
+
+    let obs = weighted(&f, &[(10, 1), (20, 0)]);
+    assert_eq!(
+        f.client.try_compute_daily_index(&obs),
+        Err(Ok(Error::ZeroWeight))
+    );
+}
+
+#[test]
+fn an_out_of_bounds_observation_is_rejected() {
+    let f = deploy_initialized();
+
+    let obs = weighted(&f, &[(KVI_VALUE_MAX + 1, 1), (20, 1)]);
+    assert_eq!(
+        f.client.try_compute_daily_index(&obs),
+        Err(Ok(Error::ValueOutOfRange))
+    );
+}
+
+/// The aggregated entrypoint stores the computed median and emits the same
+/// CT-035 event, so a consumer acting on the event sees the aggregate.
+#[test]
+fn the_aggregated_entrypoint_stores_the_computed_value_and_emits_the_event() {
+    let f = deploy_initialized();
+
+    let obs = observations(&f, &[10, 20, 30, 40]);
+    let computed = f.client.set_aggregated_index(
+        &solo(&f),
+        &NG,
+        &DATE,
+        &obs,
+        &BASKET,
+        &PERIOD_START,
+        &PERIOD_END,
+    );
+
+    assert_eq!(computed, 25);
+
+    // Capture the event before any further invocation replaces the buffer.
+    assert_eq!(emitted_count(&f), 1);
+    let expected = DailyIndexUpdated {
+        country: NG,
+        date: DATE,
+        value: 25,
+        basket_version: BASKET,
+        source_period_start: PERIOD_START,
+        source_period_end: PERIOD_END,
+        updater: f.updater.clone(),
+        schema_version: SCHEMA_VERSION,
+    };
+    assert_eq!(f.env.events().all(), expected_event(&f, &expected));
+
+    let stored = f.client.get_daily_index(&NG, &DATE).unwrap();
+    assert_eq!(stored.value, 25);
+    assert_eq!(stored.basket_version, BASKET);
+    assert_eq!(stored.updater, f.updater.clone());
+}
+
+/// The aggregated path shares the CT-033 immutable-history guard.
+#[test]
+fn the_aggregated_entrypoint_enforces_immutable_history() {
+    let f = deploy_initialized();
+    let obs = observations(&f, &[10, 20, 30]);
+
+    f.client.set_aggregated_index(
+        &solo(&f),
+        &NG,
+        &DATE,
+        &obs,
+        &BASKET,
+        &PERIOD_START,
+        &PERIOD_END,
+    );
+
+    assert_eq!(
+        f.client.try_set_aggregated_index(
+            &solo(&f),
+            &NG,
+            &DATE,
+            &obs,
+            &BASKET,
+            &PERIOD_START,
+            &PERIOD_END
+        ),
+        Err(Ok(Error::IndexAlreadyFinalized))
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CT-033 — reject duplicate index updates (#508)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A duplicate of an already-finalized day is a replay and must fail, even
+/// with a different value.
+#[test]
+fn replaying_the_same_day_is_rejected() {
+    let f = deploy_initialized();
+    set_index(&f);
+
+    assert_eq!(
+        f.client.try_set_daily_index(
+            &solo(&f),
+            &NG,
+            &DATE,
+            &(VALUE + 1),
+            &BASKET,
+            &PERIOD_START,
+            &PERIOD_END
+        ),
+        Err(Ok(Error::IndexAlreadyFinalized))
+    );
+
+    // The original record is untouched — history is immutable.
+    assert_eq!(f.client.get_daily_index(&NG, &DATE).unwrap().value, VALUE);
+}
+
+#[test]
+fn a_rejected_replay_emits_no_event() {
+    let f = deploy_initialized();
+    set_index(&f);
+
+    assert!(f
+        .client
+        .try_set_daily_index(
+            &solo(&f),
+            &NG,
+            &DATE,
+            &(VALUE + 1),
+            &BASKET,
+            &PERIOD_START,
+            &PERIOD_END
+        )
+        .is_err());
+
+    assert_eq!(emitted_count(&f), 0);
+}
+
+/// Backdating: once a later day is finalized, an earlier day cannot be
+/// written, and the rejected write stores nothing.
+#[test]
+fn backdating_after_a_later_day_is_rejected() {
+    let f = deploy_initialized();
+    set_index(&f); // NG@DATE
+
+    f.client.set_daily_index(
+        &solo(&f),
+        &NG,
+        &(DATE + 1),
+        &VALUE,
+        &BASKET,
+        &PERIOD_START,
+        &PERIOD_END,
+    );
+
+    assert_eq!(
+        f.client.try_set_daily_index(
+            &solo(&f),
+            &NG,
+            &(DATE - 1),
+            &VALUE,
+            &BASKET,
+            &PERIOD_START,
+            &PERIOD_END
+        ),
+        Err(Ok(Error::OutOfOrderUpdate))
+    );
+    assert_eq!(f.client.get_daily_index(&NG, &(DATE - 1)), None);
+}
+
+/// History is strictly forward: a gap cannot be backfilled once a later day
+/// exists — a missed day simply has no index.
+#[test]
+fn a_gap_cannot_be_backfilled() {
+    let f = deploy_initialized();
+    set_index(&f); // NG@DATE
+    f.client.set_daily_index(
+        &solo(&f),
+        &NG,
+        &(DATE + 2),
+        &VALUE,
+        &BASKET,
+        &PERIOD_START,
+        &PERIOD_END,
+    );
+
+    assert_eq!(
+        f.client.try_set_daily_index(
+            &solo(&f),
+            &NG,
+            &(DATE + 1),
+            &VALUE,
+            &BASKET,
+            &PERIOD_START,
+            &PERIOD_END
+        ),
+        Err(Ok(Error::OutOfOrderUpdate))
+    );
+}
+
+/// Immutability is per country: finalizing one country's day does not lock
+/// any other country's calendar.
+#[test]
+fn immutability_is_per_country() {
+    let f = deploy_initialized();
+    set_index(&f); // NG@DATE
+
+    f.client.set_daily_index(
+        &solo(&f),
+        &symbol_short!("KE"),
+        &DATE,
+        &VALUE,
+        &BASKET,
+        &PERIOD_START,
+        &PERIOD_END,
+    );
+
+    assert_eq!(
+        f.client
+            .get_daily_index(&symbol_short!("KE"), &DATE)
+            .unwrap()
+            .value,
+        VALUE
+    );
+}
+
+/// Strictly increasing days are accepted; this pins the forward rule that
+/// the out-of-order check implements.
+#[test]
+fn strictly_increasing_days_are_accepted() {
+    let f = deploy_initialized();
+
+    f.client.set_daily_index(
+        &solo(&f),
+        &NG,
+        &DATE,
+        &100,
+        &BASKET,
+        &PERIOD_START,
+        &PERIOD_END,
+    );
+    f.client.set_daily_index(
+        &solo(&f),
+        &NG,
+        &(DATE + 1),
+        &200,
+        &BASKET,
+        &PERIOD_START,
+        &PERIOD_END,
+    );
+    f.client.set_daily_index(
+        &solo(&f),
+        &NG,
+        &(DATE + 2),
+        &300,
+        &BASKET,
+        &PERIOD_START,
+        &PERIOD_END,
+    );
+
+    assert_eq!(
+        f.client.get_daily_index(&NG, &(DATE + 2)).unwrap().value,
+        300
     );
 }
