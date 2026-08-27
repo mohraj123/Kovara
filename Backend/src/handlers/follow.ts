@@ -13,6 +13,16 @@ export interface UnfollowEvent {
   ledger: number;
 }
 
+
+export interface TrendEvent {
+  eventTime: string;
+  events: string;
+  proceeding: number;
+}
+
+
+
+
 /**
  * Handle a Follow event.
  *
