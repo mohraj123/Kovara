@@ -1,11 +1,22 @@
 #![no_std]
-//! `KovaraIndex` — daily Kōvara Value Index (KVI) records, one per country
-//! per day.
+//! Kōvara smart contracts — PriceVault and KovaraIndex.
 //!
-//! This crate currently carries the minimum surface needed by **CT-035**
-//! (complete daily index events) and **CT-036** (contract storage
-//! versioning). The rest of the index behaviour is owned by other issues and
-//! will extend what is here rather than replace it:
+//! # PriceVault (CT-002, CT-003, CT-004, CT-005)
+//!
+//! Stores raw price submissions on-ledger. The entry point for all price
+//! submissions. Stores unverified prices and emits events consumed by the
+//! `@kovara/sentinel` oracle daemon.
+//!
+//! | Issue | Description |
+//! |---|---|
+//! | CT-002 | Implement PriceVault contract |
+//! | CT-003 | Key price submissions deterministically |
+//! | CT-004 | Validate countries and categories |
+//! | CT-005 | Reject invalid price values |
+//!
+//! # KovaraIndex (CT-030 through CT-037)
+//!
+//! Daily Kōvara Value Index (KVI) records, one per country per day.
 //!
 //! | Issue | Adds |
 //! |---|---|
@@ -14,40 +25,18 @@
 //! | CT-032 | Deterministic aggregation producing `value` |
 //! | CT-033 | Rejection of duplicate index updates |
 //! | CT-034 | The authorization policy for who may update |
-//!
-//! Deliberately **not** implemented here: rounding, aggregation, duplicate
-//! rejection, and the authorization policy. `set_daily_index` therefore
-//! accepts a value that some other component computed, requires only that the
-//! named updater signed for itself, and allows a later write to replace an
-//! earlier one. Each of those is a named issue above, and guessing at their
-//! semantics now would only have to be undone.
-//!
-//! # Storage versioning (CT-036)
-//!
-//! Two mechanisms, and they do different jobs.
-//!
-//! **The schema version is recorded at initialization** and every operation
-//! checks it. A contract deployed under one schema and then handed code
-//! expecting another fails with [`Error::IncompatibleSchema`] rather than
-//! reading records it does not understand. That is the "incompatible changes
-//! are rejected" half.
-//!
-//! **Record keys embed the schema version**, so `DailyIndex(1, "NG", d)` and
-//! `DailyIndex(2, "NG", d)` are different entries. That is the "storage keys
-//! are versioned" half, and it is what makes a future migration possible: v2
-//! records can be written alongside v1 rather than on top of them, so a
-//! migration is resumable and a failed one leaves the old data intact.
-//!
-//! Executing a migration is out of scope here — CT-036 asks for versioning
-//! and rejection, not a migration engine. The keyspace above is the
-//! precondition for one.
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, Symbol, Vec,
 };
 
+pub mod price_vault;
+
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod price_vault_test;
 
 /// The storage schema this build of the contract understands.
 ///
