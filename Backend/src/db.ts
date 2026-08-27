@@ -306,6 +306,7 @@ export class PostgresDatabase implements Database {
         post.content,
         post.tip_total.toString(),
         post.like_count.toString(),
+        post.created_at ?? null,
       ]
     );
   }
