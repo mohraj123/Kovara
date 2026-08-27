@@ -1,7 +1,22 @@
 #![no_std]
-//! `KovaraIndex` — daily Kōvara Value Index (KVI) records, one per country
-//! per day.
+//! Kōvara smart contracts — PriceVault and KovaraIndex.
 //!
+//! # PriceVault (CT-002, CT-003, CT-004, CT-005)
+//!
+//! Stores raw price submissions on-ledger. The entry point for all price
+//! submissions. Stores unverified prices and emits events consumed by the
+//! `@kovara/sentinel` oracle daemon.
+//!
+//! | Issue | Description |
+//! |---|---|
+//! | CT-002 | Implement PriceVault contract |
+//! | CT-003 | Key price submissions deterministically |
+//! | CT-004 | Validate countries and categories |
+//! | CT-005 | Reject invalid price values |
+//!
+//! # KovaraIndex (CT-030 through CT-037)
+//!
+//! Daily Kōvara Value Index (KVI) records, one per country per day.
 //! The full **CT-030..CT-037** series for the daily index lands in this
 //! crate:
 //!
@@ -40,8 +55,13 @@ use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, Symbol, Vec,
 };
 
+pub mod price_vault;
+
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod price_vault_test;
 
 /// The storage schema this build of the contract understands.
 ///
