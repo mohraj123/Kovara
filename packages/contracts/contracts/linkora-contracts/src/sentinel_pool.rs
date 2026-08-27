@@ -57,9 +57,15 @@ impl KovaraContract {
 
         let stake_key = StorageKey::VerifierStake(verifier.clone(), token.clone());
         let current: i128 = env.storage().persistent().get(&stake_key).unwrap_or(0);
+        let minimum_stake = Self::minimum_verifier_stake(&env);
+        let new_balance = current.checked_add(amount).unwrap_or_else(|| {
         let balance = current.checked_add(amount).unwrap_or_else({
             panic_with_error!(&env, ContractError::StakeBalanceOverflow);
         });
+        if new_balance < minimum_stake {
+            panic_with_error!(&env, ContractError::InsufficientVerifierStake);
+        }
+        let balance = new_balance;
 
         soroban_sdk::token::Client::new(&env, &token).transfer(
             &verifier,
@@ -111,11 +117,82 @@ impl KovaraContract {
         balance
     }
 
+    /// Set the minimum balance required for a verifier's stake in one token.
+    /// Existing balances are not modified; the new value applies to future deposits.
+    pub fn set_minimum_verifier_stake(env: Env, minimum_stake: i128) {
+        Self::require_initialized(&env);
+        Self::bump_instance(&env);
+        Self::require_admin(&env);
+        if minimum_stake <= 0 {
+            panic_with_error!(&env, ContractError::MinimumVerifierStakeMustBePositive);
+        }
+        env.storage().instance().set(&crate::MIN_VERIFIER_STAKE, &minimum_stake);
+    }
+
+    /// Return the configured minimum verifier stake.
+    pub fn get_minimum_verifier_stake(env: Env) -> i128 {
+        Self::require_initialized(&env);
+        Self::minimum_verifier_stake(&env)
+    }
+
     /// Return whether `verifier` has registered.
     pub fn is_verifier(env: Env, verifier: Address) -> bool {
         Self::require_initialized(&env);
         env.storage()
             .persistent()
             .has(&StorageKey::Verifier(verifier))
+    }
+
+    fn minimum_verifier_stake(env: &Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&crate::MIN_VERIFIER_STAKE)
+            .unwrap_or(1)
+    }
+
+    /// Resolve quorum for a submission and emit one immutable outcome.
+    ///
+    /// # Panics
+    /// - `RoundNotFound` if the round does not exist.
+    /// - `RoundStillOpen` if the current ledger is before or equal to the end ledger.
+    /// - `RoundAlreadyFinalized` if the round has already been resolved.
+    pub fn resolve(env: Env, submission_id: u64) -> Resolution {
+        Self::require_initialized(&env);
+        Self::bump_instance(&env);
+
+        let key = StorageKey::VoteRound(submission_id);
+        let mut round: VoteRound = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::RoundNotFound));
+
+        if let RoundStatus::Finalized(_) = round.status {
+            panic_with_error!(&env, ContractError::RoundAlreadyFinalized);
+        }
+
+        if env.ledger().sequence() <= round.end_ledger {
+            panic_with_error!(&env, ContractError::RoundStillOpen);
+        }
+
+        let resolution = if round.votes_approve > round.votes_reject {
+            Resolution::Approved
+        } else if round.votes_reject > round.votes_approve {
+            Resolution::Rejected
+        } else {
+            Resolution::Tie
+        };
+
+        round.status = RoundStatus::Finalized(resolution.clone());
+        env.storage().persistent().set(&key, &round);
+        Self::bump(&env, &key);
+
+        RoundFinalizedEvent {
+            submission_id,
+            resolution: resolution.clone(),
+        }
+        .publish(&env);
+
+        resolution
     }
 }

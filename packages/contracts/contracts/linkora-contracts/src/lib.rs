@@ -95,6 +95,8 @@ pub enum ContractError {
     VerifierNotRegistered = 46,
     StakeAmountMustBePositive = 47,
     StakeBalanceOverflow = 48,
+    MinimumVerifierStakeMustBePositive = 52,
+    InsufficientVerifierStake = 53,
     Paused = 45,
     InvalidWasmHash = 45,
     RoundAlreadyExists = 46,
@@ -120,7 +122,7 @@ const PRICE_SUBMISSION_GAP: u32 = 1_728;
 const PRICE_MIN_STAKE: i128 = 1;
 const PRICE_DEPOSIT: i128 = 1;
 const PRICE_EVENT_VERSION: Symbol = symbol_short!("v1");
-const PROPOSAL_CT: Symbol = symbol_short!("PROP_CT");
+const PROPOSAL_CT: Symbol = symbol_short!("PROP_CT");    pub(crate) const MIN_VERIFIER_STAKE: Symbol = symbol_short!("MIN_V_STK");
 const PAUSED: Symbol = symbol_short!("PAUSED");
 
 // ── TTL Constants ─────────────────────────────────────────────────────────────
