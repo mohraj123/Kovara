@@ -1,0 +1,18 @@
+[package]
+name = "sentinel-pool"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# CT-015 is design-only: it defines and tests the weighted quorum/tie/
+# abstention resolution rule in isolation, before any staking, vote-casting,
+# or on-chain wiring exists (those are separate, not-yet-filed issues; see
+# README.md). There is deliberately no dependency on `soroban-sdk` and no
+# `#[contract]` here yet — `resolve()` is a plain, std, unit-testable
+# function so the semantics can be reviewed and pinned down on their own
+# merits. Wiring it into an actual Soroban contract (storage, `Address`,
+# staking, `vote`/`resolve` entry points, slashing) is future work that
+# will depend on this crate rather than duplicate it.
+
+[lib]
+crate-type = ["rlib"]
