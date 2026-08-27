@@ -296,8 +296,8 @@ export class PostgresDatabase implements Database {
     this.postCache.delete(post.id.toString());
     await this.runQuery(
       `
-      INSERT INTO posts (id, author, content, tip_total, like_count, created_at)
-      VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))
+      INSERT INTO posts (id, author, content, tip_total, like_count, created_ledger, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()))
       ON CONFLICT (id) DO NOTHING
       `,
       [
@@ -306,6 +306,7 @@ export class PostgresDatabase implements Database {
         post.content,
         post.tip_total.toString(),
         post.like_count.toString(),
+        post.created_ledger,
         post.created_at ?? null,
       ]
     );
