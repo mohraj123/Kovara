@@ -37,6 +37,8 @@ import { runMigrations } from "./migrate";
 import { PostgresDatabase } from "./db";
 import { EventStore } from "./event-store";
 import { withRetry } from "./retry";
+import { logger } from "./logger";
+import { randomUUID } from "crypto";
 import pkg from "../package.json";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -53,6 +55,30 @@ function parseEnvNumber(name: string, defaultValue: number): number {
   const parsed = parseInt(value, 10);
   if (isNaN(parsed) || parsed < 0) {
     throw new Error(`Invalid numeric value for environment variable: ${name}`);
+  }
+  return parsed;
+}
+
+/**
+ * BA-038: Parse a ledger sequence number from an environment variable, with
+ * strict numeric validity and a lower bound. Returns the parsed integer and
+ * throws before any RPC work when the value is not a valid non-negative
+ * integer, so malformed replay configuration fails fast.
+ */
+function parseLedger(raw: string, name: string): number {
+  const trimmed = raw?.trim() ?? "";
+  if (trimmed === "") {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(
+      `Invalid ledger value for ${name}: "${raw}" is not an integer. Ledger ranges are ` +
+        `inclusive on both ends and must be non-negative.`
+    );
+  }
+  const parsed = parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`Invalid ledger value for ${name}: "${raw}" is out of supported bounds.`);
   }
   return parsed;
 }
@@ -126,7 +152,8 @@ async function ensureEventsTable(): Promise<void> {
     // BE-28: Non-fatal — log and continue. If the events table is genuinely
     // missing the service will fail later when it tries to insert, giving a
     // clearer error at that point.
-    console.warn("[indexer] ensureEventsTable: schema drift detected, continuing:", err);
+    // BA-039: Structured warning with redacted error context.
+    logger.warn("schema_drift_detected", { area: "events_table", err });
   }
 }
 
@@ -140,7 +167,8 @@ async function ensurePostSearchIndex(): Promise<void> {
       ADD COLUMN IF NOT EXISTS search_vector TSVECTOR
     `);
   } catch (err) {
-    console.warn("[indexer] ensurePostSearchIndex: could not add search_vector column:", err);
+    // BA-039: Structured warning with redacted error context.
+    logger.warn("post_search_index_warn", { step: "add_search_vector", err });
   }
 
   try {
@@ -150,7 +178,8 @@ async function ensurePostSearchIndex(): Promise<void> {
       WHERE search_vector IS NULL
     `);
   } catch (err) {
-    console.warn("[indexer] ensurePostSearchIndex: could not populate search_vector:", err);
+    // BA-039: Structured warning with redacted error context.
+    logger.warn("post_search_index_warn", { step: "populate_search_vector", err });
   }
 
   try {
@@ -159,7 +188,8 @@ async function ensurePostSearchIndex(): Promise<void> {
       ON posts USING GIN (search_vector)
     `);
   } catch (err) {
-    console.warn("[indexer] ensurePostSearchIndex: could not create search index:", err);
+    // BA-039: Structured warning with redacted error context.
+    logger.warn("post_search_index_warn", { step: "create_search_index", err });
   }
 }
 
@@ -263,13 +293,33 @@ async function main(): Promise<void> {
   const replayStartLedger = process.env["REPLAY_START_LEDGER"];
   const replayEndLedger = process.env["REPLAY_END_LEDGER"];
 
+  // BA-039: Bind a per-run correlation context (run id) so all log lines
+  // emitted during this process share a groupable correlationId.
+  const runId = crypto.randomUUID();
+  const runLogger = logger.child({ correlationId: runId });
+
   if (replayStartLedger && replayEndLedger) {
-    console.log("[indexer] Starting in REPLAY mode");
-    console.log(`[indexer] Replaying ledgers ${replayStartLedger}–${replayEndLedger}`);
+    runLogger.info("replay_mode_start", {
+      startLedger: replayStartLedger,
+      endLedger: replayEndLedger,
+    });
 
     await ensureEventsTable();
     await runMigrations(pgPool);
     await ensurePostSearchIndex();
+
+    // BA-038: Parse and validate the replay range before any RPC calls are
+    // made. Invalid numeric values, reversed ordering, or out-of-bounds
+    // ranges must fail fast rather than silently iterating over nothing.
+    const replayStart = parseLedger(replayStartLedger, "REPLAY_START_LEDGER");
+    const replayEnd = parseLedger(replayEndLedger, "REPLAY_END_LEDGER");
+
+    if (replayStart > replayEnd) {
+      throw new Error(
+        `Invalid replay range: REPLAY_START_LEDGER (${replayStart}) must not exceed ` +
+          `REPLAY_END_LEDGER (${replayEnd}). The range is inclusive on both ends.`
+      );
+    }
 
     const db = new PostgresDatabase(pgPool);
     // Set up auth middleware if enabled
@@ -298,8 +348,8 @@ async function main(): Promise<void> {
       {
         rpcUrl: STELLAR_RPC_URL,
         contractId: CONTRACT_ID,
-        startLedger: parseInt(replayStartLedger, 10),
-        endLedger: parseInt(replayEndLedger, 10),
+        startLedger: replayStart,
+        endLedger: replayEnd,
       },
       tracked,
       signal,
