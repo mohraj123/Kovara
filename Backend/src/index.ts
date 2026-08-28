@@ -367,17 +367,9 @@ function trackProcessing(store: EventStore): EventHandler {
 //   console.log(`[indexer] ledger=${event.ledger} type=${eventType} tx=${event.txHash}`);
 // }
 
-// ── Graceful shutdown ─────────────────────────────────────────────────────────
-
-// const abortController = new AbortController();
-
-// function shutdown(signal: string): void {
-//   console.log(`[indexer] Received ${signal}, shutting down…`);
-//   abortController.abort();
-// }
-
-// process.on("SIGTERM", () => shutdown("SIGTERM"));
-// process.on("SIGINT", () => shutdown("SIGINT"));
+// ── Graceful shutdown (BA-007) ────────────────────────────────────────────────
+// Abort controller and signal handlers were previously commented out.
+// Restored: SIGTERM and SIGINT now abort streaming and close server + DB cleanly.
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -464,8 +456,19 @@ async function main(): Promise<void> {
 
     console.log("[indexer] Replay complete");
 
-    process.on("SIGTERM", () => server.close(() => process.exit(0)));
-    process.on("SIGINT", () => server.close(() => process.exit(0)));
+    // BA-009: Close the database pool so the process can exit cleanly.
+    // Previously only the HTTP server was closed, leaving pg connections open.
+    const closeReplay = (signal?: string) => {
+      server.close(async () => {
+        await pgPool.end().catch(() => {});
+        if (signal) logger.info("replay_shutdown", { signal });
+        process.exit(0);
+      });
+    };
+
+    process.on("SIGTERM", () => closeReplay("SIGTERM"));
+    process.on("SIGINT", () => closeReplay("SIGINT"));
+    closeReplay();
     return;
   }
 
@@ -523,22 +526,24 @@ async function main(): Promise<void> {
 
   console.log(`[indexer] Server ready at http://${HOST}:${PORT}`);
 
-  // Handle graceful shutdown
-  process.on("SIGTERM", () => {
+  // BA-008: Guard against concurrent signals racing to close the same server
+  // more than once. A single `shuttingDown` flag ensures only the first signal
+  // triggers cleanup; subsequent signals are no-ops.
+  let shuttingDown = false;
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info("shutdown_initiated", { signal });
     abortController.abort();
-    server.close(() => {
-      console.log("[indexer] API server closed");
+    server.close(async () => {
+      await pgPool.end().catch(() => {});
+      logger.info("shutdown_complete", { signal });
       process.exit(0);
     });
-  });
+  };
 
-  process.on("SIGINT", () => {
-    abortController.abort();
-    server.close(() => {
-      console.log("[indexer] API server closed");
-      process.exit(0);
-    });
-  });
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
 main().catch((err) => {
