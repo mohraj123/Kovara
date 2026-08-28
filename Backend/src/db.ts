@@ -234,10 +234,9 @@ export class PostgresDatabase implements Database {
   // In-memory caches for frequently-queryable records (BE-18).
   // Short TTL balances read performance with eventual consistency.
   //
-  // Cache invalidation strategy (BE-33): Every write method that mutates a
-  // cached entity deletes the corresponding cache entry *before* issuing the
-  // SQL statement. This ensures that any subsequent read will fetch the latest
-  // committed state from Postgres rather than returning a stale cached value.
+  // Cache invalidation strategy (BE-33): Every successful write method that
+  // mutates a cached entity deletes the corresponding cache entry after the
+  // SQL statement completes. Failed writes preserve the valid cached value.
   // The TTL acts as a safety net for entries that were not explicitly invalidated.
   //
   // Cross-replica coordination (BA-026): a process-local cache alone can serve
@@ -379,9 +378,6 @@ export class PostgresDatabase implements Database {
   }
 
   async upsertProfile(profile: Profile): Promise<void> {
-    // Invalidates any cached version of this profile so the next read
-    // fetches fresh data (BE-18).
-    this.profileCache.delete(profile.address);
     await this.runQuery(
       `
       INSERT INTO profiles (address, username, creator_token, updated_ledger)
@@ -395,6 +391,7 @@ export class PostgresDatabase implements Database {
     );
     // BA-026: tell every replica sharing this Postgres that caches changed.
     await this.bumpSharedEpoch();
+    this.profileCache.delete(profile.address);
   }
 
   async getFollow(follower: string, followee: string): Promise<Follow | null> {
@@ -430,11 +427,10 @@ export class PostgresDatabase implements Database {
   }
 
   async insertPost(post: Post): Promise<void> {
-    this.postCache.delete(post.id.toString());
     await this.runQuery(
       `
-      INSERT INTO posts (id, author, content, tip_total, like_count, created_at)
-      VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))
+      INSERT INTO posts (id, author, content, tip_total, like_count, created_ledger, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()))
       ON CONFLICT (id) DO NOTHING
       `,
       [
@@ -443,13 +439,15 @@ export class PostgresDatabase implements Database {
         post.content,
         post.tip_total.toString(),
         post.like_count.toString(),
+        post.created_ledger,
+        post.created_at ?? null,
       ]
     );
     await this.bumpSharedEpoch();
+    this.postCache.delete(post.id.toString());
   }
 
   async markPostDeleted(post_id: bigint, deleted_ledger: number, deleted_at?: Date): Promise<void> {
-    this.postCache.delete(post_id.toString());
     await this.runQuery(
       `
       UPDATE posts
@@ -459,23 +457,24 @@ export class PostgresDatabase implements Database {
       [post_id.toString(), deleted_ledger, deleted_at ?? null]
     );
     await this.bumpSharedEpoch();
+    this.postCache.delete(post_id.toString());
   }
 
   async incrementPostLikeCount(post_id: bigint): Promise<void> {
-    this.postCache.delete(post_id.toString());
     await this.runQuery(`UPDATE posts SET like_count = like_count + 1 WHERE id = $1`, [
       post_id.toString(),
     ]);
     await this.bumpSharedEpoch();
+    this.postCache.delete(post_id.toString());
   }
 
   async addPostTipTotal(post_id: bigint, net_amount: bigint): Promise<void> {
-    this.postCache.delete(post_id.toString());
     await this.runQuery(`UPDATE posts SET tip_total = tip_total + $2 WHERE id = $1`, [
       post_id.toString(),
       net_amount.toString(),
     ]);
     await this.bumpSharedEpoch();
+    this.postCache.delete(post_id.toString());
   }
 
   async getPost(post_id: bigint): Promise<Post | null> {

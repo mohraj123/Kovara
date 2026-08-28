@@ -31,11 +31,14 @@
 
     // current.requestCount++;
 // import { Pool } from "pg";
-// import { streamEvents, RawEvent } from "./stream";
+import { streamEvents, EventHandler, RawEvent } from "./stream";
 import { createApp } from "./api";
 import { runMigrations } from "./migrate";
 import { PostgresDatabase } from "./db";
+import { EventStore } from "./event-store";
 import { withRetry } from "./retry";
+import { logger } from "./logger";
+import { randomUUID } from "crypto";
 import pkg from "../package.json";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -52,6 +55,30 @@ function parseEnvNumber(name: string, defaultValue: number): number {
   const parsed = parseInt(value, 10);
   if (isNaN(parsed) || parsed < 0) {
     throw new Error(`Invalid numeric value for environment variable: ${name}`);
+  }
+  return parsed;
+}
+
+/**
+ * BA-038: Parse a ledger sequence number from an environment variable, with
+ * strict numeric validity and a lower bound. Returns the parsed integer and
+ * throws before any RPC work when the value is not a valid non-negative
+ * integer, so malformed replay configuration fails fast.
+ */
+function parseLedger(raw: string, name: string): number {
+  const trimmed = raw?.trim() ?? "";
+  if (trimmed === "") {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(
+      `Invalid ledger value for ${name}: "${raw}" is not an integer. Ledger ranges are ` +
+        `inclusive on both ends and must be non-negative.`
+    );
+  }
+  const parsed = parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`Invalid ledger value for ${name}: "${raw}" is out of supported bounds.`);
   }
   return parsed;
 }
@@ -86,6 +113,9 @@ async function ensureEventsTable(): Promise<void> {
   // discrepancy and allows the service to continue with whatever schema is
   // present.
   try {
+    // BA-030: The events table tracks processing status (pending/processed/
+    // failed/dead) with error details and timestamps so operators and replay
+    // tooling can observe exactly how each event was handled.
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS events (
         id            BIGSERIAL   PRIMARY KEY,
@@ -98,6 +128,30 @@ async function ensureEventsTable(): Promise<void> {
         closed_at     TIMESTAMPTZ NOT NULL,
         indexed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         status        TEXT        NOT NULL DEFAULT 'new'
+        id                BIGSERIAL   PRIMARY KEY,
+        event_id          TEXT        NOT NULL UNIQUE,
+        ledger            INTEGER     NOT NULL,
+        contract_id       TEXT        NOT NULL,
+        topic             TEXT[]      NOT NULL,
+        value             TEXT        NOT NULL,
+        tx_hash           TEXT        NOT NULL,
+        closed_at         TIMESTAMPTZ NOT NULL,
+        indexed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        status            TEXT        NOT NULL DEFAULT 'pending',
+        error             TEXT,
+        attempts          INTEGER     NOT NULL DEFAULT 0,
+        processed_at      TIMESTAMPTZ,
+        failed_at         TIMESTAMPTZ,
+        dead_lettered_at  TIMESTAMPTZ
+      )
+    `);
+    // BA-033: Durable stream-state store used to persist the latest safe cursor
+    // so a restart resumes without re-processing already-committed events.
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS stream_state (
+        key        TEXT        PRIMARY KEY,
+        value      TEXT        NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
     await pgPool.query(`
@@ -108,7 +162,8 @@ async function ensureEventsTable(): Promise<void> {
     // BE-28: Non-fatal — log and continue. If the events table is genuinely
     // missing the service will fail later when it tries to insert, giving a
     // clearer error at that point.
-    console.warn("[indexer] ensureEventsTable: schema drift detected, continuing:", err);
+    // BA-039: Structured warning with redacted error context.
+    logger.warn("schema_drift_detected", { area: "events_table", err });
   }
 }
 
@@ -122,7 +177,8 @@ async function ensurePostSearchIndex(): Promise<void> {
       ADD COLUMN IF NOT EXISTS search_vector TSVECTOR
     `);
   } catch (err) {
-    console.warn("[indexer] ensurePostSearchIndex: could not add search_vector column:", err);
+    // BA-039: Structured warning with redacted error context.
+    logger.warn("post_search_index_warn", { step: "add_search_vector", err });
   }
 
   try {
@@ -132,7 +188,8 @@ async function ensurePostSearchIndex(): Promise<void> {
       WHERE search_vector IS NULL
     `);
   } catch (err) {
-    console.warn("[indexer] ensurePostSearchIndex: could not populate search_vector:", err);
+    // BA-039: Structured warning with redacted error context.
+    logger.warn("post_search_index_warn", { step: "populate_search_vector", err });
   }
 
   try {
@@ -141,7 +198,8 @@ async function ensurePostSearchIndex(): Promise<void> {
       ON posts USING GIN (search_vector)
     `);
   } catch (err) {
-    console.warn("[indexer] ensurePostSearchIndex: could not create search index:", err);
+    // BA-039: Structured warning with redacted error context.
+    logger.warn("post_search_index_warn", { step: "create_search_index", err });
   }
 }
 
@@ -270,6 +328,34 @@ export async function recoverPendingEvents(handler: RawEventHandler): Promise<nu
     if (await processEvent(event, handler)) recovered += 1;
   }
   return recovered;
+/**
+ * Wrap a persistence handler so every event's processing outcome is durably
+ * recorded on the events table (BA-030) and repeated failures are retained so
+ * operators can retry them (BA-031).
+ *
+ * The returned handler:
+ *   - persists the event (insert is idempotent via event_id uniqueness),
+ *   - marks it 'processed' on success (advancing the stream cursor safely),
+ *   - records the error and retains the event as 'failed' on failure without
+ *     dropping it, so it can be retried by operators.
+ */
+function trackProcessing(store: EventStore): EventHandler {
+  return async (event: RawEvent): Promise<void> => {
+    try {
+      await persistEvent(event);
+      await store.markProcessed(event.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        await store.markFailed(event.id, message);
+      } catch {
+        // Logging-only fallback so a failed status update cannot silently
+        // swallow the original processing error.
+        console.error(`[indexer] Could not record failure for event ${event.id}:`, message);
+      }
+      throw err;
+    }
+  };
 }
 
 // ── Event dispatch ────────────────────────────────────────────────────────────
@@ -299,13 +385,33 @@ async function main(): Promise<void> {
   const replayStartLedger = process.env["REPLAY_START_LEDGER"];
   const replayEndLedger = process.env["REPLAY_END_LEDGER"];
 
+  // BA-039: Bind a per-run correlation context (run id) so all log lines
+  // emitted during this process share a groupable correlationId.
+  const runId = crypto.randomUUID();
+  const runLogger = logger.child({ correlationId: runId });
+
   if (replayStartLedger && replayEndLedger) {
-    console.log("[indexer] Starting in REPLAY mode");
-    console.log(`[indexer] Replaying ledgers ${replayStartLedger}–${replayEndLedger}`);
+    runLogger.info("replay_mode_start", {
+      startLedger: replayStartLedger,
+      endLedger: replayEndLedger,
+    });
 
     await ensureEventsTable();
     await runMigrations(pgPool);
     await ensurePostSearchIndex();
+
+    // BA-038: Parse and validate the replay range before any RPC calls are
+    // made. Invalid numeric values, reversed ordering, or out-of-bounds
+    // ranges must fail fast rather than silently iterating over nothing.
+    const replayStart = parseLedger(replayStartLedger, "REPLAY_START_LEDGER");
+    const replayEnd = parseLedger(replayEndLedger, "REPLAY_END_LEDGER");
+
+    if (replayStart > replayEnd) {
+      throw new Error(
+        `Invalid replay range: REPLAY_START_LEDGER (${replayStart}) must not exceed ` +
+          `REPLAY_END_LEDGER (${replayEnd}). The range is inclusive on both ends.`
+      );
+    }
 
     const db = new PostgresDatabase(pgPool);
     // Set up auth middleware if enabled
@@ -336,15 +442,18 @@ async function main(): Promise<void> {
       // effects are accounted for even if this process crashes mid-dispatch.
       void event;
     };
+    const eventStore = new EventStore(pgPool);
+    const tracked = trackProcessing(eventStore);
 
     await replayLedgerRange(
       {
         rpcUrl: STELLAR_RPC_URL,
         contractId: CONTRACT_ID,
-        startLedger: parseInt(replayStartLedger, 10),
-        endLedger: parseInt(replayEndLedger, 10),
+        startLedger: replayStart,
+        endLedger: replayEnd,
       },
       (event) => processEvent(event, dispatch),
+      tracked,
       signal,
     );
 
@@ -369,6 +478,33 @@ async function main(): Promise<void> {
   await ensureEventsTable();
   await ensurePostSearchIndex();
 
+  // ── Event streaming (BA-030/031/032/033) ─────────────────────────────────
+  // When streaming is enabled the indexer persists and restores the cursor
+  // durably (BA-033), verifies event contract ownership (BA-032), records
+  // processing status (BA-030), and routes repeated failures to the
+  // dead-letter path (BA-031). Disabled by default to preserve stub mode.
+  const abortController = new AbortController();
+  const eventStore = new EventStore(pgPool);
+  const tracked = trackProcessing(eventStore);
+
+  if (process.env["ENABLE_STREAMING"] === "true") {
+    const { streamEvents } = await import("./stream");
+    console.log("[indexer] Streaming enabled — starting Soroban event stream");
+    streamEvents(
+      {
+        rpcUrl: STELLAR_RPC_URL,
+        contractId: CONTRACT_ID,
+        startLedger: START_LEDGER,
+        pollIntervalMs: POLL_INTERVAL_MS,
+        store: eventStore,
+      },
+      tracked,
+      abortController.signal,
+    ).catch((err) => {
+      logger.error("Event stream exited unexpectedly:", err);
+    });
+  }
+
 // Create and start API server
     const db = new PostgresDatabase(pgPool);
     // Set up auth middleware if enabled
@@ -389,6 +525,7 @@ async function main(): Promise<void> {
 
   // Handle graceful shutdown
   process.on("SIGTERM", () => {
+    abortController.abort();
     server.close(() => {
       console.log("[indexer] API server closed");
       process.exit(0);
@@ -396,6 +533,7 @@ async function main(): Promise<void> {
   });
 
   process.on("SIGINT", () => {
+    abortController.abort();
     server.close(() => {
       console.log("[indexer] API server closed");
       process.exit(0);

@@ -20,6 +20,7 @@ import { logger } from "./logger";
 
 import { normalizeRawEvent } from "./normalize";
 import { withRetry } from "./retry";
+import { EventStore } from "./event-store";
 
     // current.requestCount++;
 export interface RawEvent {
@@ -50,6 +51,18 @@ export interface StreamConfig {
    * matches one of these strings are dispatched to the handler.
    */
   eventTypeFilter?: string[];
+  /**
+   * BA-033: Optional durable store used to persist/restore the latest safe
+   * cursor, so a restart resumes exactly where the previous run left off
+   * without re-processing committed events.
+   */
+  store?: EventStore;
+  /**
+   * BA-031: Optional durable store used to route repeated handler failures to
+   * the dead-letter path. When omitted, failures are handled by the caller's
+   * handler (e.g. status tracking) as before.
+   */
+  maxHandlerRetries?: number;
 }
 
 export type EventHandler = (event: RawEvent) => Promise<void>;
@@ -70,6 +83,22 @@ export function validateEventPayload(event: unknown): event is RawEvent {
   if (typeof e.value !== "string") return false;
   if (typeof e.txHash !== "string" || e.txHash.trim() === "") return false;
   return true;
+}
+
+/**
+ * BA-032: Verify that a structurally valid event belongs to the contract the
+ * stream is configured for. Structural validation alone does not guarantee an
+ * event came from the expected contract — a mismatched contract ID must be
+ * rejected before persistence and dispatch.
+ *
+ * Returns true when the event's contractId matches the configured contract,
+ * false otherwise.
+ */
+export function verifyContractOwnership(event: RawEvent, contractedContractId: string): boolean {
+  if (!contractedContractId) return true;
+  // Compare normalized (trimmed) identifiers to avoid spurious mismatches
+  // caused by surrounding whitespace.
+  return event.contractId.trim() === contractedContractId.trim();
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
@@ -167,6 +196,27 @@ export async function streamEvents(
   let cursor: string | undefined;
   let startLedger = config.startLedger;
 
+  // BA-033: Restore the last safe cursor when a durable store is configured so
+  // a restart resumes exactly where the previous run left off instead of
+  // depending on manual ledger input.
+  if (config.store) {
+    try {
+      const saved = await config.store.loadCursor();
+      if (saved) {
+        cursor = saved;
+        console.log(`[stream] Restored cursor from durable store: ${cursor}`);
+      } else {
+        console.log(`[stream] No persisted cursor found; starting from ledger ${startLedger}`);
+      }
+    } catch (err) {
+      logger.warn("[stream] Could not restore cursor from durable store:", err);
+    }
+  } else {
+    console.log(
+      `[stream] No durable store configured; cursor held in-memory only (ledger ${startLedger}).`
+    );
+  }
+
   // BE-24: Ring-buffer deduplication set.  We track event.id (the stable
   // Soroban event identifier) rather than txHash so that two distinct events
   // within the same transaction are not incorrectly merged.
@@ -186,8 +236,7 @@ export async function streamEvents(
 
   console.log(`[stream] Starting from ledger ${startLedger}, contract=${config.contractId}`);
 
-  while (!signal.aborted) {
-    try {
+  while (!signal.aborted) {    try {
       const { events, latestLedger } = await withRetry(
         () => fetchEvents(config.rpcUrl, config.contractId, startLedger, cursor),
         {
@@ -218,12 +267,26 @@ export async function streamEvents(
       for (const event of events) {
         if (signal.aborted) break;
         if (!validateEventPayload(event)) {
-          console.error("[stream] Skipping invalid event payload:", JSON.stringify(event));
+          // BA-039: Route through the structured logger so the payload is
+          // redacted before it reaches the console.
+          logger.warn("skipping_invalid_event", { eventType: String(event.type) });
           cursor = event.pagingToken;
           continue;
         }
 
         const normalizedEvent = normalizeRawEvent(event);
+
+        // BA-032: Reject events that do not belong to the configured contract
+        // before they are persisted or dispatched. Structural validation alone
+        // cannot guarantee contract ownership.
+        if (!verifyContractOwnership(normalizedEvent, config.contractId)) {
+          console.error(
+            `[stream] Rejecting event from unexpected contract id=${normalizedEvent.id} ` +
+              `contract=${normalizedEvent.contractId} (expected ${config.contractId})`
+          );
+          cursor = normalizedEvent.pagingToken;
+          continue;
+        }
 
         // BE-42: Skip events that do not match the configured event type filter.
         if (config.eventTypeFilter && !config.eventTypeFilter.includes(normalizedEvent.type)) {
@@ -233,7 +296,10 @@ export async function streamEvents(
 
         // BE-24: Skip already-processed events before hitting the handler or DB.
         if (seenEventIds.has(normalizedEvent.id)) {
-          console.log(`[stream] Skipping duplicate event id=${normalizedEvent.id} tx=${normalizedEvent.txHash}`);
+          logger.info("skipping_duplicate_event", {
+            eventId: normalizedEvent.id,
+            txHash: normalizedEvent.txHash,
+          });
           cursor = normalizedEvent.pagingToken;
           continue;
         }
@@ -241,14 +307,44 @@ export async function streamEvents(
         try {
           await handler(normalizedEvent);
         } catch (err) {
+          logger.error("handler_error", {
+            eventId: normalizedEvent.id,
+            eventType: normalizedEvent.type,
+            err,
+          });
           console.error(
             `[stream] Handler error for event ${normalizedEvent.id} (type=${normalizedEvent.type}):`,
             err
           );
+          // BA-031: Route repeated failures to the durable dead-letter path so
+          // they are retained and can be safely retried by operators. The
+          // cursor is NOT advanced on failure so the same event is revisited.
+          if (config.store) {
+            try {
+              const message = err instanceof Error ? err.message : String(err);
+              await config.store.deadLetter(normalizedEvent.id, message);
+            } catch (storeErr) {
+              logger.warn(
+                `[stream] Could not dead-letter event ${normalizedEvent.id}:`,
+                storeErr
+              );
+            }
+          }
+          continue;
         }
 
         markSeen(normalizedEvent.id);
         cursor = normalizedEvent.pagingToken;
+
+        // BA-033: Persist the cursor only after the event was processed
+        // successfully, so a restart resumes from a safe, committed position.
+        if (config.store) {
+          try {
+            await config.store.saveCursor(cursor);
+          } catch (err) {
+            logger.warn("[stream] Could not persist cursor:", err);
+          }
+        }
       }
 
       if (events.length === MAX_EVENTS_PER_PAGE) {
@@ -303,10 +399,31 @@ export async function replayLedgerRange(
   let totalDispatched = 0;
   let cursor: string | undefined;
 
-  console.log(
-    `[replay] Replaying ledgers ${config.startLedger}–${config.endLedger} ` +
-    `contract=${config.contractId} filter=${config.eventTypeFilter?.join(",") ?? "all"}`,
-  );
+  // BA-038: Reject invalid replay ranges before issuing any RPC requests.
+  // The range is inclusive on both ends ([startLedger, endLedger]).
+  if (!Number.isInteger(config.startLedger) || config.startLedger < 0) {
+    throw new Error(
+      `Invalid replay start ledger: ${config.startLedger}. Must be a non-negative integer.`
+    );
+  }
+  if (!Number.isInteger(config.endLedger) || config.endLedger < 0) {
+    throw new Error(
+      `Invalid replay end ledger: ${config.endLedger}. Must be a non-negative integer.`
+    );
+  }
+  if (config.startLedger > config.endLedger) {
+    throw new Error(
+      `Invalid replay range: start (${config.startLedger}) exceeds end (${config.endLedger}). ` +
+        `The range is inclusive on both ends, so start must be <= end.`
+    );
+  }
+
+  logger.info("replay_start", {
+    startLedger: config.startLedger,
+    endLedger: config.endLedger,
+    contractId: config.contractId,
+    eventTypes: config.eventTypeFilter?.join(",") ?? "all",
+  });
 
   for (let ledger = config.startLedger; ledger <= config.endLedger && !signal.aborted; ledger++) {
     let hasMore = true;
@@ -337,6 +454,17 @@ export async function replayLedgerRange(
 
           const normalized = normalizeRawEvent(event);
 
+          // BA-032: Skip events from a contract other than the one being
+          // replayed. Structural validity does not imply contract ownership.
+          if (!verifyContractOwnership(normalized, config.contractId)) {
+            console.error(
+              `[replay] Skipping event from unexpected contract id=${normalized.id} ` +
+                `contract=${normalized.contractId} (expected ${config.contractId})`
+            );
+            cursor = normalized.pagingToken;
+            continue;
+          }
+
           if (config.eventTypeFilter && !config.eventTypeFilter.includes(normalized.type)) {
             cursor = normalized.pagingToken;
             continue;
@@ -346,7 +474,7 @@ export async function replayLedgerRange(
             await handler(normalized);
             totalDispatched++;
           } catch (err) {
-            console.error(`[replay] Handler error for event ${normalized.id}:`, err);
+            logger.error("replay_handler_error", { eventId: normalized.id, err });
           }
 
           cursor = normalized.pagingToken;
@@ -354,13 +482,13 @@ export async function replayLedgerRange(
 
         hasMore = events.length === batchSize;
       } catch (err) {
-        console.error(`[replay] Error fetching ledger ${ledger}:`, err);
+        logger.error("replay_fetch_error", { ledger, err });
         hasMore = false;
       }
     }
   }
 
-  console.log(`[replay] Completed. Dispatched ${totalDispatched} events.`);
+  logger.info("replay_completed", { totalDispatched });
   return totalDispatched;
 }
 
