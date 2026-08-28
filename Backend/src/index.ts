@@ -90,9 +90,7 @@ const DATABASE_URL = process.env.DATABASE_URL || "sqlite::memory:";
 const STELLAR_RPC_URL = process.env.STELLAR_RPC_URL || "https://soroban-testnet.stellar.org";
 const CONTRACT_ID = process.env.CONTRACT_ID || "PLACEHOLDER_CONTRACT_ID";
 const START_LEDGER = parseInt(process.env.START_LEDGER || "0", 10);
-const POLL_INTERVAL_MS = process.env["POLL_INTERVAL_MS"]
-  ? parseInt(process.env["POLL_INTERVAL_MS"], 10)
-  : undefined;
+const POLL_INTERVAL_MS = parseEnvNumber("POLL_INTERVAL_MS", 5000);
 
 // Feature flags
 const ENABLE_AUTH_MIDDLEWARE = process.env.ENABLE_AUTH_MIDDLEWARE === "true";
@@ -358,14 +356,47 @@ function trackProcessing(store: EventStore): EventHandler {
   };
 }
 
-// ── Event dispatch ────────────────────────────────────────────────────────────
+// ── Event dispatch (BA-006) ───────────────────────────────────────────────────
 
-// async function handleEvent(event: RawEvent): Promise<void> {
-//   await persistEvent(event);
+async function handleEvent(event: RawEvent, db: PostgresDatabase): Promise<void> {
+  const eventType = event.topic[0];
+  logger.info("event_dispatch", { ledger: event.ledger, type: eventType, tx: event.txHash });
 
-//   const eventType = event.topic[0];
-//   console.log(`[indexer] ledger=${event.ledger} type=${eventType} tx=${event.txHash}`);
-// }
+  switch (eventType) {
+    case "profile_set":
+      await (await import("./handlers/profile")).handleProfileSet(db, event as never);
+      break;
+    case "post_created":
+      await (await import("./handlers/post")).handlePostCreated(db, event as never, { pgPool });
+      break;
+    case "post_deleted":
+      await (await import("./handlers/post")).handlePostDeleted(db, event as never);
+      break;
+    case "like":
+      await (await import("./handlers/like")).handleLike(db, event as never, { pgPool });
+      break;
+    case "follow":
+      await (await import("./handlers/follow")).handleFollow(db, event as never);
+      break;
+    case "unfollow":
+      await (await import("./handlers/follow")).handleUnfollow(db, event as never);
+      break;
+    case "tip":
+      await (await import("./handlers/tip")).handleTip(db, event as never, { pgPool });
+      break;
+    case "pool_created":
+      await (await import("./handlers/pool")).handlePoolCreated(db, event as never);
+      break;
+    case "pool_deposit":
+      await (await import("./handlers/pool")).handlePoolDeposit(db, event as never);
+      break;
+    case "pool_withdraw":
+      await (await import("./handlers/pool")).handlePoolWithdraw(db, event as never);
+      break;
+    default:
+      logger.warn("unknown_event_type", { type: eventType, eventId: event.id });
+  }
+}
 
 // ── Graceful shutdown ─────────────────────────────────────────────────────────
 
@@ -469,56 +500,45 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log("[indexer] Starting Kovara indexer (STUB MODE)");
-  console.log(`[indexer] Version: ${pkg.version} | Node: ${process.version}`);
-  console.log(`[indexer] API server listening on ${HOST}:${PORT}`);
-  console.log("[indexer] Database and event streaming disabled for stub mode");
+  logger.info("indexer_start", { version: pkg.version, node: process.version, host: HOST, port: PORT });
 
   await runMigrations(pgPool);
   await ensureEventsTable();
   await ensurePostSearchIndex();
 
-  // ── Event streaming (BA-030/031/032/033) ─────────────────────────────────
-  // When streaming is enabled the indexer persists and restores the cursor
-  // durably (BA-033), verifies event contract ownership (BA-032), records
-  // processing status (BA-030), and routes repeated failures to the
-  // dead-letter path (BA-031). Disabled by default to preserve stub mode.
   const abortController = new AbortController();
   const eventStore = new EventStore(pgPool);
+  const db = new PostgresDatabase(pgPool);
   const tracked = trackProcessing(eventStore);
 
-  if (process.env["ENABLE_STREAMING"] === "true") {
-    const { streamEvents } = await import("./stream");
-    console.log("[indexer] Streaming enabled — starting Soroban event stream");
-    streamEvents(
-      {
-        rpcUrl: STELLAR_RPC_URL,
-        contractId: CONTRACT_ID,
-        startLedger: START_LEDGER,
-        pollIntervalMs: POLL_INTERVAL_MS,
-        store: eventStore,
-      },
-      tracked,
-      abortController.signal,
-    ).catch((err) => {
-      logger.error("Event stream exited unexpectedly:", err);
-    });
-  }
+  // BA-005: Start the real event stream unconditionally (no STUB MODE).
+  logger.info("stream_start", { rpcUrl: STELLAR_RPC_URL, contractId: CONTRACT_ID, startLedger: START_LEDGER, pollIntervalMs: POLL_INTERVAL_MS });
+  streamEvents(
+    {
+      rpcUrl: STELLAR_RPC_URL,
+      contractId: CONTRACT_ID,
+      startLedger: START_LEDGER,
+      pollIntervalMs: POLL_INTERVAL_MS,
+      store: eventStore,
+    },
+    (event) => processEvent(event, (e) => handleEvent(e, db)),
+    abortController.signal,
+  ).catch((err) => {
+    logger.error("stream_fatal", { err });
+  });
 
 // Create and start API server
-    const db = new PostgresDatabase(pgPool);
-    // Set up auth middleware if enabled
-    const authMiddleware: AuthMiddleware = ENABLE_AUTH_MIDDLEWARE
-      ? (req, res, next) => {
-          const token = req.headers.authorization?.replace("Bearer ", "");
-          if (!token || token !== process.env.API_SECRET) {
-            res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED" });
-            return;
-          }
-          next();
+  const authMiddleware: AuthMiddleware = ENABLE_AUTH_MIDDLEWARE
+    ? (req, res, next) => {
+        const token = req.headers.authorization?.replace("Bearer ", "");
+        if (!token || token !== process.env.API_SECRET) {
+          res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED" });
+          return;
         }
-      : noopAuthMiddleware;
-    const app = createApp(db, { authMiddleware });
+        next();
+      }
+    : noopAuthMiddleware;
+  const app = createApp(db, { authMiddleware });
   const server = app.listen(PORT, HOST);
 
   console.log(`[indexer] Server ready at http://${HOST}:${PORT}`);
