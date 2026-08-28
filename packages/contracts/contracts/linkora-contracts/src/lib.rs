@@ -33,9 +33,9 @@ pub enum StorageKey {
     RewardBalance(RewardRole, Address, Address), // persistent: (role, user, token) -> i128
     RewardLiability(Address),     // persistent: token -> total unclaimed rewards
     Verifier(Address),          // persistent: registered verifier marker
-  // persistent: (verifier, token) -> i128
-    VoteRound(u64),                            // persistent: submission_id -> VoteRound
-    HasVoted(u64, Address),                    // persistent: (submission_id, verifier) -> bool
+    VerifierStake(Address, Address), // persistent: (verifier, token) -> i128
+    VoteRound(u64),                  // persistent: submission_id -> VoteRound
+    HasVoted(u64, Address),          // persistent: (submission_id, verifier) -> bool
 }
 
 // ── Error Codes ────────────────────────────────────────────────────────────────
@@ -43,6 +43,7 @@ pub enum StorageKey {
 #[contracterror]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContractError {
+    // ── Core / initialization ─────────────────────────────────────────────────
     AlreadyInitialized = 1,
     InvalidFee = 2,
     InvalidUsername = 3,
@@ -76,8 +77,10 @@ pub enum ContractError {
     TreasuryNotSet = 31,
     FeeCalculationOverflow = 32,
     TipTotalOverflow = 33,
+    // ── Pool balance (CT-022) ─────────────────────────────────────────────────
     PoolBalanceOverflow = 34,
     PoolBalanceUnderflow = 35,
+    // ── Post / profile ────────────────────────────────────────────────────────
     PostNotFound = 36,
     UsernameTooShort = 37,
     UsernameTooLong = 38,
@@ -87,29 +90,36 @@ pub enum ContractError {
     ContentTooLong = 42,
     TreasuryCannotBeContract = 43,
     NoOpFeeUpdate = 44,
-    InvalidWasmHash = 43,
+    // ── Reward / asset ────────────────────────────────────────────────────────
     InvalidRewardAsset = 45,
     RewardFundsReserved = 46,
     RewardFundsUnavailable = 47,
-    VerifierAlreadyRegistered = 45,
-    VerifierNotRegistered = 46,
-    StakeAmountMustBePositive = 47,
-    StakeBalanceOverflow = 48,
-    Paused = 45,
-    InvalidWasmHash = 45,
-    RoundAlreadyExists = 46,
-    RoundNotFound = 47,
-    RoundClosed = 48,
-    RoundAlreadyFinalized = 49,
-    AlreadyVoted = 50,
-    RoundStillOpen = 51,
+    // ── Verifier / stake (CT-022) ─────────────────────────────────────────────
+    VerifierAlreadyRegistered = 54,
+    VerifierNotRegistered = 55,
+    StakeAmountMustBePositive = 56,
+    // CT-022: StakeBalanceOverflow fires on deposit_stake checked_add failure.
+    StakeBalanceOverflow = 57,
+    MinimumVerifierStakeMustBePositive = 58,
+    InsufficientVerifierStake = 59,
+    // ── Contract state ────────────────────────────────────────────────────────
+    Paused = 60,
+    InvalidWasmHash = 61,
+    CannotLikeOwnPost = 62,
+    // ── Vote round ────────────────────────────────────────────────────────────
+    RoundAlreadyExists = 63,
+    RoundNotFound = 64,
+    RoundClosed = 65,
+    RoundAlreadyFinalized = 66,
+    AlreadyVoted = 67,
+    RoundStillOpen = 68,
 }
 
 // ── Instance-storage key constants (small scalars, not contracttype) ──────────
 
 const POST_CT: Symbol = symbol_short!("POST_CT");
 const PROFILE_CREATED_CT: Symbol = symbol_short!("PROF_CT");
-const ADMIN: Symbol = symbol_short!("ADMIN");
+pub(crate) const ADMIN: Symbol = symbol_short!("ADMIN");
 const TREASURY: Symbol = symbol_short!("TREASURY");
 const FEE_BPS: Symbol = symbol_short!("FEE_BPS");
 const INITIALIZED: Symbol = symbol_short!("INIT");
@@ -120,7 +130,7 @@ const PRICE_SUBMISSION_GAP: u32 = 1_728;
 const PRICE_MIN_STAKE: i128 = 1;
 const PRICE_DEPOSIT: i128 = 1;
 const PRICE_EVENT_VERSION: Symbol = symbol_short!("v1");
-const PROPOSAL_CT: Symbol = symbol_short!("PROP_CT");
+const PROPOSAL_CT: Symbol = symbol_short!("PROP_CT");    pub(crate) const MIN_VERIFIER_STAKE: Symbol = symbol_short!("MIN_V_STK");
 const PAUSED: Symbol = symbol_short!("PAUSED");
 
 // ── TTL Constants ─────────────────────────────────────────────────────────────
@@ -1115,7 +1125,12 @@ impl KovaraContract {
         let token_client = token::Client::new(&env, &asset);
         token_client.transfer(&submitter, &env.current_contract_address(), &stake);
         token_client.transfer(&submitter, &env.current_contract_address(), &PRICE_DEPOSIT);
-        env.storage().persistent().set(&stake_key, &(current_stake + stake));
+        // CT-022: use checked_add so a price-stake overflow produces a named
+        // StakeBalanceOverflow error rather than a generic host trap.
+        let new_stake = current_stake
+            .checked_add(stake)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::StakeBalanceOverflow));
+        env.storage().persistent().set(&stake_key, &new_stake);
         env.storage().persistent().set(&observation_key, &amount);
         env.storage().persistent().set(&StorageKey::PriceRate(submitter.clone()), &env.ledger().sequence());
         Self::bump(&env, &stake_key);
