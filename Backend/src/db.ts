@@ -17,25 +17,65 @@ import { Pool } from "pg";
 /** Default query timeout in milliseconds (30s). */
 const DEFAULT_QUERY_TIMEOUT = 30_000;
 
+// BA-028: Convert a value to bigint without silently losing precision.
+//
+// PostgreSQL BIGINT holds integers up to 2^63-1, but a JavaScript `number`
+// only represents integers losslessly within [-Number.MAX_SAFE_INTEGER,
+// Number.MAX_SAFE_INTEGER] (2^53-1). Converting an unsafe number to BigInt
+// would silently corrupt large counts such as like totals and tip totals.
+//
+// Rules:
+//   - native bigint  → returned as-is
+//   - number         → must be an integer and a safe integer, else throw
+//   - integer string → parsed exactly (leading +/- allowed)
+//   - anything else  → throws
+export function toSafeBigInt(value: unknown): bigint {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value)) {
+      throw new Error(
+        `Unsafe bigint conversion: ${value} is not a safe integer (|value| > 2^53-1)`,
+      );
+    }
+    return BigInt(value);
+  }
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (s === "") throw new Error(`Cannot convert empty string to bigint`);
+    if (!/^[+-]?\d+$/.test(s)) {
+      throw new Error(`Cannot convert non-integer string to bigint: "${value}"`);
+    }
+    return BigInt(s);
+  }
+  throw new Error(`Unsupported bigint value: ${String(value)}`);
+}
+
 // ── Simple TTL cache for frequently-accessed records ────────────────────────
 
 class TTLCache<T> {
-  private readonly store = new Map<string, { value: T; expiresAt: number }>();
+  private readonly store = new Map<
+    string,
+    { value: T; expiresAt: number; epoch: number }
+  >();
 
   constructor(private readonly ttlMs: number) {}
 
-  get(key: string): T | undefined {
+  getEntry(key: string): { value: T; epoch: number } | undefined {
     const entry = this.store.get(key);
     if (!entry) return undefined;
     if (Date.now() > entry.expiresAt) {
       this.store.delete(key);
       return undefined;
     }
-    return entry.value;
+    return { value: entry.value, epoch: entry.epoch };
   }
 
-  set(key: string, value: T): void {
-    this.store.set(key, { value, expiresAt: Date.now() + this.ttlMs });
+  get(key: string): T | undefined {
+    return this.getEntry(key)?.value;
+  }
+
+  set(key: string, value: T, epoch: number): void {
+    this.store.set(key, { value, expiresAt: Date.now() + this.ttlMs, epoch });
   }
 
   delete(key: string): void {
@@ -198,20 +238,115 @@ export class PostgresDatabase implements Database {
   // mutates a cached entity deletes the corresponding cache entry after the
   // SQL statement completes. Failed writes preserve the valid cached value.
   // The TTL acts as a safety net for entries that were not explicitly invalidated.
+  //
+  // Cross-replica coordination (BA-026): a process-local cache alone can serve
+  // stale records to a *different* indexer instance that shares the same
+  // Postgres backend. To coordinate replicas we maintain a shared, monotonically
+  // increasing `cache_epoch` in Postgres. Every writer bumps the epoch; each
+  // cache entry records the epoch at insertion time; and a reader revalidates a
+  // cache hit by comparing the entry's epoch against the latest shared epoch.
+  // We poll the shared epoch with a short in-process window so reads stay cheap.
+  //
+  // Documented consistency bound: a mutation performed by another replica
+  // becomes visible here no later than `sharedEpochRefreshMs` (poll window)
+  // after it commits, and never after the entry TTL expires regardless of the
+  // poll window — so stale reads are bounded even if polling is delayed.
   private readonly profileCache = new TTLCache<Profile>(30_000); // 30 seconds
   private readonly postCache = new TTLCache<Post>(30_000);
 
+  private static readonly SHARED_EPOCH_REFRESH_MS = 500;
+  private static readonly SHARED_EPOCH_KEY = "global";
+  private sharedEpoch = 0;
+  private sharedEpochFetchedAt = 0;
+  private cacheCoordinationReady = false;
+  private cacheCoordinationChecked = false;
+
   constructor(private readonly pool: Pool) {}
+
+  /** Creates the shared `cache_epoch` table if it does not already exist. */
+  private async ensureCacheCoordination(): Promise<void> {
+    if (this.cacheCoordinationChecked) return;
+    this.cacheCoordinationChecked = true;
+    try {
+      await this.runQuery(`
+        CREATE TABLE IF NOT EXISTS cache_epoch (
+          key TEXT PRIMARY KEY,
+          epoch BIGINT NOT NULL
+        )
+      `);
+      this.cacheCoordinationReady = true;
+    } catch {
+      // Table unavailable (e.g. missing DDL permission). Coordination degrades
+      // to the documented TTL consistency bound, which the read path handles.
+      this.cacheCoordinationReady = false;
+    }
+  }
+
+  /** Returns the latest shared epoch, refreshing from Postgres at most every
+   *  `SHARED_EPOCH_REFRESH_MS`. Falls back to the local snapshot on error. */
+  private async readSharedEpoch(): Promise<number> {
+    await this.ensureCacheCoordination();
+    const now = Date.now();
+    if (now - this.sharedEpochFetchedAt < PostgresDatabase.SHARED_EPOCH_REFRESH_MS) {
+      return this.sharedEpoch;
+    }
+    if (this.cacheCoordinationReady) {
+      try {
+        const result = await this.runQuery(
+          `SELECT COALESCE(MAX(epoch), 0)::BIGINT AS epoch FROM cache_epoch`
+        );
+        this.sharedEpoch = Number(result.rows[0]?.epoch ?? 0);
+        this.sharedEpochFetchedAt = now;
+      } catch {
+        this.sharedEpochFetchedAt = now; // avoid hammering a failing table
+      }
+    } else {
+      this.sharedEpochFetchedAt = now;
+    }
+    return this.sharedEpoch;
+  }
+
+  /** Bumps the shared epoch so every replica revalidates its cached entities. */
+  private async bumpSharedEpoch(): Promise<void> {
+    await this.ensureCacheCoordination();
+    if (!this.cacheCoordinationReady) return;
+    try {
+      await this.runQuery(
+        `INSERT INTO cache_epoch (key, epoch) VALUES ($1, 1)
+         ON CONFLICT (key) DO UPDATE SET epoch = cache_epoch.epoch + 1`,
+        [PostgresDatabase.SHARED_EPOCH_KEY]
+      );
+      // Reflect the bump immediately in the local snapshot.
+      this.sharedEpoch += 1;
+      this.sharedEpochFetchedAt = Date.now();
+    } catch {
+      // Best-effort; the TTL bound still protects correctness locally.
+    }
+  }
+
+  /** Cached value is valid only if its epoch is not older than the shared one. */
+  private async isCacheCurrent(entryEpoch: number): Promise<boolean> {
+    if (entryEpoch === 0) return true; // entries recorded before coordination
+    const shared = await this.readSharedEpoch();
+    return entryEpoch >= shared;
+  }
+
+  /** Revalidates a raw cached entry against the shared epoch, returning its
+   *  value only when it is still current. */
+  private async revalidate<T>(entry: { value: T; epoch: number } | undefined) {
+    if (!entry) return undefined;
+    if (await this.isCacheCurrent(entry.epoch)) return entry.value;
+    return undefined;
+  }
 
   private async runQuery(queryText: string, params?: unknown[]) {
     return this.pool.query(queryText, params);
   }
 
+  // BA-028: never convert lossy numeric values into bigints silently.
+  // See the exported `toSafeBigInt` helper for the boundary rules.
   private toBigInt(value: unknown): bigint {
-    if (typeof value === "bigint") return value;
-    if (typeof value === "number") return BigInt(value);
-    if (typeof value === "string") return BigInt(value);
-    throw new Error(`Unsupported bigint value: ${String(value)}`);
+    return toSafeBigInt(value);
   }
 
   private mapPost(row: Record<string, unknown>): Post {
@@ -254,6 +389,8 @@ export class PostgresDatabase implements Database {
       `,
       [profile.address, profile.username, profile.creator_token, profile.updated_ledger]
     );
+    // BA-026: tell every replica sharing this Postgres that caches changed.
+    await this.bumpSharedEpoch();
     this.profileCache.delete(profile.address);
   }
 
@@ -306,6 +443,7 @@ export class PostgresDatabase implements Database {
         post.created_at ?? null,
       ]
     );
+    await this.bumpSharedEpoch();
     this.postCache.delete(post.id.toString());
   }
 
@@ -318,6 +456,7 @@ export class PostgresDatabase implements Database {
       `,
       [post_id.toString(), deleted_ledger, deleted_at ?? null]
     );
+    await this.bumpSharedEpoch();
     this.postCache.delete(post_id.toString());
   }
 
@@ -325,6 +464,7 @@ export class PostgresDatabase implements Database {
     await this.runQuery(`UPDATE posts SET like_count = like_count + 1 WHERE id = $1`, [
       post_id.toString(),
     ]);
+    await this.bumpSharedEpoch();
     this.postCache.delete(post_id.toString());
   }
 
@@ -333,20 +473,21 @@ export class PostgresDatabase implements Database {
       post_id.toString(),
       net_amount.toString(),
     ]);
+    await this.bumpSharedEpoch();
     this.postCache.delete(post_id.toString());
   }
 
   async getPost(post_id: bigint): Promise<Post | null> {
     const key = post_id.toString();
-    // Check cache first (BE-18).
-    const cached = this.postCache.get(key);
+    // Check cache first (BE-18), revalidating it against the shared epoch (BA-026).
+    const cached = await this.revalidate(this.postCache.getEntry(key));
     if (cached) return cached;
 
     const result = await this.runQuery(`SELECT * FROM posts WHERE id = $1`, [key]);
     const post = result.rowCount ? this.mapPost(result.rows[0]) : null;
 
-    // Cache for subsequent reads.
-    if (post) this.postCache.set(key, post);
+    // Cache for subsequent reads, tagged with the current shared epoch.
+    if (post) this.postCache.set(key, post, await this.readSharedEpoch());
     return post;
   }
 
@@ -508,15 +649,15 @@ export class PostgresDatabase implements Database {
   }
 
   async getProfile(address: string): Promise<Profile | null> {
-    // Check cache first (BE-18).
-    const cached = this.profileCache.get(address);
+    // Check cache first (BE-18), revalidating it against the shared epoch (BA-026).
+    const cached = await this.revalidate(this.profileCache.getEntry(address));
     if (cached) return cached;
 
     const result = await this.pool.query(`SELECT * FROM profiles WHERE address = $1`, [address]);
     const profile = result.rowCount ? (result.rows[0] as Profile) : null;
 
-    // Cache for subsequent reads.
-    if (profile) this.profileCache.set(address, profile);
+    // Cache for subsequent reads, tagged with the current shared epoch.
+    if (profile) this.profileCache.set(address, profile, await this.readSharedEpoch());
     return profile;
   }
 

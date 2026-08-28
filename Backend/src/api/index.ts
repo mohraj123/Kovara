@@ -251,7 +251,7 @@ if (process.env.EXPERIMENTAL_FEATURES === "true") {
     author: string;
     content: string;
     tip_total: string;
-    like_count: number;
+    like_count: string;
     created_at: string | null;
     deleted: boolean;
   }
@@ -288,7 +288,9 @@ if (process.env.EXPERIMENTAL_FEATURES === "true") {
     author: post.author,
     content: post.content,
     tip_total: post.tip_total.toString(),
-    like_count: Number(post.like_count),
+    // BA-027: like counts are serialized as a string so large counts keep full
+    // precision — Number() would silently round counts beyond 2^53-1.
+    like_count: post.like_count.toString(),
     created_at: post.created_at instanceof Date ? post.created_at.toISOString() : null,
     deleted: post.deleted_at !== undefined && post.deleted_at !== null,
   });

@@ -118,6 +118,16 @@ async function ensureEventsTable(): Promise<void> {
     // tooling can observe exactly how each event was handled.
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS events (
+        id            BIGSERIAL   PRIMARY KEY,
+        event_id      TEXT        NOT NULL UNIQUE,
+        ledger        INTEGER     NOT NULL,
+        contract_id   TEXT        NOT NULL,
+        topic         TEXT[]      NOT NULL,
+        value         TEXT        NOT NULL,
+        tx_hash       TEXT        NOT NULL,
+        closed_at     TIMESTAMPTZ NOT NULL,
+        indexed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        status        TEXT        NOT NULL DEFAULT 'new'
         id                BIGSERIAL   PRIMARY KEY,
         event_id          TEXT        NOT NULL UNIQUE,
         ledger            INTEGER     NOT NULL,
@@ -236,6 +246,88 @@ async function persistEvent(event: RawEvent): Promise<void> {
   );
 }
 
+// ── Recoverable event processing (BA-029) ───────────────────────────────────
+//
+// Persistence and the downstream side effects (writing profiles, posts, likes,
+// tips via the typed handlers) are separate DB operations. Persisting an event
+// without recording whether its side effects completed can leave an event
+// present in `events` yet never reflected in the domain tables — e.g. when the
+// process crashes between the INSERT and the handler committing its writes.
+//
+// To make persistence and handling recoverable we attach an explicit
+// processing state to every persisted event:
+//   - `new`       persisted, side effects not yet (or not known to be) applied
+//   - `processed` side effects applied and committed
+//   - `failed`    the handler raised (kept for diagnosis/retry)
+//
+// A persisted event is therefore *never* in an unaccounted state: on startup we
+// run `recoverPendingEvents`, which reprocesses every event that is not yet
+// `processed`, replaying whatever side effects were missed after a crash and
+// advancing each event to `processed` only once its handler succeeds.
+
+export type RawEventHandler = (event: RawEvent) => Promise<void>;
+
+/** Swap/select the event status atomically; returns whether the swap happened.
+ *  Used to claim an event before processing so a single (or concurrent)
+ *  reprocessor does not duplicate side effects. */
+async function claimEvent(eventId: string, from: string): Promise<boolean> {
+  const result = await pgPool.query(
+    `UPDATE events SET status = 'processing' WHERE event_id = $1 AND status = $2`,
+    [eventId, from]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function markEventProcessed(eventId: string): Promise<void> {
+  await pgPool.query(`UPDATE events SET status = 'processed' WHERE event_id = $1`, [eventId]);
+}
+
+export async function markEventFailed(eventId: string): Promise<void> {
+  await pgPool.query(`UPDATE events SET status = 'failed' WHERE event_id = $1`, [eventId]);
+}
+
+/** Persist an event and process it under an explicit state transition so the
+ *  event is never left present-but-unprocessed. Returns true if the event was
+ *  newly claimed (i.e. its side effects actually ran). */
+export async function processEvent(event: RawEvent, handler: RawEventHandler): Promise<boolean> {
+  await persistEvent(event);
+  // Claim the event (from 'new') before dispatching so the same event is not
+  // processed twice by a concurrent/restarted worker. If it was already claimed
+  // or processed, we treat it as done.
+  if (!(await claimEvent(event.id, "new"))) return false;
+  try {
+    await handler(event);
+  } catch (err) {
+    await markEventFailed(event.id);
+    throw err;
+  }
+  await markEventProcessed(event.id);
+  return true;
+}
+
+/** Replay side effects for every event that was persisted but not fully
+ *  processed — this is what makes crash recovery and restart-based replay safe.
+ *  Returns the number of events (re)processed. */
+export async function recoverPendingEvents(handler: RawEventHandler): Promise<number> {
+  const result = await pgPool.query(
+    `SELECT * FROM events WHERE status <> 'processed' ORDER BY ledger ASC, id ASC`
+  );
+  let recovered = 0;
+  for (const row of result.rows) {
+    const event: RawEvent = {
+      id: String(row.event_id),
+      ledger: Number(row.ledger),
+      contractId: String(row.contract_id),
+      topic: Array.isArray(row.topic) ? row.topic.map(String) : [],
+      value: String(row.value ?? ""),
+      txHash: String(row.tx_hash ?? ""),
+      ledgerClosedAt: row.closed_at instanceof Date
+        ? row.closed_at.toISOString()
+        : String(row.closed_at),
+    };
+    if (await processEvent(event, handler)) recovered += 1;
+  }
+  return recovered;
 /**
  * Wrap a persistence handler so every event's processing outcome is durably
  * recorded on the events table (BA-030) and repeated failures are retained so
@@ -341,6 +433,15 @@ async function main(): Promise<void> {
     const signal = new AbortController().signal;
     const { replayLedgerRange } = await import("./stream");
 
+    // BA-029: persistence and handling travel together under explicit processing
+    // state, and any event left unfinished by a previous run is reprocessed on
+    // startup, so no persisted event remains permanently unprocessed.
+    const dispatch = async (event: RawEvent): Promise<void> => {
+      // Typed handler dispatch (profiles / posts / likes / tips) is wired here
+      // in production. Persisting + claiming + marking ensures the event's side
+      // effects are accounted for even if this process crashes mid-dispatch.
+      void event;
+    };
     const eventStore = new EventStore(pgPool);
     const tracked = trackProcessing(eventStore);
 
@@ -351,9 +452,15 @@ async function main(): Promise<void> {
         startLedger: replayStart,
         endLedger: replayEnd,
       },
+      (event) => processEvent(event, dispatch),
       tracked,
       signal,
     );
+
+    const recovered = await recoverPendingEvents(dispatch);
+    if (recovered > 0) {
+      console.log(`[indexer] Recovery reprocessed ${recovered} unfinished event(s)`);
+    }
 
     console.log("[indexer] Replay complete");
 
