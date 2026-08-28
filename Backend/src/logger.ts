@@ -1,16 +1,27 @@
+/**
+ * Structured logger for the Kovara indexer.
+ *
+ * BA-039: Centralizes logging so filtering is consistent and sensitive
+ * data is never written raw:
+ *   - Structured fields are emitted alongside a human-readable message.
+ *   - Correlation context can be attached via `bind`/`child` so log lines
+ *     from the same request, stream cycle, or replay run are groupable.
+ *   - Redaction masks Stellar addresses and opaque event payloads before they
+ *     reach the console, preventing sensitive values from leaking into logs.
+ *
+ * Backwards-compatible with the previous `logger.info/warn/error/always`
+ * surface, so existing call sites keep working without modification.
+ */
+
+// ── Deduplication (preserved from previous behaviour) ───────────────────────
+
 const recentLogs = new Map<string, number>();
 const DEDUP_WINDOW_MS = 60_000;
 
 function logKey(level: string, message: string): string {
   return `${level}:${message}`;
 }
-/**
- * Handle a Follow event.
- *
- * Inserts a directed edge (follower → followee) into the follow graph.
- * Idempotent: if the follow already exists the handler returns immediately
- * without issuing a database write.
- */
+
 function shouldLog(key: string): boolean {
   const now = Date.now();
   const lastLog = recentLogs.get(key);
@@ -27,44 +38,161 @@ function shouldLog(key: string): boolean {
   return true;
 }
 
+// ── Redaction helpers (BA-039) ──────────────────────────────────────────────
+
+/** How many leading characters of an address to keep visible. */
+const ADDRESS_KEEP_HEAD = 6;
+/** How many trailing characters of an address to keep visible. */
+const ADDRESS_KEEP_TAIL = 4;
+/** Opaque payloads longer than this are truncated to avoid leaking the body. */
+const PAYLOAD_MAX_LEN = 64;
+
+/**
+ * Mask a Stellar-style address (e.g. `GABCDE...WXYZ`) so its identity is
+ * omitted from logs while remaining attributable.
+ */
+export function redactAddress(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (raw.length <= ADDRESS_KEEP_HEAD + ADDRESS_KEEP_TAIL + 3) {
+    return "***";
+  }
+  return `${raw.slice(0, ADDRESS_KEEP_HEAD)}...${raw.slice(-ADDRESS_KEEP_TAIL)}`;
+}
+
+/**
+ * Redact an opaque/structured value. Fixed-length opaque payloads (values,
+ * signatures, hashes) are truncated; nested string fields that look like
+ * addresses are masked.
+ */
+export function redactValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    const s = value.trim();
+    // Stellar addresses (56-char, start with G) are masked as addresses.
+    if (s.length === 56 && /^[G]/.test(s)) return redactAddress(s);
+    // Long opaque payloads (hex/base64 values, values) are truncated.
+    if (s.length > PAYLOAD_MAX_LEN) {
+      return `${s.slice(0, 8)}...redacted...(${s.length} chars)`;
+    }
+    return s;
+  }
+  return value;
+}
+
+/**
+ * Deeply redact a log argument: array/object containers are walked, and any
+ * string that is a Stellar address or long opaque payload is masked. This is
+ * applied to free-form arguments passed to the logger.
+ */
+export function redact(arg: unknown, depth = 0): unknown {
+  if (depth > 6) return "<max-depth>";
+  if (arg instanceof Error) {
+    // Keep the essential, bounded error context without dumping stack or
+    // sensitive payload fields that might be stashed on the error object.
+    const message = String(arg.message);
+    const bounded =
+      message.length > 256 ? `${message.slice(0, 256)}...(truncated)` : message;
+    const code = (arg as Error & { code?: unknown }).code;
+    return {
+      name: arg.name,
+      message: redactValue(bounded),
+      ...(code !== undefined ? { code: redactValue(code) } : {}),
+    };
+  }
+  if (typeof arg === "string") return redactValue(arg);
+  if (Array.isArray(arg)) return arg.map((item) => redact(item, depth + 1));
+  if (arg && typeof arg === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(arg as Record<string, unknown>)) {
+      out[key] = redact(value, depth + 1);
+    }
+    return out;
+  }
+  return arg;
+}
+
+// ── Logger ──────────────────────────────────────────────────────────────────
+
+export interface LoggerBindings {
+  [key: string]: unknown;
+}
+
+export interface Logger {
+  info(message: string, ...args: unknown[]): void;
+  warn(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: unknown[]): void;
+  always(message: string, ...args: unknown[]): void;
+  /** Return a child logger with extra structured context attached to every line. */
+  child(bindings: LoggerBindings): Logger;
+}
+
+export class StructuredLogger implements Logger {
+  constructor(
+    private readonly id = "indexer",
+    private readonly bindings: LoggerBindings = {}
+  ) {}
+
+  /** Emit a structured log line with optional JSON context. */
+  private write(level: string, message: string, args: unknown[]): void {
+    // Redact free-form arguments so sensitive payloads never reach the log.
+    const safeArgs = args.map((a) => redact(a));
+
+    const structured: Record<string, unknown> = {
+      ts: new Date().toISOString(),
+      level,
+      logger: this.id,
+      msg: message,
+      ...this.bindings,
+    };
+
+    if (safeArgs.length === 1 && safeArgs[0] && typeof safeArgs[0] === "object") {
+      Object.assign(structured, safeArgs[0]);
+    } else if (safeArgs.length > 0) {
+      structured.args = safeArgs;
+    }
+
+    const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
+    fn(JSON.stringify(structured));
+  }
+
+  info(message: string, ...args: unknown[]): void {
+    if (shouldLog(logKey("info", message))) this.write("info", message, args);
+  }
+
+  warn(message: string, ...args: unknown[]): void {
+    if (shouldLog(logKey("warn", message))) this.write("warn", message, args);
+  }
+
+  error(message: string, ...args: unknown[]): void {
+    if (shouldLog(logKey("error", message))) this.write("error", message, args);
+  }
+
+  always(message: string, ...args: unknown[]): void {
+    this.write("info", message, args);
+  }
+
+  child(bindings: LoggerBindings): Logger {
+    return new StructuredLogger(this.id, { ...this.bindings, ...bindings });
+  }
+}
+
 export class TransactionLogger {
   logRollback(transactionId: string, error: Error, duration: number): void {
     const log = {
       timestamp: new Date(),
-      transactionId,
-      action: 'ROLLBACK',
-      error: error.message,
-      duration: duration + 'ms'
+      transactionId: redactValue(transactionId),
+      action: "ROLLBACK",
+      error: redactValue(error.message),
+      duration: duration + "ms",
     };
-    console.log('Transaction:', log);
+    console.log("Transaction:", log);
   }
 
   logCommit(transactionId: string, duration: number): void {
-    console.log('Transaction:', { action: 'COMMIT', transactionId, duration });
+    console.log("Transaction:", { action: "COMMIT", transactionId: redactValue(transactionId), duration });
   }
 }
 
-
-export const logger = {
-  info(message: string, ...args: unknown[]): void {
-    if (shouldLog(logKey("info", message))) {
-      console.log(`[indexer] ${message}`, ...args);
-    }
-  },
-
-  warn(message: string, ...args: unknown[]): void {
-    if (shouldLog(logKey("warn", message))) {
-      console.warn(`[indexer] ${message}`, ...args);
-    }
-  },
-
-  error(message: string, ...args: unknown[]): void {
-    if (shouldLog(logKey("error", message))) {
-      console.error(`[indexer] ${message}`, ...args);
-    }
-  },
-
-  always(message: string, ...args: unknown[]): void {
-    console.log(`[indexer] ${message}`, ...args);
-  },
-};
+/**
+ * Default application logger. Imported and used across the codebase.
+ */
+export const logger: Logger = new StructuredLogger("indexer");

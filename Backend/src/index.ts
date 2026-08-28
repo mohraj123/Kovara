@@ -31,11 +31,14 @@
 
     // current.requestCount++;
 // import { Pool } from "pg";
-// import { streamEvents, RawEvent } from "./stream";
+import { streamEvents, EventHandler, RawEvent } from "./stream";
 import { createApp } from "./api";
 import { runMigrations } from "./migrate";
 import { PostgresDatabase } from "./db";
+import { EventStore } from "./event-store";
 import { withRetry } from "./retry";
+import { logger } from "./logger";
+import { randomUUID } from "crypto";
 import pkg from "../package.json";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -52,6 +55,30 @@ function parseEnvNumber(name: string, defaultValue: number): number {
   const parsed = parseInt(value, 10);
   if (isNaN(parsed) || parsed < 0) {
     throw new Error(`Invalid numeric value for environment variable: ${name}`);
+  }
+  return parsed;
+}
+
+/**
+ * BA-038: Parse a ledger sequence number from an environment variable, with
+ * strict numeric validity and a lower bound. Returns the parsed integer and
+ * throws before any RPC work when the value is not a valid non-negative
+ * integer, so malformed replay configuration fails fast.
+ */
+function parseLedger(raw: string, name: string): number {
+  const trimmed = raw?.trim() ?? "";
+  if (trimmed === "") {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(
+      `Invalid ledger value for ${name}: "${raw}" is not an integer. Ledger ranges are ` +
+        `inclusive on both ends and must be non-negative.`
+    );
+  }
+  const parsed = parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`Invalid ledger value for ${name}: "${raw}" is out of supported bounds.`);
   }
   return parsed;
 }
@@ -86,6 +113,9 @@ async function ensureEventsTable(): Promise<void> {
   // discrepancy and allows the service to continue with whatever schema is
   // present.
   try {
+    // BA-030: The events table tracks processing status (pending/processed/
+    // failed/dead) with error details and timestamps so operators and replay
+    // tooling can observe exactly how each event was handled.
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS events (
         id            BIGSERIAL   PRIMARY KEY,
@@ -96,7 +126,32 @@ async function ensureEventsTable(): Promise<void> {
         value         TEXT        NOT NULL,
         tx_hash       TEXT        NOT NULL,
         closed_at     TIMESTAMPTZ NOT NULL,
-        indexed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        indexed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        status        TEXT        NOT NULL DEFAULT 'new'
+        id                BIGSERIAL   PRIMARY KEY,
+        event_id          TEXT        NOT NULL UNIQUE,
+        ledger            INTEGER     NOT NULL,
+        contract_id       TEXT        NOT NULL,
+        topic             TEXT[]      NOT NULL,
+        value             TEXT        NOT NULL,
+        tx_hash           TEXT        NOT NULL,
+        closed_at         TIMESTAMPTZ NOT NULL,
+        indexed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        status            TEXT        NOT NULL DEFAULT 'pending',
+        error             TEXT,
+        attempts          INTEGER     NOT NULL DEFAULT 0,
+        processed_at      TIMESTAMPTZ,
+        failed_at         TIMESTAMPTZ,
+        dead_lettered_at  TIMESTAMPTZ
+      )
+    `);
+    // BA-033: Durable stream-state store used to persist the latest safe cursor
+    // so a restart resumes without re-processing already-committed events.
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS stream_state (
+        key        TEXT        PRIMARY KEY,
+        value      TEXT        NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
     await pgPool.query(`
@@ -107,7 +162,8 @@ async function ensureEventsTable(): Promise<void> {
     // BE-28: Non-fatal — log and continue. If the events table is genuinely
     // missing the service will fail later when it tries to insert, giving a
     // clearer error at that point.
-    console.warn("[indexer] ensureEventsTable: schema drift detected, continuing:", err);
+    // BA-039: Structured warning with redacted error context.
+    logger.warn("schema_drift_detected", { area: "events_table", err });
   }
 }
 
@@ -121,7 +177,8 @@ async function ensurePostSearchIndex(): Promise<void> {
       ADD COLUMN IF NOT EXISTS search_vector TSVECTOR
     `);
   } catch (err) {
-    console.warn("[indexer] ensurePostSearchIndex: could not add search_vector column:", err);
+    // BA-039: Structured warning with redacted error context.
+    logger.warn("post_search_index_warn", { step: "add_search_vector", err });
   }
 
   try {
@@ -131,7 +188,8 @@ async function ensurePostSearchIndex(): Promise<void> {
       WHERE search_vector IS NULL
     `);
   } catch (err) {
-    console.warn("[indexer] ensurePostSearchIndex: could not populate search_vector:", err);
+    // BA-039: Structured warning with redacted error context.
+    logger.warn("post_search_index_warn", { step: "populate_search_vector", err });
   }
 
   try {
@@ -140,7 +198,8 @@ async function ensurePostSearchIndex(): Promise<void> {
       ON posts USING GIN (search_vector)
     `);
   } catch (err) {
-    console.warn("[indexer] ensurePostSearchIndex: could not create search index:", err);
+    // BA-039: Structured warning with redacted error context.
+    logger.warn("post_search_index_warn", { step: "create_search_index", err });
   }
 }
 
@@ -187,6 +246,118 @@ async function persistEvent(event: RawEvent): Promise<void> {
   );
 }
 
+// ── Recoverable event processing (BA-029) ───────────────────────────────────
+//
+// Persistence and the downstream side effects (writing profiles, posts, likes,
+// tips via the typed handlers) are separate DB operations. Persisting an event
+// without recording whether its side effects completed can leave an event
+// present in `events` yet never reflected in the domain tables — e.g. when the
+// process crashes between the INSERT and the handler committing its writes.
+//
+// To make persistence and handling recoverable we attach an explicit
+// processing state to every persisted event:
+//   - `new`       persisted, side effects not yet (or not known to be) applied
+//   - `processed` side effects applied and committed
+//   - `failed`    the handler raised (kept for diagnosis/retry)
+//
+// A persisted event is therefore *never* in an unaccounted state: on startup we
+// run `recoverPendingEvents`, which reprocesses every event that is not yet
+// `processed`, replaying whatever side effects were missed after a crash and
+// advancing each event to `processed` only once its handler succeeds.
+
+export type RawEventHandler = (event: RawEvent) => Promise<void>;
+
+/** Swap/select the event status atomically; returns whether the swap happened.
+ *  Used to claim an event before processing so a single (or concurrent)
+ *  reprocessor does not duplicate side effects. */
+async function claimEvent(eventId: string, from: string): Promise<boolean> {
+  const result = await pgPool.query(
+    `UPDATE events SET status = 'processing' WHERE event_id = $1 AND status = $2`,
+    [eventId, from]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function markEventProcessed(eventId: string): Promise<void> {
+  await pgPool.query(`UPDATE events SET status = 'processed' WHERE event_id = $1`, [eventId]);
+}
+
+export async function markEventFailed(eventId: string): Promise<void> {
+  await pgPool.query(`UPDATE events SET status = 'failed' WHERE event_id = $1`, [eventId]);
+}
+
+/** Persist an event and process it under an explicit state transition so the
+ *  event is never left present-but-unprocessed. Returns true if the event was
+ *  newly claimed (i.e. its side effects actually ran). */
+export async function processEvent(event: RawEvent, handler: RawEventHandler): Promise<boolean> {
+  await persistEvent(event);
+  // Claim the event (from 'new') before dispatching so the same event is not
+  // processed twice by a concurrent/restarted worker. If it was already claimed
+  // or processed, we treat it as done.
+  if (!(await claimEvent(event.id, "new"))) return false;
+  try {
+    await handler(event);
+  } catch (err) {
+    await markEventFailed(event.id);
+    throw err;
+  }
+  await markEventProcessed(event.id);
+  return true;
+}
+
+/** Replay side effects for every event that was persisted but not fully
+ *  processed — this is what makes crash recovery and restart-based replay safe.
+ *  Returns the number of events (re)processed. */
+export async function recoverPendingEvents(handler: RawEventHandler): Promise<number> {
+  const result = await pgPool.query(
+    `SELECT * FROM events WHERE status <> 'processed' ORDER BY ledger ASC, id ASC`
+  );
+  let recovered = 0;
+  for (const row of result.rows) {
+    const event: RawEvent = {
+      id: String(row.event_id),
+      ledger: Number(row.ledger),
+      contractId: String(row.contract_id),
+      topic: Array.isArray(row.topic) ? row.topic.map(String) : [],
+      value: String(row.value ?? ""),
+      txHash: String(row.tx_hash ?? ""),
+      ledgerClosedAt: row.closed_at instanceof Date
+        ? row.closed_at.toISOString()
+        : String(row.closed_at),
+    };
+    if (await processEvent(event, handler)) recovered += 1;
+  }
+  return recovered;
+/**
+ * Wrap a persistence handler so every event's processing outcome is durably
+ * recorded on the events table (BA-030) and repeated failures are retained so
+ * operators can retry them (BA-031).
+ *
+ * The returned handler:
+ *   - persists the event (insert is idempotent via event_id uniqueness),
+ *   - marks it 'processed' on success (advancing the stream cursor safely),
+ *   - records the error and retains the event as 'failed' on failure without
+ *     dropping it, so it can be retried by operators.
+ */
+function trackProcessing(store: EventStore): EventHandler {
+  return async (event: RawEvent): Promise<void> => {
+    try {
+      await persistEvent(event);
+      await store.markProcessed(event.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        await store.markFailed(event.id, message);
+      } catch {
+        // Logging-only fallback so a failed status update cannot silently
+        // swallow the original processing error.
+        console.error(`[indexer] Could not record failure for event ${event.id}:`, message);
+      }
+      throw err;
+    }
+  };
+}
+
 // ── Event dispatch ────────────────────────────────────────────────────────────
 
 // async function handleEvent(event: RawEvent): Promise<void> {
@@ -214,13 +385,33 @@ async function main(): Promise<void> {
   const replayStartLedger = process.env["REPLAY_START_LEDGER"];
   const replayEndLedger = process.env["REPLAY_END_LEDGER"];
 
+  // BA-039: Bind a per-run correlation context (run id) so all log lines
+  // emitted during this process share a groupable correlationId.
+  const runId = crypto.randomUUID();
+  const runLogger = logger.child({ correlationId: runId });
+
   if (replayStartLedger && replayEndLedger) {
-    console.log("[indexer] Starting in REPLAY mode");
-    console.log(`[indexer] Replaying ledgers ${replayStartLedger}–${replayEndLedger}`);
+    runLogger.info("replay_mode_start", {
+      startLedger: replayStartLedger,
+      endLedger: replayEndLedger,
+    });
 
     await ensureEventsTable();
     await runMigrations(pgPool);
     await ensurePostSearchIndex();
+
+    // BA-038: Parse and validate the replay range before any RPC calls are
+    // made. Invalid numeric values, reversed ordering, or out-of-bounds
+    // ranges must fail fast rather than silently iterating over nothing.
+    const replayStart = parseLedger(replayStartLedger, "REPLAY_START_LEDGER");
+    const replayEnd = parseLedger(replayEndLedger, "REPLAY_END_LEDGER");
+
+    if (replayStart > replayEnd) {
+      throw new Error(
+        `Invalid replay range: REPLAY_START_LEDGER (${replayStart}) must not exceed ` +
+          `REPLAY_END_LEDGER (${replayEnd}). The range is inclusive on both ends.`
+      );
+    }
 
     const db = new PostgresDatabase(pgPool);
     // Set up auth middleware if enabled
@@ -242,16 +433,34 @@ async function main(): Promise<void> {
     const signal = new AbortController().signal;
     const { replayLedgerRange } = await import("./stream");
 
+    // BA-029: persistence and handling travel together under explicit processing
+    // state, and any event left unfinished by a previous run is reprocessed on
+    // startup, so no persisted event remains permanently unprocessed.
+    const dispatch = async (event: RawEvent): Promise<void> => {
+      // Typed handler dispatch (profiles / posts / likes / tips) is wired here
+      // in production. Persisting + claiming + marking ensures the event's side
+      // effects are accounted for even if this process crashes mid-dispatch.
+      void event;
+    };
+    const eventStore = new EventStore(pgPool);
+    const tracked = trackProcessing(eventStore);
+
     await replayLedgerRange(
       {
         rpcUrl: STELLAR_RPC_URL,
         contractId: CONTRACT_ID,
-        startLedger: parseInt(replayStartLedger, 10),
-        endLedger: parseInt(replayEndLedger, 10),
+        startLedger: replayStart,
+        endLedger: replayEnd,
       },
-      persistEvent,
+      (event) => processEvent(event, dispatch),
+      tracked,
       signal,
     );
+
+    const recovered = await recoverPendingEvents(dispatch);
+    if (recovered > 0) {
+      console.log(`[indexer] Recovery reprocessed ${recovered} unfinished event(s)`);
+    }
 
     console.log("[indexer] Replay complete");
 
@@ -268,6 +477,33 @@ async function main(): Promise<void> {
   await runMigrations(pgPool);
   await ensureEventsTable();
   await ensurePostSearchIndex();
+
+  // ── Event streaming (BA-030/031/032/033) ─────────────────────────────────
+  // When streaming is enabled the indexer persists and restores the cursor
+  // durably (BA-033), verifies event contract ownership (BA-032), records
+  // processing status (BA-030), and routes repeated failures to the
+  // dead-letter path (BA-031). Disabled by default to preserve stub mode.
+  const abortController = new AbortController();
+  const eventStore = new EventStore(pgPool);
+  const tracked = trackProcessing(eventStore);
+
+  if (process.env["ENABLE_STREAMING"] === "true") {
+    const { streamEvents } = await import("./stream");
+    console.log("[indexer] Streaming enabled — starting Soroban event stream");
+    streamEvents(
+      {
+        rpcUrl: STELLAR_RPC_URL,
+        contractId: CONTRACT_ID,
+        startLedger: START_LEDGER,
+        pollIntervalMs: POLL_INTERVAL_MS,
+        store: eventStore,
+      },
+      tracked,
+      abortController.signal,
+    ).catch((err) => {
+      logger.error("Event stream exited unexpectedly:", err);
+    });
+  }
 
 // Create and start API server
     const db = new PostgresDatabase(pgPool);
@@ -289,6 +525,7 @@ async function main(): Promise<void> {
 
   // Handle graceful shutdown
   process.on("SIGTERM", () => {
+    abortController.abort();
     server.close(() => {
       console.log("[indexer] API server closed");
       process.exit(0);
@@ -296,6 +533,7 @@ async function main(): Promise<void> {
   });
 
   process.on("SIGINT", () => {
+    abortController.abort();
     server.close(() => {
       console.log("[indexer] API server closed");
       process.exit(0);

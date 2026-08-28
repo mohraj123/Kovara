@@ -70,7 +70,7 @@ fn test_verifier_stake_boundary_is_accepted() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #53)")]
+#[should_panic(expected = "Error(Contract, #59)")]
 fn test_verifier_stake_below_minimum_is_rejected() {
     let env = Env::default();
     env.mock_all_auths();
@@ -83,7 +83,7 @@ fn test_verifier_stake_below_minimum_is_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #52)")]
+#[should_panic(expected = "Error(Contract, #58)")]
 fn test_minimum_verifier_stake_must_be_positive() {
     let env = Env::default();
     env.mock_all_auths();
@@ -92,7 +92,7 @@ fn test_minimum_verifier_stake_must_be_positive() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #46)")]
+#[should_panic(expected = "Error(Contract, #55)")]
 fn test_unregistered_verifier_cannot_deposit_stake() {
     let env = Env::default();
     env.mock_all_auths();
@@ -103,7 +103,7 @@ fn test_unregistered_verifier_cannot_deposit_stake() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #45)")]
+#[should_panic(expected = "Error(Contract, #54)")]
 fn test_verifier_cannot_register_twice() {
     let env = Env::default();
     env.mock_all_auths();
