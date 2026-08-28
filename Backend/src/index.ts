@@ -31,10 +31,11 @@
 
     // current.requestCount++;
 // import { Pool } from "pg";
-// import { streamEvents, RawEvent } from "./stream";
+import { streamEvents, EventHandler, RawEvent } from "./stream";
 import { createApp } from "./api";
 import { runMigrations } from "./migrate";
 import { PostgresDatabase } from "./db";
+import { EventStore } from "./event-store";
 import { withRetry } from "./retry";
 import pkg from "../package.json";
 
@@ -86,17 +87,35 @@ async function ensureEventsTable(): Promise<void> {
   // discrepancy and allows the service to continue with whatever schema is
   // present.
   try {
+    // BA-030: The events table tracks processing status (pending/processed/
+    // failed/dead) with error details and timestamps so operators and replay
+    // tooling can observe exactly how each event was handled.
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS events (
-        id            BIGSERIAL   PRIMARY KEY,
-        event_id      TEXT        NOT NULL UNIQUE,
-        ledger        INTEGER     NOT NULL,
-        contract_id   TEXT        NOT NULL,
-        topic         TEXT[]      NOT NULL,
-        value         TEXT        NOT NULL,
-        tx_hash       TEXT        NOT NULL,
-        closed_at     TIMESTAMPTZ NOT NULL,
-        indexed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        id                BIGSERIAL   PRIMARY KEY,
+        event_id          TEXT        NOT NULL UNIQUE,
+        ledger            INTEGER     NOT NULL,
+        contract_id       TEXT        NOT NULL,
+        topic             TEXT[]      NOT NULL,
+        value             TEXT        NOT NULL,
+        tx_hash           TEXT        NOT NULL,
+        closed_at         TIMESTAMPTZ NOT NULL,
+        indexed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        status            TEXT        NOT NULL DEFAULT 'pending',
+        error             TEXT,
+        attempts          INTEGER     NOT NULL DEFAULT 0,
+        processed_at      TIMESTAMPTZ,
+        failed_at         TIMESTAMPTZ,
+        dead_lettered_at  TIMESTAMPTZ
+      )
+    `);
+    // BA-033: Durable stream-state store used to persist the latest safe cursor
+    // so a restart resumes without re-processing already-committed events.
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS stream_state (
+        key        TEXT        PRIMARY KEY,
+        value      TEXT        NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
     await pgPool.query(`
@@ -187,6 +206,36 @@ async function persistEvent(event: RawEvent): Promise<void> {
   );
 }
 
+/**
+ * Wrap a persistence handler so every event's processing outcome is durably
+ * recorded on the events table (BA-030) and repeated failures are retained so
+ * operators can retry them (BA-031).
+ *
+ * The returned handler:
+ *   - persists the event (insert is idempotent via event_id uniqueness),
+ *   - marks it 'processed' on success (advancing the stream cursor safely),
+ *   - records the error and retains the event as 'failed' on failure without
+ *     dropping it, so it can be retried by operators.
+ */
+function trackProcessing(store: EventStore): EventHandler {
+  return async (event: RawEvent): Promise<void> => {
+    try {
+      await persistEvent(event);
+      await store.markProcessed(event.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        await store.markFailed(event.id, message);
+      } catch {
+        // Logging-only fallback so a failed status update cannot silently
+        // swallow the original processing error.
+        console.error(`[indexer] Could not record failure for event ${event.id}:`, message);
+      }
+      throw err;
+    }
+  };
+}
+
 // ── Event dispatch ────────────────────────────────────────────────────────────
 
 // async function handleEvent(event: RawEvent): Promise<void> {
@@ -242,6 +291,9 @@ async function main(): Promise<void> {
     const signal = new AbortController().signal;
     const { replayLedgerRange } = await import("./stream");
 
+    const eventStore = new EventStore(pgPool);
+    const tracked = trackProcessing(eventStore);
+
     await replayLedgerRange(
       {
         rpcUrl: STELLAR_RPC_URL,
@@ -249,7 +301,7 @@ async function main(): Promise<void> {
         startLedger: parseInt(replayStartLedger, 10),
         endLedger: parseInt(replayEndLedger, 10),
       },
-      persistEvent,
+      tracked,
       signal,
     );
 
@@ -268,6 +320,33 @@ async function main(): Promise<void> {
   await runMigrations(pgPool);
   await ensureEventsTable();
   await ensurePostSearchIndex();
+
+  // ── Event streaming (BA-030/031/032/033) ─────────────────────────────────
+  // When streaming is enabled the indexer persists and restores the cursor
+  // durably (BA-033), verifies event contract ownership (BA-032), records
+  // processing status (BA-030), and routes repeated failures to the
+  // dead-letter path (BA-031). Disabled by default to preserve stub mode.
+  const abortController = new AbortController();
+  const eventStore = new EventStore(pgPool);
+  const tracked = trackProcessing(eventStore);
+
+  if (process.env["ENABLE_STREAMING"] === "true") {
+    const { streamEvents } = await import("./stream");
+    console.log("[indexer] Streaming enabled — starting Soroban event stream");
+    streamEvents(
+      {
+        rpcUrl: STELLAR_RPC_URL,
+        contractId: CONTRACT_ID,
+        startLedger: START_LEDGER,
+        pollIntervalMs: POLL_INTERVAL_MS,
+        store: eventStore,
+      },
+      tracked,
+      abortController.signal,
+    ).catch((err) => {
+      logger.error("Event stream exited unexpectedly:", err);
+    });
+  }
 
 // Create and start API server
     const db = new PostgresDatabase(pgPool);
@@ -289,6 +368,7 @@ async function main(): Promise<void> {
 
   // Handle graceful shutdown
   process.on("SIGTERM", () => {
+    abortController.abort();
     server.close(() => {
       console.log("[indexer] API server closed");
       process.exit(0);
@@ -296,6 +376,7 @@ async function main(): Promise<void> {
   });
 
   process.on("SIGINT", () => {
+    abortController.abort();
     server.close(() => {
       console.log("[indexer] API server closed");
       process.exit(0);
