@@ -52,6 +52,14 @@ pub struct RewardFundsRecoveredEvent {
     pub amount: i128,
 }
 
+#[contracterror]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VoteError {
+    AlreadyVoted = 0,
+}
+
+#[contractimpl]
+impl KovaraContract {
 // ── Implementation ────────────────────────────────────────────────────────────
 
 #[contractimpl]
@@ -78,8 +86,8 @@ impl KovaraContract {
         token: Address,
         amount: i128,
     ) {
-        Self::require_not_paused(&env);
         Self::require_initialized(&env);
+        Self::require_not_paused(&env);
         Self::bump_instance(&env);
         Self::require_admin(&env);
 
@@ -97,13 +105,15 @@ impl KovaraContract {
 
         env.storage().persistent().set(&key, &new_balance);
         Self::bump(&env, &key);
+        Self::increase_liability(&env, &token, amount);
 
         Self::increase_liability(&env, &token, amount);
 
         let role_sym = match role {
-            RewardRole::Submitter => symbol_short!("submitr"),
-            RewardRole::Verifier => symbol_short!("verifir"),
+            RewardRole::Submitter => symbol_short!("submitter"),
+            RewardRole::Verifier => symbol_short!("verifier"),
         };
+
         RewardAccruedEvent {
             role: role_sym,
             recipient,
@@ -118,10 +128,13 @@ impl KovaraContract {
     /// the transfer.
     pub fn fund_rewards(env: Env, depositor: Address, token: Address, amount: i128) {
         Self::require_initialized(&env);
+        Self::require_not_paused(&env);
         Self::bump_instance(&env);
         Self::require_admin(&env);
         depositor.require_auth();
+
         Self::validate_reward_asset(&env, &token);
+
         if amount <= 0 {
             panic_with_error!(&env, ContractError::MustBePositive);
         }
@@ -131,6 +144,7 @@ impl KovaraContract {
             &env.current_contract_address(),
             &amount,
         );
+
         RewardFundsDepositedEvent {
             depositor,
             token,
@@ -146,13 +160,18 @@ impl KovaraContract {
     /// (liability > on-chain balance) produces `RewardFundsUnavailable`.
     pub fn recover_rewards(env: Env, recipient: Address, token: Address, amount: i128) {
         Self::require_initialized(&env);
+        Self::require_not_paused(&env);
         Self::bump_instance(&env);
         Self::require_admin(&env);
+
         Self::validate_reward_asset(&env, &token);
+
         if amount <= 0 {
             panic_with_error!(&env, ContractError::MustBePositive);
         }
 
+        let available = token::Client::new(&env, &token).balance(&env.current_contract_address())
+            - Self::get_reward_liability_internal(&env, &token);
         let token_client = token::Client::new(&env, &token);
         let balance = token_client.balance(&env.current_contract_address());
         let liability = Self::get_reward_liability_internal(&env, &token);
@@ -166,7 +185,13 @@ impl KovaraContract {
         if amount > available {
             panic_with_error!(&env, ContractError::RewardFundsReserved);
         }
-        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
+
+        token::Client::new(&env, &token).transfer(
+            &env.current_contract_address(),
+            &recipient,
+            &amount,
+        );
+
         RewardFundsRecoveredEvent {
             recipient,
             token,
@@ -180,6 +205,12 @@ impl KovaraContract {
         Self::get_reward_liability_internal(&env, &token)
     }
 
+    pub fn get_reward_balance(
+        env: Env,
+        role: RewardRole,
+        user: Address,
+        token: Address,
+    ) -> i128 {
     // ── Reward query ──────────────────────────────────────────────────────────
 
     /// Return the unclaimed reward balance for `user` under `role` for `token`.
@@ -210,10 +241,11 @@ impl KovaraContract {
     /// - `LowBalance` — caller has no accrued balance for this role/token.
     /// - `RewardFundsUnavailable` — contract holds insufficient tokens to pay.
     pub fn claim_reward(env: Env, claimant: Address, role: RewardRole, token: Address) {
-        Self::require_not_paused(&env);
         Self::require_initialized(&env);
+        Self::require_not_paused(&env);
         Self::bump_instance(&env);
         claimant.require_auth();
+
         Self::validate_reward_asset(&env, &token);
 
         let key = StorageKey::RewardBalance(role, claimant.clone(), token.clone());
@@ -232,11 +264,7 @@ impl KovaraContract {
         Self::bump(&env, &key);
         Self::decrease_liability(&env, &token, balance);
 
-        token_client.transfer(
-            &env.current_contract_address(),
-            &claimant,
-            &balance,
-        );
+        token_client.transfer(&env.current_contract_address(), &claimant, &balance);
 
         RewardClaimedEvent {
             claimant,
@@ -246,6 +274,19 @@ impl KovaraContract {
         .publish(&env);
     }
 
+    pub fn vote(env: Env, submission_id: u64, verifier: Address, vote: bool) {
+        Self::require_initialized(&env);
+        Self::bump_instance(&env);
+        verifier.require_auth();
+
+        let key = StorageKey::HasVoted(submission_id, verifier.clone());
+        if env.storage().persistent().has(&key) {
+            panic_with_error!(&env, VoteError::AlreadyVoted);
+        }
+
+        env.storage().persistent().set(&key, &vote);
+        Self::bump(&env, &key);
+    }
     // ── Internal helpers ──────────────────────────────────────────────────────
 
     fn validate_reward_asset(env: &Env, token: &Address) {

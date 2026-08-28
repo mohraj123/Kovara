@@ -31,9 +31,12 @@ pub enum StorageKey {
     PriceStake(Address), // persistent: contributor -> locked stake
     Proposal(u64),              // persistent: proposal_id -> Proposal
     RewardBalance(RewardRole, Address, Address), // persistent: (role, user, token) -> i128
-    RewardLiability(Address),     // persistent: token -> total unclaimed rewards
+    RewardLiability(Address),  // persistent: token -> total unclaimed rewards
+    Admin,                     // persistent or instance admin reference
     Verifier(Address),          // persistent: registered verifier marker
     VerifierStake(Address, Address), // persistent: (verifier, token) -> i128
+    VoteRound(u64),                            // persistent: submission_id -> VoteRound
+    HasVoted(u64, Address),                    // persistent: (submission_id, verifier) -> bool
     VoteRound(u64),                  // persistent: submission_id -> VoteRound
     HasVoted(u64, Address),          // persistent: (submission_id, verifier) -> bool
 }
@@ -130,7 +133,9 @@ const PRICE_SUBMISSION_GAP: u32 = 1_728;
 const PRICE_MIN_STAKE: i128 = 1;
 const PRICE_DEPOSIT: i128 = 1;
 const PRICE_EVENT_VERSION: Symbol = symbol_short!("v1");
-const PROPOSAL_CT: Symbol = symbol_short!("PROP_CT");    pub(crate) const MIN_VERIFIER_STAKE: Symbol = symbol_short!("MIN_V_STK");
+const PROPOSAL_CT: Symbol = symbol_short!("PROP_CT");
+pub(crate) const MIN_VERIFIER_STAKE: Symbol = symbol_short!("MIN_V_STK");
+pub(crate) const VERIFIER_COUNT: Symbol = symbol_short!("VFR_CNT");
 const PAUSED: Symbol = symbol_short!("PAUSED");
 
 // ── TTL Constants ─────────────────────────────────────────────────────────────
