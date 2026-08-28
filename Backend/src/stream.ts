@@ -186,8 +186,7 @@ export async function streamEvents(
 
   console.log(`[stream] Starting from ledger ${startLedger}, contract=${config.contractId}`);
 
-  while (!signal.aborted) {
-    try {
+  while (!signal.aborted) {    try {
       const { events, latestLedger } = await withRetry(
         () => fetchEvents(config.rpcUrl, config.contractId, startLedger, cursor),
         {
@@ -218,7 +217,9 @@ export async function streamEvents(
       for (const event of events) {
         if (signal.aborted) break;
         if (!validateEventPayload(event)) {
-          console.error("[stream] Skipping invalid event payload:", JSON.stringify(event));
+          // BA-039: Route through the structured logger so the payload is
+          // redacted before it reaches the console.
+          logger.warn("skipping_invalid_event", { eventType: String(event.type) });
           cursor = event.pagingToken;
           continue;
         }
@@ -233,7 +234,10 @@ export async function streamEvents(
 
         // BE-24: Skip already-processed events before hitting the handler or DB.
         if (seenEventIds.has(normalizedEvent.id)) {
-          console.log(`[stream] Skipping duplicate event id=${normalizedEvent.id} tx=${normalizedEvent.txHash}`);
+          logger.info("skipping_duplicate_event", {
+            eventId: normalizedEvent.id,
+            txHash: normalizedEvent.txHash,
+          });
           cursor = normalizedEvent.pagingToken;
           continue;
         }
@@ -241,10 +245,11 @@ export async function streamEvents(
         try {
           await handler(normalizedEvent);
         } catch (err) {
-          console.error(
-            `[stream] Handler error for event ${normalizedEvent.id} (type=${normalizedEvent.type}):`,
-            err
-          );
+          logger.error("handler_error", {
+            eventId: normalizedEvent.id,
+            eventType: normalizedEvent.type,
+            err,
+          });
         }
 
         markSeen(normalizedEvent.id);
@@ -303,10 +308,31 @@ export async function replayLedgerRange(
   let totalDispatched = 0;
   let cursor: string | undefined;
 
-  console.log(
-    `[replay] Replaying ledgers ${config.startLedger}–${config.endLedger} ` +
-    `contract=${config.contractId} filter=${config.eventTypeFilter?.join(",") ?? "all"}`,
-  );
+  // BA-038: Reject invalid replay ranges before issuing any RPC requests.
+  // The range is inclusive on both ends ([startLedger, endLedger]).
+  if (!Number.isInteger(config.startLedger) || config.startLedger < 0) {
+    throw new Error(
+      `Invalid replay start ledger: ${config.startLedger}. Must be a non-negative integer.`
+    );
+  }
+  if (!Number.isInteger(config.endLedger) || config.endLedger < 0) {
+    throw new Error(
+      `Invalid replay end ledger: ${config.endLedger}. Must be a non-negative integer.`
+    );
+  }
+  if (config.startLedger > config.endLedger) {
+    throw new Error(
+      `Invalid replay range: start (${config.startLedger}) exceeds end (${config.endLedger}). ` +
+        `The range is inclusive on both ends, so start must be <= end.`
+    );
+  }
+
+  logger.info("replay_start", {
+    startLedger: config.startLedger,
+    endLedger: config.endLedger,
+    contractId: config.contractId,
+    eventTypes: config.eventTypeFilter?.join(",") ?? "all",
+  });
 
   for (let ledger = config.startLedger; ledger <= config.endLedger && !signal.aborted; ledger++) {
     let hasMore = true;
@@ -346,7 +372,7 @@ export async function replayLedgerRange(
             await handler(normalized);
             totalDispatched++;
           } catch (err) {
-            console.error(`[replay] Handler error for event ${normalized.id}:`, err);
+            logger.error("replay_handler_error", { eventId: normalized.id, err });
           }
 
           cursor = normalized.pagingToken;
@@ -354,13 +380,13 @@ export async function replayLedgerRange(
 
         hasMore = events.length === batchSize;
       } catch (err) {
-        console.error(`[replay] Error fetching ledger ${ledger}:`, err);
+        logger.error("replay_fetch_error", { ledger, err });
         hasMore = false;
       }
     }
   }
 
-  console.log(`[replay] Completed. Dispatched ${totalDispatched} events.`);
+  logger.info("replay_completed", { totalDispatched });
   return totalDispatched;
 }
 
