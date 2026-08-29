@@ -7,10 +7,10 @@
  * for querying indexed data.
  *
  * Environment variables (all required unless noted):
- *   DATABASE_URL           - PostgreSQL connection string
- *   STELLAR_RPC_URL        - Soroban RPC endpoint
- *   CONTRACT_ID            - Bech32 contract address
- *   START_LEDGER           - Ledger sequence to start streaming from
+ *   DATABASE_URL           - PostgreSQL connection string (required)
+ *   CONTRACT_ID            - Stellar contract address, a 56-char C… strkey (required)
+ *   STELLAR_RPC_URL        - (optional) Soroban RPC endpoint, default testnet
+ *   START_LEDGER           - (optional) Ledger sequence to stream from, default 0
  *   HOST                   - (optional) API server host, default 0.0.0.0
  *   PORT                   - (optional) API server port, default 3000
  *   TRUST_PROXY            - (optional) Number of proxies to trust (for X-Forwarded-For), default 0 (disabled)
@@ -20,34 +20,20 @@
  *   ENABLE_AUTH_MIDDLEWARE - (optional) Enable authentication middleware (default: false)
  *   ENABLE_RATE_LIMITING   - (optional) Enable rate limiting middleware (default: true)
  *   ENABLE_EXPERIMENTAL_ROUTES - (optional) Enable experimental routes (e.g., pools) (default: false)
-//  */.....
-/**
- * Handle a Follow event.
- *
- * Inserts a directed edge (follower → followee) into the follow graph.
- * Idempotent: if the follow already exists the handler returns immediately
- * without issuing a database write.
  */
-
-    // current.requestCount++;
-// import { Pool } from "pg";
+import { Pool } from "pg";
 import { streamEvents, EventHandler, RawEvent } from "./stream";
-import { createApp } from "./api";
+import { createApp, AuthMiddleware } from "./api";
 import { runMigrations } from "./migrate";
 import { PostgresDatabase } from "./db";
 import { EventStore } from "./event-store";
 import { withRetry } from "./retry";
 import { logger } from "./logger";
 import { randomUUID } from "crypto";
+import { ConfigError, IndexerConfig, loadConfig, parseStartLedger } from "./config";
 import pkg from "../package.json";
 
 // ── Config ────────────────────────────────────────────────────────────────────
-
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing required environment variable: ${name}`);
-  return value;
-}
 
 function parseEnvNumber(name: string, defaultValue: number): number {
   const value = process.env[name];
@@ -66,36 +52,56 @@ function parseEnvNumber(name: string, defaultValue: number): number {
  * integer, so malformed replay configuration fails fast.
  */
 function parseLedger(raw: string, name: string): number {
-  const trimmed = raw?.trim() ?? "";
-  if (trimmed === "") {
+  if ((raw?.trim() ?? "") === "") {
     throw new Error(`Missing required environment variable: ${name}`);
   }
-  if (!/^\d+$/.test(trimmed)) {
-    throw new Error(
-      `Invalid ledger value for ${name}: "${raw}" is not an integer. Ledger ranges are ` +
-        `inclusive on both ends and must be non-negative.`
-    );
-  }
-  const parsed = parseInt(trimmed, 10);
-  if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    throw new Error(`Invalid ledger value for ${name}: "${raw}" is out of supported bounds.`);
-  }
-  return parsed;
+  // Shares parseStartLedger's validation so a replay bound and START_LEDGER
+  // accept exactly the same values.
+  return parseStartLedger(raw, name);
 }
 
 const HOST = process.env.HOST ?? "0.0.0.0";
 const PORT = parseEnvNumber("PORT", 3000);
 
-const DATABASE_URL = process.env.DATABASE_URL || "sqlite::memory:";
-const STELLAR_RPC_URL = process.env.STELLAR_RPC_URL || "https://soroban-testnet.stellar.org";
-const CONTRACT_ID = process.env.CONTRACT_ID || "PLACEHOLDER_CONTRACT_ID";
-const START_LEDGER = parseInt(process.env.START_LEDGER || "0", 10);
+/**
+ * Validate every startup-critical variable before anything else runs.
+ *
+ * This deliberately happens at module scope, ahead of the connection pool and
+ * any migration or RPC work: a missing DATABASE_URL, an absent or malformed
+ * CONTRACT_ID, or a non-numeric START_LEDGER used to be papered over with
+ * defaults that produced an indexer which started successfully and then could
+ * never index anything. Every problem is reported together so one restart is
+ * enough to see them all.
+ */
+function loadStartupConfig(): IndexerConfig {
+  try {
+    return loadConfig();
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      logger.always("config_invalid", { problems: err.problems });
+      console.error(err.message);
+      process.exit(1);
+    }
+    throw err;
+  }
+}
+
+const {
+  databaseUrl: DATABASE_URL,
+  stellarRpcUrl: STELLAR_RPC_URL,
+  contractId: CONTRACT_ID,
+  startLedger: START_LEDGER,
+} = loadStartupConfig();
+
 const POLL_INTERVAL_MS = parseEnvNumber("POLL_INTERVAL_MS", 5000);
 
 // Feature flags
 const ENABLE_AUTH_MIDDLEWARE = process.env.ENABLE_AUTH_MIDDLEWARE === "true";
 const ENABLE_RATE_LIMITING = process.env.ENABLE_RATE_LIMITING !== "false"; // default to true
 const ENABLE_EXPERIMENTAL_ROUTES = process.env.ENABLE_EXPERIMENTAL_ROUTES === "true";
+
+/** Pass-through middleware used when ENABLE_AUTH_MIDDLEWARE is off. */
+const noopAuthMiddleware: AuthMiddleware = (_req, _res, next) => next();
 
 // ── Database ──────────────────────────────────────────────────────────────────
 
@@ -326,6 +332,8 @@ export async function recoverPendingEvents(handler: RawEventHandler): Promise<nu
     if (await processEvent(event, handler)) recovered += 1;
   }
   return recovered;
+}
+
 /**
  * Wrap a persistence handler so every event's processing outcome is durably
  * recorded on the events table (BA-030) and repeated failures are retained so
@@ -410,7 +418,7 @@ async function main(): Promise<void> {
 
   // BA-039: Bind a per-run correlation context (run id) so all log lines
   // emitted during this process share a groupable correlationId.
-  const runId = crypto.randomUUID();
+  const runId = randomUUID();
   const runLogger = logger.child({ correlationId: runId });
 
   if (replayStartLedger && replayEndLedger) {

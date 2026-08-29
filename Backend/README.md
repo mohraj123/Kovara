@@ -14,7 +14,7 @@ The indexer listens to Stellar contract events and processes them into a Postgre
 
 The following describes the main runtime flow from startup through event handling:
 
-1. **Configuration loading** (`src/index.ts`): Environment variables are validated and parsed. Required variables (`DATABASE_URL`, `STELLAR_RPC_URL`, `CONTRACT_ID`, `START_LEDGER`) must be set; optional variables have sensible defaults.
+1. **Configuration loading** (`src/config.ts`): Environment variables are validated and parsed before anything else runs. `DATABASE_URL` (which must be a `postgres://`/`postgresql://` connection string) and `CONTRACT_ID` (a 56-character Stellar `C…` contract strkey, checksum-verified) are required and have no fallback — startup fails immediately if either is missing or malformed. `STELLAR_RPC_URL` (default: Soroban testnet) and `START_LEDGER` (default: `0`, and rejected unless it is a finite non-negative integer) are optional but still validated when set. All configuration problems are reported together in a single error.
 
 2. **Database initialization** (`src/index.ts:60-126`): A PostgreSQL connection pool is created. Three initialization steps run sequentially:
    - `ensureEventsTable()` — Creates the `events` table and supporting indexes if they do not exist (idempotent via `IF NOT EXISTS`).
