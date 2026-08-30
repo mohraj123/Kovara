@@ -245,11 +245,14 @@ touch migrations/006_description.sql
 # Write DDL, then restart the indexer.
 ```
 
-### Adjusting timeouts for external dependencies
+### Adjusting timeouts and pool size for external dependencies
 
 ```bash
-# Database query timeout (ms, default 30000)
-QUERY_TIMEOUT_MS=60000
+# Database pool tuning (all optional, with documented defaults)
+DB_POOL_MAX=20
+DB_POOL_CONNECTION_TIMEOUT_MS=5000
+DB_POOL_IDLE_TIMEOUT_MS=30000
+DB_STATEMENT_TIMEOUT_MS=30000  # legacy alias: QUERY_TIMEOUT_MS
 
 # RPC fetch timeout (ms, default 15000)
 RPC_FETCH_TIMEOUT_MS=30000
@@ -257,6 +260,8 @@ RPC_FETCH_TIMEOUT_MS=30000
 # API request timeout (ms, default 30000)
 REQUEST_TIMEOUT_MS=60000
 ```
+
+For different deployment sizes, adjust `DB_POOL_MAX` (small: `5`, medium: `10`, large: `20-30`) and timeouts without rebuilding — all are env-configurable with the defaults above.
 
 ### Monitoring the indexer
 
@@ -377,7 +382,11 @@ See [`.env.example`](.env.example) for all required variables.
 | `GIT_COMMIT`           | Git commit hash (populated in `/version` response)                 |
 | `BUILD_TIME`           | ISO 8601 build timestamp (populated in `/version` response)        |
 | `CORS_ORIGIN`          | Allowed CORS origin(s) (default: all)  |
-| `QUERY_TIMEOUT_MS`     | Database query timeout in milliseconds (default: `30000`)          |
+| `DB_POOL_MAX`          | PostgreSQL pool max clients (default: `10`)                         |
+| `DB_POOL_CONNECTION_TIMEOUT_MS` | PostgreSQL pool connection timeout in ms (default: `5000`, `0` = no timeout) |
+| `DB_POOL_IDLE_TIMEOUT_MS` | PostgreSQL pool idle timeout in ms (default: `30000`)              |
+| `DB_STATEMENT_TIMEOUT_MS` | PostgreSQL statement timeout in ms (default: `30000`; legacy alias `QUERY_TIMEOUT_MS` still honored) |
+| `QUERY_TIMEOUT_MS`     | Legacy alias for `DB_STATEMENT_TIMEOUT_MS` (default: `30000`)      |
 | `RPC_FETCH_TIMEOUT_MS` | Soroban RPC fetch timeout in milliseconds (default: `15000`)       |
 | `REQUEST_TIMEOUT_MS`   | HTTP request timeout in milliseconds (default: `30000`)            |
 | `ENABLE_AUTH_MIDDLEWARE` | Enable authentication middleware (default: `false`)                |

@@ -91,6 +91,7 @@ const {
   stellarRpcUrl: STELLAR_RPC_URL,
   contractId: CONTRACT_ID,
   startLedger: START_LEDGER,
+  dbPool: DB_POOL_CONFIG,
 } = loadStartupConfig();
 
 const POLL_INTERVAL_MS = parseEnvNumber("POLL_INTERVAL_MS", 5000);
@@ -107,7 +108,10 @@ const noopAuthMiddleware: AuthMiddleware = (_req, _res, next) => next();
 
 const pgPool = new Pool({
   connectionString: DATABASE_URL,
-  statement_timeout: parseInt(process.env["QUERY_TIMEOUT_MS"] ?? "", 10) || 30_000,
+  max: DB_POOL_CONFIG.max,
+  connectionTimeoutMillis: DB_POOL_CONFIG.connectionTimeoutMillis,
+  idleTimeoutMillis: DB_POOL_CONFIG.idleTimeoutMillis,
+  statement_timeout: DB_POOL_CONFIG.statementTimeoutMillis,
 });
 
 async function ensureEventsTable(): Promise<void> {

@@ -1,10 +1,15 @@
 import {
   ConfigError,
+  DEFAULT_DB_POOL_CONNECTION_TIMEOUT_MS,
+  DEFAULT_DB_POOL_IDLE_TIMEOUT_MS,
+  DEFAULT_DB_POOL_MAX,
+  DEFAULT_DB_STATEMENT_TIMEOUT_MS,
   DEFAULT_START_LEDGER,
   DEFAULT_STELLAR_RPC_URL,
   isValidContractId,
   loadConfig,
   parseContractId,
+  parseDatabasePoolConfig,
   parseDatabaseUrl,
   parseStartLedger,
   parseStellarRpcUrl,
@@ -187,6 +192,12 @@ describe("loadConfig", () => {
       stellarRpcUrl: "https://soroban-testnet.stellar.org",
       contractId: VALID_CONTRACT_ID,
       startLedger: 1234,
+      dbPool: {
+        max: DEFAULT_DB_POOL_MAX,
+        connectionTimeoutMillis: DEFAULT_DB_POOL_CONNECTION_TIMEOUT_MS,
+        idleTimeoutMillis: DEFAULT_DB_POOL_IDLE_TIMEOUT_MS,
+        statementTimeoutMillis: DEFAULT_DB_STATEMENT_TIMEOUT_MS,
+      },
     });
   });
 
@@ -197,6 +208,12 @@ describe("loadConfig", () => {
     });
     expect(config.stellarRpcUrl).toBe(DEFAULT_STELLAR_RPC_URL);
     expect(config.startLedger).toBe(DEFAULT_START_LEDGER);
+    expect(config.dbPool).toEqual({
+      max: DEFAULT_DB_POOL_MAX,
+      connectionTimeoutMillis: DEFAULT_DB_POOL_CONNECTION_TIMEOUT_MS,
+      idleTimeoutMillis: DEFAULT_DB_POOL_IDLE_TIMEOUT_MS,
+      statementTimeoutMillis: DEFAULT_DB_STATEMENT_TIMEOUT_MS,
+    });
   });
 
   it("fails when DATABASE_URL is missing", () => {
@@ -235,6 +252,62 @@ describe("loadConfig", () => {
     } finally {
       process.env = previous as NodeJS.ProcessEnv;
     }
+  });
+
+  it("honors pool tuning env vars", () => {
+    const cfg = loadConfig(
+      validEnv({
+        DB_POOL_MAX: "20",
+        DB_POOL_CONNECTION_TIMEOUT_MS: "8000",
+        DB_POOL_IDLE_TIMEOUT_MS: "15000",
+        DB_STATEMENT_TIMEOUT_MS: "60000",
+      })
+    );
+    expect(cfg.dbPool).toEqual({
+      max: 20,
+      connectionTimeoutMillis: 8000,
+      idleTimeoutMillis: 15000,
+      statementTimeoutMillis: 60000,
+    });
+  });
+
+  it("honors legacy QUERY_TIMEOUT_MS alias for statement timeout", () => {
+    const cfg = loadConfig(validEnv({ QUERY_TIMEOUT_MS: "45000" }));
+    expect(cfg.dbPool.statementTimeoutMillis).toBe(45000);
+  });
+
+  it("prefers DB_STATEMENT_TIMEOUT_MS over QUERY_TIMEOUT_MS", () => {
+    const cfg = loadConfig(validEnv({ DB_STATEMENT_TIMEOUT_MS: "60000", QUERY_TIMEOUT_MS: "1000" }));
+    expect(cfg.dbPool.statementTimeoutMillis).toBe(60000);
+  });
+});
+
+describe("parseDatabasePoolConfig", () => {
+  it("returns documented defaults when no pool env vars are set", () => {
+    expect(parseDatabasePoolConfig({})).toEqual({
+      max: DEFAULT_DB_POOL_MAX,
+      connectionTimeoutMillis: DEFAULT_DB_POOL_CONNECTION_TIMEOUT_MS,
+      idleTimeoutMillis: DEFAULT_DB_POOL_IDLE_TIMEOUT_MS,
+      statementTimeoutMillis: DEFAULT_DB_STATEMENT_TIMEOUT_MS,
+    });
+  });
+
+  it("rejects non-integer pool size", () => {
+    expect(() => parseDatabasePoolConfig({ DB_POOL_MAX: "abc" })).toThrow(/DB_POOL_MAX/);
+  });
+
+  it("rejects out-of-range pool size", () => {
+    expect(() => parseDatabasePoolConfig({ DB_POOL_MAX: "0" })).toThrow(/DB_POOL_MAX/);
+    expect(() => parseDatabasePoolConfig({ DB_POOL_MAX: "999" })).toThrow(/DB_POOL_MAX/);
+  });
+
+  it("rejects non-integer timeouts", () => {
+    expect(() => parseDatabasePoolConfig({ DB_POOL_IDLE_TIMEOUT_MS: "1.5" })).toThrow(
+      /DB_POOL_IDLE_TIMEOUT_MS/
+    );
+    expect(() => parseDatabasePoolConfig({ DB_POOL_CONNECTION_TIMEOUT_MS: "abc" })).toThrow(
+      /DB_POOL_CONNECTION_TIMEOUT_MS/
+    );
   });
 });
 
