@@ -419,15 +419,19 @@ export async function streamEvents(
         try {
           await handler(normalizedEvent);
         } catch (err) {
-          logger.error("handler_error", {
-            eventId: normalizedEvent.id,
-            eventType: normalizedEvent.type,
-            err,
-          });
-          console.error(
-            `[stream] Handler error for event ${normalizedEvent.id} (type=${normalizedEvent.type}), will retry:`,
-            err
-          );
+          if (err instanceof Error) {
+            logger.errorWithContext(
+              `Handler error for event ${normalizedEvent.id} (type=${normalizedEvent.type}), will retry`,
+              err,
+              { eventId: normalizedEvent.id, eventType: normalizedEvent.type }
+            );
+          } else {
+            logger.error("handler_error", {
+              eventId: normalizedEvent.id,
+              eventType: normalizedEvent.type,
+              err,
+            });
+          }
           pageFailed = true;
           break;
           // BA-031: Route repeated failures to the durable dead-letter path so
@@ -493,7 +497,15 @@ export async function streamEvents(
       // BA-035: grow the backoff on consecutive failures, capped, and abortable.
       consecutiveFailures += 1;
       backoffMs = Math.min(MAX_BACKOFF_MS, backoffMs * 2);
-      logger.error("Error fetching events:", err);
+      if (err instanceof Error) {
+        logger.errorWithContext(
+          "Error fetching events from RPC provider",
+          err,
+          { consecutiveFailures, backoffMs, operation: "event_fetch" }
+        );
+      } else {
+        logger.error("Error fetching events:", err);
+      }
     }
 
     await new Promise<void>((resolve) => {
@@ -619,7 +631,15 @@ export async function replayLedgerRange(
             await handler(normalized);
             totalDispatched++;
           } catch (err) {
-            logger.error("replay_handler_error", { eventId: normalized.id, err });
+            if (err instanceof Error) {
+              logger.errorWithContext(
+                `Replay handler error for event ${normalized.id}`,
+                err,
+                { eventId: normalized.id, ledger }
+              );
+            } else {
+              logger.error("replay_handler_error", { eventId: normalized.id, err });
+            }
           }
 
           cursor = normalized.pagingToken;
@@ -640,7 +660,15 @@ export async function replayLedgerRange(
           }
         }
       } catch (err) {
-        logger.error("replay_fetch_error", { ledger, err });
+        if (err instanceof Error) {
+          logger.errorWithContext(
+            `Error fetching events for ledger ${ledger}`,
+            err,
+            { ledger, operation: "replay_fetch" }
+          );
+        } else {
+          logger.error("replay_fetch_error", { ledger, err });
+        }
         hasMore = false;
       }
     }

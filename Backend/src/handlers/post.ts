@@ -80,7 +80,15 @@ export async function handlePostCreated(
       logger.always(`Post ${id} created by ${author}`);
     }
   } catch (error) {
-    logger.error(`Error handling PostCreatedEvent for post ${id}:`, error);
+    if (error instanceof Error) {
+      logger.errorWithContext(
+        `Error handling PostCreatedEvent for post ${id}`,
+        error,
+        { postId: id, author, operation: "post_created" }
+      );
+    } else {
+      logger.error(`Error handling PostCreatedEvent for post ${id}:`, error);
+    }
     throw error;
   }
 }
@@ -122,7 +130,15 @@ export async function handlePostDeleted(
       logger.always(`Post ${post_id} deleted by ${author}`);
     }
   } catch (error) {
-    logger.error(`Error handling PostDeletedEvent for post ${post_id}:`, error);
+    if (error instanceof Error) {
+      logger.errorWithContext(
+        `Error handling PostDeletedEvent for post ${post_id}`,
+        error,
+        { postId: post_id, author, operation: "post_deleted" }
+      );
+    } else {
+      logger.error(`Error handling PostDeletedEvent for post ${post_id}:`, error);
+    }
     throw error;
   }
 }

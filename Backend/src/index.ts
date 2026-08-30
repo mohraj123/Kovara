@@ -535,7 +535,15 @@ async function main(): Promise<void> {
     (event) => processEvent(event, (e) => handleEvent(e, db)),
     abortController.signal,
   ).catch((err) => {
-    logger.error("stream_fatal", { err });
+    if (err instanceof Error) {
+      logger.errorWithContext(
+        "Fatal error in event stream",
+        err,
+        { operation: "stream", errorCode: "STREAM_FATAL" }
+      );
+    } else {
+      logger.error("stream_fatal", { err });
+    }
   });
 
 // Create and start API server
@@ -575,6 +583,14 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  logger.error("Fatal error:", err);
+  if (err instanceof Error) {
+    logger.errorWithContext(
+      "Fatal error during application startup",
+      err,
+      { errorCode: "STARTUP_FATAL" }
+    );
+  } else {
+    logger.error("Fatal error:", err);
+  }
   process.exit(1);
 });
