@@ -6,6 +6,10 @@ import crypto from "crypto";
 import { Database } from "../db";
 import { ApiErrorResponse, DebugSnapshot } from "./contracts";
 import pkg from "../../package.json";
+import {
+  addressRateLimiter,
+  setAddressRateLimit,
+} from "../middleware/address-rate-limit";
 
 const VERSION = pkg.version;
 
@@ -118,6 +122,20 @@ const TRUST_PROXY = process.env.TRUST_PROXY ?? "0";
 const RATE_LIMIT_WINDOW_MS = parseEnvNumber("RATE_LIMIT_WINDOW_MS", 60000);
 const RATE_LIMIT_MAX = parseEnvNumber("RATE_LIMIT_MAX", 100);
 
+// ── Address rate-limit configuration (Issue #616) ──────────────────────────
+// These are read once at startup so the middleware factory uses them by default.
+// Tests can override via setAddressRateLimit() before calling createApp().
+const ADDRESS_RATE_LIMIT_WINDOW_MS = parseEnvNumber(
+  "ADDRESS_RATE_LIMIT_WINDOW_MS",
+  60_000
+);
+const ADDRESS_RATE_LIMIT_MAX = parseEnvNumber("ADDRESS_RATE_LIMIT_MAX", 100);
+setAddressRateLimit(ADDRESS_RATE_LIMIT_WINDOW_MS, ADDRESS_RATE_LIMIT_MAX);
+
+// Re-export so tests (and callers) can adjust address limits without importing
+// the middleware module directly.
+export { setAddressRateLimit } from "../middleware/address-rate-limit";
+
 // ── Database error detection ───────────────────────────────────────────────
 
 const DB_ERROR_PATTERNS = [
@@ -216,29 +234,31 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
     });
   });
 
-// Apply rate limiting to all /api routes if enabled
-if (process.env.ENABLE_RATE_LIMITING !== "false") {
-  const apiLimiter = createLimiter();
-  app.use("/api", apiLimiter);
-}
+  // ── Rate limiting ──────────────────────────────────────────────────────────
+  // Apply rate limiting to all /api routes if enabled.
+  if (process.env.ENABLE_RATE_LIMITING !== "false") {
+    const apiLimiter = createLimiter();
+    app.use("/api", apiLimiter);
 
-// BE-25: Apply the auth middleware to all /api routes after rate limiting.
-// Routes registered below this line are covered; the health check above is
-// intentionally excluded.
-// Note: authMiddleware is now passed via options to createApp, so we don't apply it here.
-// Instead, it's applied in the app factory (see createApp function).
-// We keep this comment for historical context but the actual middleware application
-// happens in the options passed to createApp.
-// app.use("/api", authMiddleware);
+    // Issue #616: per-address rate limiting — applied after the IP limiter so
+    // requests that exceed the IP limit are already rejected before we inspect
+    // the Stellar address.
+    app.use("/api", addressRateLimiter());
+  }
 
-app.use("/api/profiles", createProfilesRouter(db));
-app.use("/api/posts", createPostsRouter(db));
-app.use("/api/follows", createFollowsRouter(db));
+  // BE-25: Apply the auth middleware to all /api routes after rate limiting.
+  // Routes registered below this line are covered; the health check above is
+  // intentionally excluded.
+  app.use("/api", authMiddleware);
 
-// Conditionally mount experimental routes
-if (process.env.EXPERIMENTAL_FEATURES === "true") {
-  app.use("/api/pools", createPoolsRouter(db));
-}
+  app.use("/api/profiles", createProfilesRouter(db));
+  app.use("/api/posts", createPostsRouter(db));
+  app.use("/api/follows", createFollowsRouter(db));
+
+  // Conditionally mount experimental routes
+  if (process.env.EXPERIMENTAL_FEATURES === "true") {
+    app.use("/api/pools", createPoolsRouter(db));
+  }
 
   interface SearchQuery {
     query: string;
