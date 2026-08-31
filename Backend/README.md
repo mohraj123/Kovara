@@ -137,9 +137,28 @@ The `version` field is read from `package.json`. The `git_commit` and
 
 ## API Routes
 
+## API Versioning and Deprecation
+
+All public data API endpoints use a major-version prefix. The current stable
+contract is **v1**, at `/api/v1`; for example,
+`GET /api/v1/profiles/:address`. The health (`/health`) and build metadata
+(`GET /version`) endpoints are operational endpoints and are intentionally not
+versioned.
+
+The existing unversioned `/api/*` paths remain temporarily available for v1
+compatibility. Their responses include `Deprecation: true` and a
+`Link: </api/v1/...>; rel="successor-version"` header. New integrations must
+use `/api/v1`.
+
+Breaking changes are introduced only in a new major API version (for example,
+`/api/v2`). We will document the replacement before release, keep the prior
+major version available for at least six months after announcing deprecation,
+and publish the planned removal date in the release notes and this README.
+Non-breaking additions may be made within an existing major version.
+
 ### Profiles
 
-- `GET /api/profiles/:address` — Get profile by Stellar address
+- `GET /api/v1/profiles/:address` — Get profile by Stellar address
 
 ### Version
 
@@ -147,22 +166,22 @@ The `version` field is read from `package.json`. The `git_commit` and
 
 ### Posts
 
-- `GET /api/posts?author=<address>&limit=<n>&offset=<n>` — List posts
-- `GET /api/posts/:id` — Get post by numeric ID
-- `POST /api/search/posts` — Full-text search (body: `{ "query": "...", "limit?", "offset?" }`)
+- `GET /api/v1/posts?author=<address>&limit=<n>&offset=<n>` — List posts
+- `GET /api/v1/posts/:id` — Get post by numeric ID
+- `POST /api/v1/search/posts` — Full-text search (body: `{ "query": "...", "limit?", "offset?" }`)
 
 ### Follows
 
-- `GET /api/follows/:address/followers?limit=<n>&offset=<n>` — List followers
-- `GET /api/follows/:address/following?limit=<n>&offset=<n>` — List accounts the address follows
+- `GET /api/v1/follows/:address/followers?limit=<n>&offset=<n>` — List followers
+- `GET /api/v1/follows/:address/following?limit=<n>&offset=<n>` — List accounts the address follows
 
 ### Pools (Experimental)
 
-- `GET /api/pools/:id` — Get pool state by ID (enabled via `EXPERIMENTAL_FEATURES=true`)
+- `GET /api/v1/pools/:id` — Get pool state by ID (enabled via `EXPERIMENTAL_FEATURES=true`)
 
 ### Debug Snapshot (BE-29)
 
-- `GET /api/debug/snapshot` — Export a JSON snapshot of posts, profiles, and pools for issue triage
+- `GET /api/v1/debug/snapshot` — Export a JSON snapshot of posts, profiles, and pools for issue triage
 
 Requires the `x-debug-token` header matching the `DEBUG_TOKEN` environment variable. If `DEBUG_TOKEN` is not set, the endpoint returns `503 Debug endpoint disabled`.
 
