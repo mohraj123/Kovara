@@ -398,8 +398,10 @@ export async function streamEvents(
           continue;
         }
 
-        // BE-42: Skip events that do not match the configured event type filter.
-        if (config.eventTypeFilter && !config.eventTypeFilter.includes(normalizedEvent.type)) {
+        if (
+          config.eventTypeFilter &&
+          !config.eventTypeFilter.includes(normalizedEvent.topic[0] ?? "")
+        ) {
           cursor = normalizedEvent.pagingToken;
           continue;
         }
@@ -610,7 +612,10 @@ export async function replayLedgerRange(
             continue;
           }
 
-          if (config.eventTypeFilter && !config.eventTypeFilter.includes(normalized.type)) {
+          if (
+            config.eventTypeFilter &&
+            !config.eventTypeFilter.includes(normalized.topic[0] ?? "")
+          ) {
             cursor = normalized.pagingToken;
             continue;
           }

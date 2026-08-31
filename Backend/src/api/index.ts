@@ -6,6 +6,10 @@ import crypto from "crypto";
 import { Database } from "../db";
 import { ApiErrorResponse, DebugSnapshot } from "./contracts";
 import pkg from "../../package.json";
+import {
+  addressRateLimiter,
+  setAddressRateLimit,
+} from "../middleware/address-rate-limit";
 
 const VERSION = pkg.version;
 const API_V1_PREFIX = "/api/v1";
@@ -119,6 +123,20 @@ const _PORT = parseEnvNumber("PORT", 3000);
 const TRUST_PROXY = process.env.TRUST_PROXY ?? "0";
 const RATE_LIMIT_WINDOW_MS = parseEnvNumber("RATE_LIMIT_WINDOW_MS", 60000);
 const RATE_LIMIT_MAX = parseEnvNumber("RATE_LIMIT_MAX", 100);
+
+// ── Address rate-limit configuration (Issue #616) ──────────────────────────
+// These are read once at startup so the middleware factory uses them by default.
+// Tests can override via setAddressRateLimit() before calling createApp().
+const ADDRESS_RATE_LIMIT_WINDOW_MS = parseEnvNumber(
+  "ADDRESS_RATE_LIMIT_WINDOW_MS",
+  60_000
+);
+const ADDRESS_RATE_LIMIT_MAX = parseEnvNumber("ADDRESS_RATE_LIMIT_MAX", 100);
+setAddressRateLimit(ADDRESS_RATE_LIMIT_WINDOW_MS, ADDRESS_RATE_LIMIT_MAX);
+
+// Re-export so tests (and callers) can adjust address limits without importing
+// the middleware module directly.
+export { setAddressRateLimit } from "../middleware/address-rate-limit";
 
 // ── Database error detection ───────────────────────────────────────────────
 
