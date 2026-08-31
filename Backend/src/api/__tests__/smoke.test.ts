@@ -85,6 +85,24 @@ describe("Smoke Tests", () => {
     });
   });
 
+  describe("API versioning", () => {
+    it("serves version 1 routes under /api/v1", async () => {
+      const res = await request(app).get("/api/v1/profiles/test");
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ code: "INVALID_ADDRESS" });
+    });
+
+    it("keeps unversioned routes compatible and marks them deprecated", async () => {
+      const res = await request(app).get("/api/profiles/test");
+
+      expect(res.status).toBe(400);
+      expect(res.headers.deprecation).toBe("true");
+      expect(res.headers.link).toContain("/api/v1/profiles/test");
+      expect(res.headers.link).toContain('rel="successor-version"');
+    });
+  });
+
   describe("Server startup", () => {
     it("creates an app without throwing", () => {
       expect(() => createApp(db)).not.toThrow();

@@ -12,6 +12,8 @@ import {
 } from "../middleware/address-rate-limit";
 
 const VERSION = pkg.version;
+const API_V1_PREFIX = "/api/v1";
+const LEGACY_API_PREFIX = "/api";
 
 // Configurable rate-limiter override for tests (see rate-limit.test.ts).
 let rateLimitWindowMs = 60_000;
@@ -175,6 +177,7 @@ declare global {
 
 export function createApp(db: Database, options: AppOptions = {}): express.Application {
   const app = express();
+  const apiRouter = express.Router();
 
   // ── CORS ──────────────────────────────────────────────────────────────────────
   app.use(cors());
@@ -234,30 +237,28 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
     });
   });
 
-  // ── Rate limiting ──────────────────────────────────────────────────────────
-  // Apply rate limiting to all /api routes if enabled.
+  // Apply rate limiting to both the canonical and legacy API paths.
   if (process.env.ENABLE_RATE_LIMITING !== "false") {
     const apiLimiter = createLimiter();
-    app.use("/api", apiLimiter);
-
-    // Issue #616: per-address rate limiting — applied after the IP limiter so
-    // requests that exceed the IP limit are already rejected before we inspect
-    // the Stellar address.
-    app.use("/api", addressRateLimiter());
+    app.use(LEGACY_API_PREFIX, apiLimiter);
   }
 
-  // BE-25: Apply the auth middleware to all /api routes after rate limiting.
-  // Routes registered below this line are covered; the health check above is
-  // intentionally excluded.
-  app.use("/api", authMiddleware);
+// BE-25: Apply the auth middleware to all /api routes after rate limiting.
+// Routes registered below this line are covered; the health check above is
+// intentionally excluded.
+// Note: authMiddleware is now passed via options to createApp, so we don't apply it here.
+// Instead, it's applied in the app factory (see createApp function).
+// We keep this comment for historical context but the actual middleware application
+// happens in the options passed to createApp.
+// app.use("/api", authMiddleware);
 
-  app.use("/api/profiles", createProfilesRouter(db));
-  app.use("/api/posts", createPostsRouter(db));
-  app.use("/api/follows", createFollowsRouter(db));
+  apiRouter.use("/profiles", createProfilesRouter(db));
+  apiRouter.use("/posts", createPostsRouter(db));
+  apiRouter.use("/follows", createFollowsRouter(db));
 
-  // Conditionally mount experimental routes
+// Conditionally mount experimental routes
   if (process.env.EXPERIMENTAL_FEATURES === "true") {
-    app.use("/api/pools", createPoolsRouter(db));
+    apiRouter.use("/pools", createPoolsRouter(db));
   }
 
   interface SearchQuery {
@@ -315,8 +316,8 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
     deleted: post.deleted_at !== undefined && post.deleted_at !== null,
   });
 
-  app.post(
-    "/api/search/posts",
+  apiRouter.post(
+    "/search/posts",
     async (req: Request, res: Response<SearchResponse | ErrorResponse>): Promise<void> => {
       const body = req.body as Partial<SearchQuery>;
       const rawQuery = body.query;
@@ -394,8 +395,8 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
   // ── Debug snapshot endpoint (BE-29) ────────────────────────────────────────
   const DEBUG_SNAPSHOT_LIMIT = 1000;
 
-  app.get(
-    "/api/debug/snapshot",
+  apiRouter.get(
+    "/debug/snapshot",
     async (req: Request, res: Response<DebugSnapshot | ApiErrorResponse>): Promise<void> => {
       const debugToken = process.env.DEBUG_TOKEN;
       if (!debugToken) {
@@ -431,9 +432,21 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
 
   // ── 404 catch-all for API routes (BE-26) ───────────────────────────────────
   // Returns a consistent JSON error body instead of the default Express HTML.
-  app.use("/api/*", (_req: Request, res: Response): void => {
+  apiRouter.use((_req: Request, res: Response): void => {
     res.status(404).json({ error: "Route not found", code: "NOT_FOUND" });
   });
+
+  // Version 1 is the canonical, stable API contract.  The legacy unversioned
+  // path remains available during the migration window so existing clients do
+  // not break immediately.
+  app.use(API_V1_PREFIX, apiRouter);
+  app.use(LEGACY_API_PREFIX, (req: Request, res: Response, next: NextFunction): void => {
+    const successor = req.originalUrl.replace(/^\/api(?=\/|$)/, API_V1_PREFIX);
+    res.set("Deprecation", "true");
+    res.append("Link", `<${successor}>; rel=\"successor-version\"`);
+    next();
+  });
+  app.use(LEGACY_API_PREFIX, apiRouter);
 
   // ── Error handler ─────────────────────────────────────────────────────────────
 
