@@ -13,9 +13,70 @@
  * without issuing a database write.
  */
 import { Pool } from "pg";
+import {
+  DatabasePoolConfig,
+  DEFAULT_DB_POOL_CONNECTION_TIMEOUT_MS,
+  DEFAULT_DB_POOL_IDLE_TIMEOUT_MS,
+  DEFAULT_DB_POOL_MAX,
+  DEFAULT_DB_STATEMENT_TIMEOUT_MS,
+  parseDatabasePoolConfig,
+} from "./config";
 
-/** Default query timeout in milliseconds (30s). */
-const DEFAULT_QUERY_TIMEOUT = 30_000;
+/** Default query timeout in milliseconds (30s). @deprecated Use DEFAULT_DB_STATEMENT_TIMEOUT_MS */
+const DEFAULT_QUERY_TIMEOUT = DEFAULT_DB_STATEMENT_TIMEOUT_MS;
+
+/**
+ * PostgreSQL pool defaults — re-exported here so callers that only import
+ * from `db.ts` can discover tuning knobs without importing `config.ts`.
+ *
+ * All values are configurable via environment variables (see `config.ts` and
+ * `.env.example`):
+ *  - `DB_POOL_MAX` (default 10) — maximum clients in the pool
+ *  - `DB_POOL_CONNECTION_TIMEOUT_MS` (default 5000) — connection timeout
+ *  - `DB_POOL_IDLE_TIMEOUT_MS` (default 30000) — idle timeout
+ *  - `DB_STATEMENT_TIMEOUT_MS` / `QUERY_TIMEOUT_MS` (default 30000) — per-query timeout
+ */
+export const DEFAULT_POOL_MAX = DEFAULT_DB_POOL_MAX;
+export const DEFAULT_POOL_CONNECTION_TIMEOUT_MS = DEFAULT_DB_POOL_CONNECTION_TIMEOUT_MS;
+export const DEFAULT_POOL_IDLE_TIMEOUT_MS = DEFAULT_DB_POOL_IDLE_TIMEOUT_MS;
+export const DEFAULT_STATEMENT_TIMEOUT_MS = DEFAULT_DB_STATEMENT_TIMEOUT_MS;
+
+/** Options accepted by {@link createPool} / {@link buildPoolConfig}. */
+export interface PoolConfig extends DatabasePoolConfig {
+  connectionString: string;
+}
+
+/**
+ * Build a `pg.Pool` config from env vars with documented defaults.
+ * Pool size, connection timeout, idle timeout, and statement timeout are all
+ * configurable without code changes, enabling tuning for small vs large deployments.
+ */
+export function buildPoolConfig(
+  connectionString: string,
+  env: Record<string, string | undefined> = process.env
+): PoolConfig {
+  const pool = parseDatabasePoolConfig(env);
+  return { connectionString, ...pool };
+}
+
+/**
+ * Create a `pg.Pool` with env-configurable size and timeouts.
+ * Prefer this over `new Pool({ connectionString })` so deployments can tune
+ * the pool without a rebuild.
+ */
+export function createPool(
+  connectionString: string,
+  env: Record<string, string | undefined> = process.env
+): Pool {
+  const cfg = buildPoolConfig(connectionString, env);
+  return new Pool({
+    connectionString: cfg.connectionString,
+    max: cfg.max,
+    connectionTimeoutMillis: cfg.connectionTimeoutMillis,
+    idleTimeoutMillis: cfg.idleTimeoutMillis,
+    statement_timeout: cfg.statementTimeoutMillis,
+  });
+}
 
 // BA-028: Convert a value to bigint without silently losing precision.
 //
@@ -716,9 +777,22 @@ export class PostgresDatabase implements Database {
     query: string;
     limit: number;
     offset: number;
-  }): Promise<{ posts: Post[]; total: number }> {
-    const { query, limit, offset } = filters;
-    const normalizedQuery = query.trim().replace(/\s+/g, " ");
+  }): Promise<{ posts: Post[]; total: number }>;
+  async searchPosts(query: string, limit: number, offset: number): Promise<{
+    posts: SearchedPost[];
+    total: number;
+  }>;
+  async searchPosts(
+    filtersOrQuery: { query: string; limit: number; offset: number } | string,
+    limit?: number,
+    offset?: number
+  ): Promise<{ posts: Post[]; total: number } | { posts: SearchedPost[]; total: number }> {
+    const filters =
+      typeof filtersOrQuery === "string"
+        ? { query: filtersOrQuery, limit: limit!, offset: offset! }
+        : filtersOrQuery;
+    const { query: q, limit: lim, offset: off } = filters as { query: string; limit: number; offset: number };
+    const normalizedQuery = q.trim().replace(/\s+/g, " ");
 
     if (normalizedQuery === "") {
       return { posts: [], total: 0 };
@@ -749,7 +823,7 @@ export class PostgresDatabase implements Database {
       ORDER BY created_at DESC
       LIMIT $2 OFFSET $3
       `,
-      [normalizedQuery, limit, offset]
+      [normalizedQuery, lim, off]
     );
 
     return {

@@ -28,12 +28,25 @@ export class ConfigError extends Error {
   }
 }
 
+/** PostgreSQL pool tuning — all values are in the validated startup config. */
+export interface DatabasePoolConfig {
+  /** Maximum number of clients in the pool (`max`). */
+  max: number;
+  /** How long to wait for a connection before timing out (`connectionTimeoutMillis`). */
+  connectionTimeoutMillis: number;
+  /** How long a client may sit idle before being closed (`idleTimeoutMillis`). */
+  idleTimeoutMillis: number;
+  /** Per-query statement timeout (`statement_timeout`). */
+  statementTimeoutMillis: number;
+}
+
 /** The validated configuration the indexer starts from. */
 export interface IndexerConfig {
   databaseUrl: string;
   stellarRpcUrl: string;
   contractId: string;
   startLedger: number;
+  dbPool: DatabasePoolConfig;
 }
 
 /** A `process.env`-shaped source of raw values. */
@@ -250,6 +263,111 @@ export function parseStellarRpcUrl(raw: string | undefined): string {
   return value;
 }
 
+// ── Database pool ────────────────────────────────────────────────────────────
+
+/** Default maximum pool size (pg default: 10). */
+export const DEFAULT_DB_POOL_MAX = 10;
+
+/** Default connection timeout in ms (pg default: 0 = no timeout; we use 5s to fail fast). */
+export const DEFAULT_DB_POOL_CONNECTION_TIMEOUT_MS = 5_000;
+
+/** Default idle timeout in ms before a client is closed (pg default: 10_000; we use 30s). */
+export const DEFAULT_DB_POOL_IDLE_TIMEOUT_MS = 30_000;
+
+/** Default per-query statement timeout in ms. */
+export const DEFAULT_DB_STATEMENT_TIMEOUT_MS = 30_000;
+
+/**
+ * Parse a positive integer env var with a default and range validation.
+ * Empty/undefined → default. Non-integer, out-of-range, or NaN → ConfigError.
+ */
+function parsePositiveIntEnv(
+  raw: string | undefined,
+  name: string,
+  defaultValue: number,
+  opts: { min?: number; max?: number } = {}
+): number {
+  const min = opts.min ?? 1;
+  const max = opts.max ?? Number.MAX_SAFE_INTEGER;
+  const trimmed = raw?.trim() ?? "";
+  if (trimmed === "") return defaultValue;
+  if (!/^\d+$/.test(trimmed)) {
+    throw new ConfigError([`${name} must be a non-negative integer (milliseconds or count), but was "${raw}"`]);
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    throw new ConfigError([`${name} must be an integer between ${min} and ${max}, but was "${raw}"`]);
+  }
+  return parsed;
+}
+
+export function parseDbPoolMax(raw: string | undefined): number {
+  return parsePositiveIntEnv(raw, "DB_POOL_MAX", DEFAULT_DB_POOL_MAX, { min: 1, max: 100 });
+}
+
+export function parseDbPoolConnectionTimeoutMs(raw: string | undefined): number {
+  // Allow 0 to mean "no timeout" (pg semantics) but default to 5s.
+  const v = raw?.trim() ?? "";
+  if (v === "") return DEFAULT_DB_POOL_CONNECTION_TIMEOUT_MS;
+  if (!/^\d+$/.test(v)) {
+    throw new ConfigError([`DB_POOL_CONNECTION_TIMEOUT_MS must be a non-negative integer (milliseconds), but was "${raw}"`]);
+  }
+  const n = Number(v);
+  if (!Number.isSafeInteger(n) || n < 0 || n > 600_000) {
+    throw new ConfigError([`DB_POOL_CONNECTION_TIMEOUT_MS must be between 0 and 600000, but was "${raw}"`]);
+  }
+  return n;
+}
+
+export function parseDbPoolIdleTimeoutMs(raw: string | undefined): number {
+  const v = raw?.trim() ?? "";
+  if (v === "") return DEFAULT_DB_POOL_IDLE_TIMEOUT_MS;
+  if (!/^\d+$/.test(v)) {
+    throw new ConfigError([`DB_POOL_IDLE_TIMEOUT_MS must be a non-negative integer (milliseconds), but was "${raw}"`]);
+  }
+  const n = Number(v);
+  if (!Number.isSafeInteger(n) || n < 0 || n > 600_000) {
+    throw new ConfigError([`DB_POOL_IDLE_TIMEOUT_MS must be between 0 and 600000, but was "${raw}"`]);
+  }
+  return n;
+}
+
+export function parseDbStatementTimeoutMs(raw: string | undefined): number {
+  const v = raw?.trim() ?? "";
+  if (v === "") return DEFAULT_DB_STATEMENT_TIMEOUT_MS;
+  if (!/^\d+$/.test(v)) {
+    throw new ConfigError([`DB_STATEMENT_TIMEOUT_MS must be a non-negative integer (milliseconds), but was "${raw}"`]);
+  }
+  const n = Number(v);
+  if (!Number.isSafeInteger(n) || n < 0 || n > 600_000) {
+    throw new ConfigError([`DB_STATEMENT_TIMEOUT_MS must be between 0 and 600000, but was "${raw}"`]);
+  }
+  return n;
+}
+
+/**
+ * Resolve the database pool config from env, supporting both the new
+ * `DB_*` names and the legacy `QUERY_TIMEOUT_MS` alias for the statement timeout.
+ * `DB_STATEMENT_TIMEOUT_MS` takes precedence over `QUERY_TIMEOUT_MS`.
+ */
+export function parseDatabasePoolConfig(env: EnvSource = process.env): DatabasePoolConfig {
+  const max = parsePositiveIntEnv(env.DB_POOL_MAX ?? env.DATABASE_POOL_MAX, "DB_POOL_MAX", DEFAULT_DB_POOL_MAX, {
+    min: 1,
+    max: 100,
+  });
+  const connectionTimeoutMillis = parseDbPoolConnectionTimeoutMs(
+    env.DB_POOL_CONNECTION_TIMEOUT_MS ?? env.DATABASE_CONNECTION_TIMEOUT_MS
+  );
+  const idleTimeoutMillis = parseDbPoolIdleTimeoutMs(
+    env.DB_POOL_IDLE_TIMEOUT_MS ?? env.DATABASE_IDLE_TIMEOUT_MS
+  );
+  // Statement timeout: prefer DB_STATEMENT_TIMEOUT_MS, fallback to legacy QUERY_TIMEOUT_MS.
+  const statementRaw = env.DB_STATEMENT_TIMEOUT_MS ?? env.QUERY_TIMEOUT_MS;
+  const statementTimeoutMillis = parseDbStatementTimeoutMs(statementRaw);
+
+  return { max, connectionTimeoutMillis, idleTimeoutMillis, statementTimeoutMillis };
+}
+
 // ── Aggregate ────────────────────────────────────────────────────────────────
 
 /**
@@ -277,6 +395,7 @@ export function loadConfig(env: EnvSource = process.env): IndexerConfig {
   const stellarRpcUrl = collect(() => parseStellarRpcUrl(env.STELLAR_RPC_URL));
   const contractId = collect(() => parseContractId(env.CONTRACT_ID));
   const startLedger = collect(() => parseStartLedger(env.START_LEDGER));
+  const dbPool = collect(() => parseDatabasePoolConfig(env));
 
   if (problems.length > 0) throw new ConfigError(problems);
 
@@ -285,5 +404,6 @@ export function loadConfig(env: EnvSource = process.env): IndexerConfig {
     stellarRpcUrl: stellarRpcUrl as string,
     contractId: contractId as string,
     startLedger: startLedger as number,
+    dbPool: dbPool as DatabasePoolConfig,
   };
 }
