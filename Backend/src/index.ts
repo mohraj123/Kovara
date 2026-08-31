@@ -20,6 +20,7 @@
  *   ENABLE_AUTH_MIDDLEWARE - (optional) Enable authentication middleware (default: false)
  *   ENABLE_RATE_LIMITING   - (optional) Enable rate limiting middleware (default: true)
  *   ENABLE_EXPERIMENTAL_ROUTES - (optional) Enable experimental routes (e.g., pools) (default: false)
+ *   FILTER_EVENTS              - (optional) Comma-separated list of event types to index (e.g. post_created,like). When unset, all event types are streamed.
  */
 import { Pool } from "pg";
 import { streamEvents, EventHandler, RawEvent } from "./stream";
@@ -100,6 +101,10 @@ const POLL_INTERVAL_MS = parseEnvNumber("POLL_INTERVAL_MS", 5000);
 const ENABLE_AUTH_MIDDLEWARE = process.env.ENABLE_AUTH_MIDDLEWARE === "true";
 const ENABLE_RATE_LIMITING = process.env.ENABLE_RATE_LIMITING !== "false"; // default to true
 const ENABLE_EXPERIMENTAL_ROUTES = process.env.ENABLE_EXPERIMENTAL_ROUTES === "true";
+
+const FILTER_EVENTS: string[] | undefined = process.env.FILTER_EVENTS
+  ? process.env.FILTER_EVENTS.split(",").map((s) => s.trim()).filter(Boolean)
+  : undefined;
 
 /** Pass-through middleware used when ENABLE_AUTH_MIDDLEWARE is off. */
 const noopAuthMiddleware: AuthMiddleware = (_req, _res, next) => next();
@@ -535,6 +540,7 @@ async function main(): Promise<void> {
       startLedger: START_LEDGER,
       pollIntervalMs: POLL_INTERVAL_MS,
       store: eventStore,
+      ...(FILTER_EVENTS ? { eventTypeFilter: FILTER_EVENTS } : {}),
     },
     (event) => processEvent(event, (e) => handleEvent(e, db)),
     abortController.signal,
