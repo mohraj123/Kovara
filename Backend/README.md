@@ -609,9 +609,175 @@ default window is 60 seconds with 100 requests per IP. Configurable via:
 When the limit is exceeded, the API returns `429 Too Many Requests` with a
 `Retry-After` header and a JSON body containing `RATE_LIMIT_EXCEEDED`.
 
+### Tiered Limits
+
+A single budget per IP treats a `POST /tips` and a `GET /health` as equivalent,
+even though one costs a transaction and the other costs nothing. Endpoints that
+are genuinely more expensive get a tighter budget:
+
+| Tier    | Applies to                                       | Default budget |
+| ------- | ------------------------------------------------ | -------------- |
+| search  | `GET` on `/search`, `/leaderboard`, `/index`, `/analytics`, `/history` | 30 / 60s |
+| write   | `POST`, `PUT`, `PATCH`, `DELETE`                 | 20 / 60s       |
+
+A tier rejection returns `429` with `RATE_LIMIT_TIER_EXCEEDED`, a `retry_after`
+field, and an `X-RateLimit-Tier` header. Budgets are configurable in code via
+`setTierConfig()`, and the whole mechanism is off with
+`ENABLE_TIERED_RATE_LIMITS=false`.
+
+### Abuse Detection
+
+`ENABLE_ABUSE_DETECTION=false` disables the detector. A per-window counter
+cannot see a client that stays just under the budget — 1 request/second is
+60/minute against a 100/minute limit, so it is never throttled and can read the
+whole database indefinitely. The detector watches the *shape* of traffic rather
+than its volume:
+
+| Signal       | Detected by                                                    |
+| ------------ | -------------------------------------------------------------- |
+| `enumeration`| Many distinct resources, most returning 404/400                |
+| `scraping`   | Many distinct real resources with few repeats                  |
+| `burst`      | Requests concentrated in a 1-second sub-window                 |
+| `scanner`    | Traversal/SQLi in the path, or a known scanner user agent      |
+
+Cooldowns are **temporary and escalating** (30s, doubling, capped at 15 min)
+rather than permanent. A permanent ban triggered by a heuristic is
+unrecoverable when the heuristic is wrong — a shared NAT or corporate proxy
+would take out every user behind it with no way back but operator intervention.
+Identities are hashed, so logs do not become a registry of who was throttled.
+
+Operator endpoints:
+
+```bash
+curl http://localhost:3000/api/v1/abuse
+# { trackedIdentities, detections, blockedRequests, blockedIdentities,
+#   recentEvents: [...], config: {...} }
+
+curl -X POST http://localhost:3000/api/v1/abuse/unblock \
+  -H "Content-Type: application/json" -d '{"identity":"ip:1a2b3c4d5e6f7a8b"}'
+```
+
+`unblock` lifts a block early — the escape hatch for a false positive — and
+returns `404` rather than a silent `200` when no identity matched, so a typo is
+visible.
+
+## Unified Search
+
+`GET /api/v1/search` searches profiles, posts, and categories together and
+returns them in one ranked, interleaved page:
+
+```bash
+curl "http://localhost:3000/api/v1/search?q=stellar&type=posts,profiles&limit=20&offset=0"
+```
+
+| Param    | Default | Notes                                          |
+| -------- | ------- | ---------------------------------------------- |
+| `q`      | —       | Required, 1–200 chars, whitespace-normalized    |
+| `type`   | all     | Comma-separated subset of the entity names     |
+| `limit`  | `20`    | Max 100                                        |
+| `offset` | `0`     | Max 10000, to bound deep-scan cost             |
+
+Ranking combines text relevance (0.7), log-scaled engagement (0.2), and recency
+(0.1), with `id` as a final tiebreak so the order is **total and reproducible** —
+a relevance order that varies between identical requests makes a client paging
+through results see rows repeat and skip.
+
+Two supporting endpoints: `GET /api/v1/search/facets?q=…` for per-entity counts,
+and `GET /api/v1/search/cache` for live cache counters.
+
+### Performance
+
+The existing `POST /search/posts` matched with
+
+```sql
+search_vector @@ plainto_tsquery('simple', $1) OR content ILIKE '%' || $1 || '%'
+```
+
+A leading-wildcard `ILIKE` cannot use a btree index, so the planner cannot prove
+the `OR` is selective and falls back to a **sequential scan** — meaning the GIN
+index on `search_vector` was never actually used.
+
+Migration `013_search_performance.sql` fixes this by enabling `pg_trgm` and
+adding a GIN trigram index on `posts.content`, so *both* branches of the `OR` are
+index-backed and the planner can prefer an index scan. It also recreates
+`idx_posts_search_vector` as a partial index (`WHERE deleted_at IS NULL`), since
+deleted posts can never be returned by any search path.
+
+`pg_trgm` is created inside a `DO` block that tolerates `insufficient_privilege`
+and `undefined_file`. Where it is unavailable the migration still succeeds and
+substring search degrades to the same sequential scan as before — it is a
+performance migration, never a hard startup failure.
+
+### Optional columns
+
+`posts.search_vector` is created at runtime by `ensurePostSearchIndex()` and
+`posts.category` is not created by any migration in this repository. SQL naming a
+non-existent column is a *parse* error, so a `COALESCE(search_vector, …)` fallback
+cannot help. The store therefore probes `information_schema.columns` once, caches
+the result for 60s, and collapses concurrent probes into one query. Missing
+`search_vector` falls back to an inline `to_tsvector`; missing `category` yields
+an empty result set, because "no categories exist" is the correct answer for a
+schema that has none.
+
+## Response Caching
+
+Cached endpoints return a pre-serialized JSON body with an `X-Cache` header of
+`HIT-MISS` or `STALE`, so a client can tell a fresh result from a stale-but-served
+one rather than silently acting on stale data.
+
+Invalidation uses the shared `cache_epoch` table rather than TTL alone. These
+services run multiple replicas against one Postgres, and a write on replica A is
+invisible to replica B's memory for the whole TTL — a read-your-own-write
+violation that looks like a cache bug and is actually a design bug. Every writer
+bumps the epoch; a reader compares it against the epoch its entry was stored
+with. The epoch is polled at most once per 500ms, because reading it per request
+would add a database round trip to each one and give back what caching saves.
+Consistency bound: a cross-replica write becomes visible within 500ms, and never
+later than the entry TTL.
+
+Misses are protected by **single-flight**: concurrent misses on one key share a
+single upstream call. Without it, a hot key expiring sends every concurrent
+request to the database at once, multiplying load at exactly the moment the
+database can least absorb it. Past the fresh window the last known value is
+served while a refresh runs in the background; if that refresh fails the previous
+value is served **flagged stale** rather than deleted, so a blip does not empty
+the cache and turn every key into a cold miss.
+
+## Response Serialization
+
+`api/serialize.ts` replaces per-route conversion and does not rely on the global
+`BigInt.prototype.toJSON` override:
+
+```ts
+import { defineSerializer } from "./api/serialize";
+
+const serializePost = defineSerializer<PostRow>({
+  id: {},
+  author: {},
+  tip_total: {},
+  // creator_token is an internal column: never named, therefore never published.
+});
+```
+
+Conversions are explicit: `bigint` → decimal **string** (never `Number`, which
+would silently round past 2^53-1 — tip totals in the smallest unit exceed that),
+`Date` → ISO 8601, invalid `Date` → `null`, `NaN`/`Infinity` → `null`,
+`Buffer` → base64, `undefined`/functions/symbols → omitted. Circular references
+throw with the path rather than emitting `"[Circular]"`, because a cycle is a
+programming error and shipping a marker turns a bug into a silently wrong
+contract.
+
+**Tenant-safe** is the property that rules out a plain replacer. A response
+assembled from a database row carries whatever columns happened to be there, so
+the safe path is a *declared schema*: the service states which fields it intends
+to publish and the serializer projects exactly those. A `SELECT *` that gains
+`creator_token` cannot start leaking it, because it was never named.
+Untrusted `toJSON` is ignored by default, and `__proto__` / `constructor` /
+`prototype` keys are dropped.
+
 ## Full-Text Search
 
-Search across indexed post content:
+Legacy single-entity search, retained for existing clients:
 
 ```bash
 curl -X POST http://localhost:3000/api/search/posts \
@@ -621,7 +787,8 @@ curl -X POST http://localhost:3000/api/search/posts \
 
 The search uses PostgreSQL full-text search (`tsvector`/`tsquery`) for efficient
 content matching. Results include `id`, `author`, `content`, `tip_total`,
-`like_count`, and `created_ledger`.
+`like_count`, and `created_ledger`. See
+[Performance](#performance-1) for the index situation.
 
 ## Token Metadata Enrichment
 

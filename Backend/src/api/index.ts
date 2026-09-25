@@ -12,6 +12,14 @@ import {
   addressRateLimiter,
   setAddressRateLimit,
 } from "../middleware/address-rate-limit";
+import {
+  abuseDetection,
+  AbuseDetector,
+} from "../middleware/abuse-detection";
+import { tieredRateLimits } from "../middleware/rate-limit-tiers";
+import { createSearchRouter } from "./search-router";
+import { PostgresSearchStore } from "../search/store";
+import { Pool } from "pg";
 
 const VERSION = pkg.version;
 const API_V1_PREFIX = "/api/v1";
@@ -116,6 +124,23 @@ export interface AppOptions {
    * deployments are unaffected.
    */
   authMiddleware?: AuthMiddleware;
+  /**
+   * A live Postgres pool. Enables the ranked search routes (#660) and the
+   * response cache that backs them (#662).
+   *
+   * Optional on purpose: `createApp` is called in tests with a stub `Database`
+   * and no pool at all, so search must be additive rather than required. When
+   * absent, `/search` is not mounted and the old `/search/posts` endpoint
+   * remains the only search surface.
+   */
+  pool?: Pool;
+  /** Injected in tests. Defaults to a store over `options.pool`. */
+  searchStore?: PostgresSearchStore;
+  /**
+   * Injected in tests. The same instance is shared with the `/abuse` operator
+   * endpoint, so the endpoint reports live state rather than an empty set.
+   */
+  abuseDetector?: AbuseDetector;
 
   /**
    * #657: reward status, claim history, and the claim endpoint.
@@ -275,6 +300,18 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
     app.use(LEGACY_API_PREFIX, apiLimiter);
   }
 
+  // ── Abuse detection (#661) ──────────────────────────────────────────────────
+  // Runs after the flat limiter so a client that exceeds the shared budget is
+  // refused by the cheap counter first; this layer only has to reason about the
+  // clients the counter considers acceptable.
+  //
+  // The detector instance is held here and handed to the /abuse endpoint below,
+  // so the operator view reports the same state the middleware is enforcing.
+  const abuse = options.abuseDetector ?? new AbuseDetector();
+  if (process.env.ENABLE_ABUSE_DETECTION !== "false") {
+    app.use(LEGACY_API_PREFIX, abuseDetection({ detector: abuse }));
+  }
+
 // BE-25: Apply the auth middleware to all /api routes after rate limiting.
 // Routes registered below this line are covered; the health check above is
 // intentionally excluded.
@@ -288,6 +325,53 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
   apiRouter.use("/posts", createPostsRouter(db));
   apiRouter.use("/follows", createFollowsRouter(db));
 
+  // ── Ranked unified search (#660/#662/#663) ──────────────────────────────────
+  // Mounted only when a pool is available. The tiered limiter wraps the search
+  // router specifically rather than being applied app-wide, because a tighter
+  // budget on a whole-path prefix would also capture unrelated endpoints that
+  // merely contain "/index" in their name.
+  if (options.pool) {
+    const searchStore = options.searchStore ?? new PostgresSearchStore(options.pool);
+    const searchLimiter = tieredRateLimits();
+    apiRouter.use(
+      "/search",
+      searchLimiter.search,
+      createSearchRouter({ pool: options.pool, store: searchStore })
+    );
+    // The old POST /search/posts stays mounted below; the new router is GET
+    // /search, so the two coexist and existing clients are unaffected.
+  }
+
+  // ── Abuse operator endpoints (#661) ─────────────────────────────────────────
+  // Read-only view of what the detector has seen. Detection that only writes to
+  // a log is invisible to an on-call engineer without log access, so the
+  // counters are exposed over HTTP.
+  apiRouter.get("/abuse", (_req: Request, res: Response): void => {
+    res.status(200).json(abuse.snapshot());
+  });
+
+  /**
+   * Lift a block early.
+   *
+   * Cooldowns are temporary by design, but a false positive on a shared NAT or
+   * corporate proxy can last up to the max cooldown. This is the escape hatch,
+   * and it is a POST because it mutates state.
+   */
+  apiRouter.post("/abuse/unblock", (req: Request, res: Response): void => {
+    const identity = (req.body as { identity?: unknown } | undefined)?.identity;
+    if (typeof identity !== "string" || identity === "") {
+      res.status(400).json({ error: "identity is required", code: "INVALID_IDENTITY" });
+      return;
+    }
+    const found = abuse.unblock(identity);
+    res.status(found ? 200 : 404).json({
+      unblocked: found,
+      identity,
+      // 404 rather than a silent 200: an operator unblocking a typo'd identity
+      // must be able to tell that nothing happened.
+      ...(found ? {} : { error: "no tracked identity matched", code: "IDENTITY_NOT_FOUND" }),
+    });
+  });
   // Moderation / fraud review (issue #645). The store is created once per app so
   // cases and their action logs survive across requests; a per-request store
   // would make every case unreachable a moment after it was filed.
