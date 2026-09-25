@@ -124,9 +124,130 @@ function parseEnvNumber(name: string, defaultValue: number): number {
 
 const _HOST = process.env.HOST ?? "0.0.0.0";
 const _PORT = parseEnvNumber("PORT", 3000);
-const TRUST_PROXY = process.env.TRUST_PROXY ?? "0";
 const RATE_LIMIT_WINDOW_MS = parseEnvNumber("RATE_LIMIT_WINDOW_MS", 60000);
 const RATE_LIMIT_MAX = parseEnvNumber("RATE_LIMIT_MAX", 100);
+
+// ── Reverse proxy trust configuration (Issue #680) ─────────────────────────
+
+/**
+ * Parse the `TRUST_PROXY` setting (Issue #680).
+ *
+ * Accepted forms:
+ *   - unset / "" / "0" / "false" → trust no proxy headers (direct exposure)
+ *   - "true"                    → trust the immediate connection (one proxy)
+ *   - positive integer N        → trust the first N hops of the proxy chain
+ *
+ * Anything else — negative numbers, non-numeric values, suspicious strings —
+ * throws before the app is built, so an unsafe value can never silently widen
+ * trust in spoofable X-Forwarded-* headers (client IPs feed the rate limiter).
+ */
+export function parseTrustProxy(raw: string | undefined): boolean | number {
+  const value = (raw ?? "0").trim().toLowerCase();
+  if (value === "" || value === "0" || value === "false") return false;
+  if (value === "true") return true;
+
+  if (!/^\d+$/.test(value)) {
+    throw new Error(
+      `Invalid TRUST_PROXY value: "${raw}". Use 0/false (trust none), true ` +
+        "(trust the immediate peer), or a positive hop count."
+    );
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(
+      `Invalid TRUST_PROXY value: "${raw}". Hop counts must be a positive integer.`
+    );
+  }
+  return parsed;
+}
+
+// Fail fast at startup on an unusable TRUST_PROXY value.
+const TRUST_PROXY = parseTrustProxy(process.env.TRUST_PROXY);
+
+// ── CORS origin allow-list (Issue #680) ─────────────────────────────────────
+
+/**
+ * Parse the `CORS_ORIGIN` allow-list (Issue #680).
+ *
+ * Accepts one or more exact origins, comma-separated, or "*" on its own to
+ * explicitly allow every origin. Unset behaves the same way (allow all),
+ * preserving the documented development default.
+ *
+ * Anything that is not a well-formed http(s) origin — wildcard subdomains,
+ * path/query/hash suffixes, embedded credentials, bare hostnames, the string
+ * "null" — throws, so an unsafe or nonsensical value can never silently widen
+ * cross-origin access. "*" mixed with explicit origins is also rejected: an
+ * operator asking for both has asked for the widest possible exposure by
+ * accident.
+ *
+ * Returns ["*"] when all origins are allowed, otherwise the exact origin list.
+ * With a list configured, the `cors` middleware reflects only matching Origin
+ * values; requests from any other origin receive no Access-Control-Allow-*
+ * headers and the browser refuses to expose the response — unsafe origins are
+ * rejected by design rather than by request-time validation.
+ */
+export function parseAllowedOrigins(raw: string | undefined): string[] {
+  const value = (raw ?? "").trim();
+  if (value === "" || value === "*") return ["*"];
+
+  const origins: string[] = [];
+  for (const entry of value.split(",")) {
+    const origin = entry.trim();
+    if (origin === "") continue;
+
+    if (origin === "*") {
+      throw new Error(
+        'Invalid CORS_ORIGIN: "*" cannot be mixed with explicit origins. ' +
+          'Set CORS_ORIGIN="*" on its own to allow every origin.'
+      );
+    }
+
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      throw new Error(
+        `Invalid CORS_ORIGIN entry: "${origin}". Use exact origins such as ` +
+          "https://app.example.com (comma-separated), or \"*\" on its own to allow all."
+      );
+    }
+
+    if (
+      (parsed.protocol !== "https:" && parsed.protocol !== "http:") ||
+      parsed.pathname !== "/" ||
+      parsed.search !== "" ||
+      parsed.hash !== "" ||
+      parsed.username !== "" ||
+      parsed.password !== "" ||
+      parsed.hostname.includes("*")
+    ) {
+      throw new Error(
+        `Invalid CORS_ORIGIN entry: "${origin}". Origins must be scheme + host ` +
+          "(+ optional port) without paths, credentials, or wildcard subdomains."
+      );
+    }
+
+    const normalized = parsed.origin;
+    if (!origins.includes(normalized)) origins.push(normalized);
+  }
+
+  if (origins.length === 0) {
+    throw new Error(
+      'CORS_ORIGIN is set but contains no valid origins. Use exact origins ' +
+        'such as https://app.example.com (comma-separated), or "*" to allow all.'
+    );
+  }
+
+  return origins;
+}
+
+/**
+ * Pattern for a client-supplied correlation id that is safe to reflect.
+ * Anything else is replaced with a generated UUID so untrusted header values
+ * cannot smuggle control characters or injection payloads into structured
+ * logs (Issue #680).
+ */
+const CORRELATION_ID_PATTERN = /^[A-Za-z0-9._@:/-]{1,128}$/;
 
 // ── Address rate-limit configuration (Issue #616) ──────────────────────────
 // These are read once at startup so the middleware factory uses them by default.
@@ -179,12 +300,39 @@ declare global {
 
 // ── App factory ───────────────────────────────────────────────────────────────
 
+// ── Address header validation (Issue #680) ─────────────────────────────────
+
+/**
+ * Stellar address shape (G… 56 base32 characters) used to validate the
+ * client-supplied `x-stellar-address` header. The value is only ever compared
+ * against stored addresses and echoed into rate-limit keys, but rejecting
+ * malformed values at the edge keeps arbitrary header junk out of logs and
+ * limiter state (Issue #680).
+ */
+const STELLAR_ADDRESS_HEADER_PATTERN = /^G[A-Z2-7]{55}$/;
+
 export function createApp(db: Database, options: AppOptions = {}): express.Application {
   const app = express();
   const apiRouter = express.Router();
 
-  // ── CORS ──────────────────────────────────────────────────────────────────────
-  app.use(cors());
+  // ── CORS (Issue #680) ──────────────────────────────────────────────────────
+  // With an explicit allow-list configured, only listed origins are reflected;
+  // requests from any other origin get no Access-Control-Allow-* headers and
+  // the browser refuses to expose the response.
+  const allowedOrigins = parseAllowedOrigins(process.env.CORS_ORIGIN);
+  app.use(
+    cors({
+      origin: allowedOrigins.includes("*")
+        ? "*"
+        : (origin, callback) => {
+            if (!origin || allowedOrigins.includes(origin)) {
+              callback(null, true);
+            } else {
+              callback(null, false);
+            }
+          },
+    })
+  );
 
   app.use(express.json());
 
@@ -203,14 +351,37 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
   // to the no-op so anonymous access is unchanged by default.
   const authMiddleware: AuthMiddleware = options.authMiddleware ?? noopAuthMiddleware;
 
-  if (TRUST_PROXY !== "") {
+  if (TRUST_PROXY !== false) {
     app.set("trust proxy", TRUST_PROXY);
   }
 
   // ── Correlation ID middleware ────────────────────────────────────────────────
+  // A client-supplied id is honored only when it matches the safe pattern;
+  // otherwise a server-generated UUID is used (Issue #680).
   app.use((req: Request, _res: Response, next: NextFunction): void => {
-    const id = (req.headers["x-correlation-id"] as string) || crypto.randomUUID();
+    const headerId = req.headers["x-correlation-id"] as string | undefined;
+    const id =
+      headerId && CORRELATION_ID_PATTERN.test(headerId) ? headerId : crypto.randomUUID();
     req.correlationId = id;
+    next();
+  });
+
+  // ── Address header validation (Issue #680) ────────────────────────────────
+  // The x-stellar-address header is client-controlled; only accept well-formed
+  // Stellar addresses so malformed values cannot enter limiter keys or logs.
+  app.use((req: Request, res: Response, next: NextFunction): void => {
+    const headerAddress = req.headers["x-stellar-address"];
+    if (
+      typeof headerAddress === "string" &&
+      headerAddress !== "" &&
+      !STELLAR_ADDRESS_HEADER_PATTERN.test(headerAddress)
+    ) {
+      res.status(400).json({
+        error: "Invalid x-stellar-address header",
+        code: "INVALID_ADDRESS_HEADER",
+      });
+      return;
+    }
     next();
   });
 

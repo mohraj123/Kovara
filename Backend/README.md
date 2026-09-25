@@ -400,7 +400,7 @@ See [`.env.example`](.env.example) for all required variables.
 | `RATE_LIMIT_MAX`       | Maximum requests per window per IP (default: `100`)                |
 | `GIT_COMMIT`           | Git commit hash (populated in `/version` response)                 |
 | `BUILD_TIME`           | ISO 8601 build timestamp (populated in `/version` response)        |
-| `CORS_ORIGIN`          | Allowed CORS origin(s) (default: all)  |
+| `CORS_ORIGIN`          | Allowed CORS origin(s): comma-separated exact `http(s)` origins, or `*` alone; anything else is rejected at startup (default: all) |
 | `DB_POOL_MAX`          | PostgreSQL pool max clients (default: `10`)                         |
 | `DB_POOL_CONNECTION_TIMEOUT_MS` | PostgreSQL pool connection timeout in ms (default: `5000`, `0` = no timeout) |
 | `DB_POOL_IDLE_TIMEOUT_MS` | PostgreSQL pool idle timeout in ms (default: `30000`)              |
@@ -493,11 +493,10 @@ All event handlers are designed to be idempotent:
 
 This ensures the indexer can safely replay events without data corruption.
 
-## CORS
-
-The API uses the [`cors`](https://www.npmjs.com/package/cors) middleware and allows
-all origins by default. To restrict access in production, set the `CORS_ORIGIN`
-environment variable:
+## CORSThe API uses the [`cors`](https://www.npmjs.com/package/cors) middleware. By
+default all origins are allowed. To restrict access in production, set the
+`CORS_ORIGIN` environment variable to a comma-separated list of exact origins
+(Issue #680):
 
 ```bash
 # Allow a single origin
@@ -507,7 +506,27 @@ CORS_ORIGIN=https://app.example.com
 CORS_ORIGIN=https://app.example.com,https://admin.example.com
 ```
 
-When `CORS_ORIGIN` is not set, all origins are permitted (useful during development).
+The value is validated at startup and unsafe entries are rejected rather than
+silently applied:
+
+- Each entry must be an exact origin — scheme plus host (and optional port).
+  Paths, query strings, fragments, embedded credentials, and wildcard patterns
+  such as `https://*.example.com` cause startup to fail.
+- `*` may be used on its own to allow every origin, but cannot be mixed with
+  explicit origins.
+- When an allow-list is configured, only listed origins are reflected in
+  `Access-Control-Allow-Origin`; requests from any other origin receive no CORS
+  headers and browsers refuse to expose the response.
+- When `CORS_ORIGIN` is not set, all origins are permitted (useful during
+  development only).
+
+### Reverse proxy trust
+
+`TRUST_PROXY` controls whether Express trusts `X-Forwarded-*` headers, which
+feed the IP-based rate limiter. Valid values are `0`/`false` (trust none — the
+default, for direct exposure), `true` (trust the immediate peer), or a positive
+integer hop count. Any other value fails startup instead of being coerced
+(Issue #680).
 See `.env.example` for the full list of environment variables.
 
 ## Rate Limiting
