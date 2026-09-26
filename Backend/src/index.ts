@@ -52,6 +52,7 @@ import { withRetry } from "./retry";
 import { RewardStore } from "./rewards/store";
 import { AuditStore } from "./audit/store";
 import { PostgresSubmissionFeed } from "./submissions/feed";
+import { PostgresActivityFeed } from "./submissions/activity";
 import { runDailyIndexAggregation } from "./analytics/job";
 import { PostgresAnalyticsStore } from "./analytics/store";
 import { buildIdempotencyKey } from "./idempotency";
@@ -821,12 +822,9 @@ async function main(): Promise<void> {
     rewardStore: new RewardStore(pgPool),
     auditStore: new AuditStore(pgPool),
     submissionFeed: new PostgresSubmissionFeed(pgPool),
-  // #654/#655: the analytics store is handed to the app so /index is mounted.
-  // Omitting it leaves the other routes untouched, which is what the replay-mode
-  // path below relies on.
-  const app = createApp(db, {
-    authMiddleware,
+    activityFeed: new PostgresActivityFeed(pgPool),
     analyticsStore: new PostgresAnalyticsStore(pgPool),
+    pool: pgPool,
   });
   const server = app.listen(PORT, HOST);
 

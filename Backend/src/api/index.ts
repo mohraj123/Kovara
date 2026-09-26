@@ -83,6 +83,7 @@ import { createIndexRouter } from "../analytics/routes";
 import { PostgresAnalyticsStore } from "../analytics/store";
 import { createModerationRouter } from "./routes/moderation";
 import { ModerationStore } from "../verification/moderation";
+import { createActivityRouter } from "./routes/activity";
 
 // ── Auth middleware (BE-25) ───────────────────────────────────────────────────
 
@@ -160,8 +161,11 @@ export interface AppOptions {
 
   /**
    * #659: the paginated, filtered submission feed.
-   */
+  */
   submissionFeed?: PostgresSubmissionFeed;
+  /** Activity feed store, mounted when supplied. */
+  activityFeed?: import("../submissions/activity").PostgresActivityFeed;
+  /**
    * #654/#655: Analytics store backing the historical index series, the country
    * leaderboard, and the filter-decision log.
    *
@@ -395,10 +399,14 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
   // #658: audit reads and chain verification.
   if (options.auditStore) {
     apiRouter.use("/audit", createAuditRouter(options.auditStore));
+  }
   // #654/#655: historical index series, country leaderboards, and the filter
   // decision log. Mounted only when a store is supplied — see AppOptions.
   if (options.analyticsStore) {
     apiRouter.use("/index", createIndexRouter(options.analyticsStore));
+  }
+  if (options.activityFeed) {
+    apiRouter.use("/activity", createActivityRouter(options.activityFeed));
   }
 
   interface SearchQuery {
@@ -648,4 +656,3 @@ const _stub = {} as any;
 export const app = createApp(_stub);
 
 // Server is now started from the main index.ts entry point
-

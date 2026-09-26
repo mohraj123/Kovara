@@ -92,6 +92,22 @@ describe("LedgerIngestor.ingestRange", () => {
     expect(second.duplicates.map((e) => e.eventId)).toEqual(["e1", "e2"]);
   });
 
+  it("replays domain events without duplicating indexed state (#668)", async () => {
+    const ingestor = ingestorWith([payload("same-event", 225)]);
+    const indexed = new Map<string, { type: string; ledger: number; actor: string | null }>();
+    const range = { startLedger: 225, endLedger: 225 };
+
+    for (let run = 0; run < 2; run += 1) {
+      const replay = await ingestor.ingestRange(range);
+      for (const event of replay.accepted) {
+        indexed.set(event.eventId, { type: event.type, ledger: event.ledger, actor: event.account });
+      }
+    }
+
+    expect(indexed.size).toBe(1);
+    expect([...indexed.values()]).toEqual([{ type: "post_created", ledger: 225, actor: ADDRESS }]);
+  });
+
   it("drops a failed transaction before it can be indexed", async () => {
     const ingestor = ingestorWith([
       payload("ok", 100),

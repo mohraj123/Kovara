@@ -17,7 +17,7 @@ import { RawEvent } from "./stream";
 // ── Stellar address normalization ────────────────────────────────────────────
 
 /** Valid Stellar public-key prefix (Ed25519). */
-const STELLAR_ADDR_PREFIX = /^[G]/;
+const STELLAR_ADDR_PREFIX = /^G[A-Z2-7]{55}$/;
 /** Stellar public keys are 56 base-32 characters. */
 const STELLAR_ADDR_LENGTH = 56;
 
@@ -39,7 +39,7 @@ export function normalizeAddress(addr: string): string {
     );
   }
   if (!STELLAR_ADDR_PREFIX.test(trimmed)) {
-    throw new Error("normalizeAddress: Stellar address must start with G");
+    throw new Error("normalizeAddress: expected a valid Stellar public key (G plus 55 base32 characters)");
   }
   return trimmed;
 }
