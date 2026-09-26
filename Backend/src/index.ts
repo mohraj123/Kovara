@@ -52,6 +52,7 @@ import { withRetry } from "./retry";
 import { RewardStore } from "./rewards/store";
 import { AuditStore } from "./audit/store";
 import { PostgresSubmissionFeed } from "./submissions/feed";
+import { PostgresActivityFeed } from "./submissions/activity";
 import { runDailyIndexAggregation } from "./analytics/job";
 import { PostgresAnalyticsStore } from "./analytics/store";
 import { buildIdempotencyKey } from "./idempotency";
@@ -838,6 +839,9 @@ async function main(): Promise<void> {
     rewardStore: new RewardStore(pgPool),
     auditStore: new AuditStore(pgPool),
     submissionFeed: new PostgresSubmissionFeed(pgPool),
+    activityFeed: new PostgresActivityFeed(pgPool),
+    analyticsStore: new PostgresAnalyticsStore(pgPool),
+    pool: pgPool,
     // #654/#655: the analytics store is handed to the app so /index is mounted.
     analyticsStore: new PostgresAnalyticsStore(pgPool),
     // #669: exposes the reconciliation run history and discrepancies.

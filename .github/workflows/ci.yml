@@ -10,6 +10,23 @@ env:
   TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
 
 jobs:
+  backend:
+    name: Backend build and tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: Backend/package-lock.json
+      - run: npm ci
+      - run: npm run openapi:generate
+      - run: npx jest --runInBand src/__tests__/normalize.test.ts src/ingest/__tests__/ingest.test.ts src/submissions/__tests__/activity.test.ts
+
   test:
     name: Test — ${{ matrix.package }}
     runs-on: ${{ matrix.os }}

@@ -16,18 +16,18 @@ export interface ProfileResponse extends Profile {}
 
 export interface PostResponse extends Post {}
 
-export interface PostListResponse extends PaginationResponse {
+export interface PostListResponse extends ThreadPagination {
   posts: Post[];
   total: number;
 }
 
-export interface FollowersResponse extends PaginationResponse {
+export interface FollowersResponse extends ThreadPagination {
   address: string;
   followers: string[];
   total: number;
 }
 
-export interface FollowingResponse extends PaginationResponse {
+export interface FollowingResponse extends ThreadPagination {
   address: string;
   following: string[];
   total: number;

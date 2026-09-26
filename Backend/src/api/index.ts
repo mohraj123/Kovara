@@ -84,6 +84,7 @@ import { createIndexRouter } from "../analytics/routes";
 import { PostgresAnalyticsStore } from "../analytics/store";
 import { createModerationRouter } from "./routes/moderation";
 import { ModerationStore } from "../verification/moderation";
+import { createActivityRouter } from "./routes/activity";
 import { createReconciliationRouter } from "../reconciliation/routes";
 import type { ReconciliationQueryStore } from "../reconciliation/stores";
 
@@ -163,8 +164,10 @@ export interface AppOptions {
 
   /**
    * #659: the paginated, filtered submission feed.
-   */
+  */
   submissionFeed?: PostgresSubmissionFeed;
+  /** Activity feed store, mounted when supplied. */
+  activityFeed?: import("../submissions/activity").PostgresActivityFeed;
 
   /**
    * #654/#655: Analytics store backing the historical index series, the country
@@ -415,6 +418,9 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
   // decision log. Mounted only when a store is supplied — see AppOptions.
   if (options.analyticsStore) {
     apiRouter.use("/index", createIndexRouter(options.analyticsStore));
+  }
+  if (options.activityFeed) {
+    apiRouter.use("/activity", createActivityRouter(options.activityFeed));
   }
 
   // #669: reconciliation run history and discrepancies.
@@ -669,4 +675,3 @@ const _stub = {} as any;
 export const app = createApp(_stub);
 
 // Server is now started from the main index.ts entry point
-
