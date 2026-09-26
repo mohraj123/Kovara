@@ -53,7 +53,7 @@ describe("moderation routes", () => {
       });
 
       expect(response.status).toBe(201);
-      const body = await response.json();
+      const body = (await response.json()) as any;
       expect(body.case.status).toBe("open");
       expect(body.case.severity).toBe("high");
       expect(body.case.actions).toHaveLength(1);
@@ -91,7 +91,7 @@ describe("moderation routes", () => {
         reason: "duplicate",
         actor: "a",
       });
-      const { case: httpCase } = await opened.json();
+      const { case: httpCase } = (await opened.json()) as any;
       expect(httpCase.caseId).toBeTruthy();
 
       const review = await post(base, `/moderation/cases/${httpCase.caseId}/transitions`, {
@@ -108,7 +108,7 @@ describe("moderation routes", () => {
         to: "resolved",
         actor: "lead",
       });
-      const resolvedBody = await resolved.json();
+      const resolvedBody = (await resolved.json()) as any;
       expect(resolvedBody.case.status).toBe("resolved");
       // The log must describe what happened, not a generic "assign".
       expect(resolvedBody.case.actions.map((a: { action: string }) => a.action)).toEqual([
@@ -127,7 +127,7 @@ describe("moderation routes", () => {
         reason: "suspicious liquidity",
         actor: "a",
       });
-      const { case: httpCase } = await opened.json();
+      const { case: httpCase } = (await opened.json()) as any;
 
       const response = await post(base, `/moderation/cases/${httpCase.caseId}/transitions`, {
         to: "resolved",
@@ -147,7 +147,7 @@ describe("moderation routes", () => {
         reason: "spam",
         actor: "a",
       });
-      const { case: httpCase } = await opened.json();
+      const { case: httpCase } = (await opened.json()) as any;
 
       const response = await post(base, `/moderation/cases/${httpCase.caseId}/transitions`, {
         to: "under_review",
@@ -167,7 +167,7 @@ describe("moderation routes", () => {
         reason: "outlier",
         actor: "a",
       });
-      const { case: httpCase } = await opened.json();
+      const { case: httpCase } = (await opened.json()) as any;
 
       const response = await post(base, `/moderation/cases/${httpCase.caseId}/actions`, {
         action: "escalate",
@@ -176,7 +176,7 @@ describe("moderation routes", () => {
       });
 
       expect(response.status).toBe(200);
-      const body = await response.json();
+      const body = (await response.json()) as any;
       expect(body.case.status).toBe("escalated");
       expect(body.case.actions).toHaveLength(2);
     });
@@ -198,11 +198,11 @@ describe("moderation routes", () => {
       });
 
       const all = await fetch(`${base}/moderation/cases`);
-      const allBody = await all.json();
+      const allBody = (await all.json()) as any;
       expect(allBody.total).toBe(2);
 
       const filtered = await fetch(`${base}/moderation/cases?subject=vote`);
-      const filteredBody = await filtered.json();
+      const filteredBody = (await filtered.json()) as any;
       expect(filteredBody.total).toBe(1);
       expect(filteredBody.cases[0].subjectId).toBe("vote_b");
     });
@@ -225,7 +225,7 @@ describe("moderation routes", () => {
         reason: "r",
         actor: "a",
       });
-      const { case: httpCase } = await opened.json();
+      const { case: httpCase } = (await opened.json()) as any;
       await post(base, `/moderation/cases/${httpCase.caseId}/actions`, {
         action: "comment",
         actor: "reviewer-7",
@@ -233,7 +233,7 @@ describe("moderation routes", () => {
       });
 
       const response = await fetch(`${base}/moderation/actions`);
-      const body = await response.json();
+      const body = (await response.json()) as any;
 
       expect(response.status).toBe(200);
       expect(body.total).toBe(2);

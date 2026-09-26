@@ -3,6 +3,11 @@ import { createApp } from "../index";
 import { Database } from "../../db";
 import { isValidStellarAddress } from "../routes/profiles";
 
+// The follow endpoints validate address shape (#665), so the follow tests must
+// use well-formed Stellar addresses rather than short placeholders.
+const FOLLOWS_A = "GAZJ2EQV2ES6R5BLUNXMNFR5VN3HQF4KXJ2GM5Q7GQHT5XBC2CRX3GK3";
+const FOLLOWS_B = "GBZX4364PEPQTDICMIQDZ56K4T75QZCR4NBEYKO6PDRJAHZKGUOJPCXB";
+
 function makeMockDb(): jest.Mocked<Database> {
   return {
     upsertProfile: jest.fn().mockResolvedValue(undefined),
@@ -36,57 +41,6 @@ function makeMockDb(): jest.Mocked<Database> {
 }
 
 
-  async getRecommendation(userId: string): Promise<AiRecommendationResponse> {
-    const snapshot = this.redisService
-      ? await this.redisService.getUserSnapshot(userId)
-      : null;
-
-    if (!snapshot) {
-      return {
-        userId,
-        recommendations: [],
-        explainability: {
-          factors: ['insufficient_data'],
-          confidence: 0.1,
-          userSignalAge: 0,
-          signalsUsed: [],
-          modelVersion: 'rustacademy-recommender-v2',
-        },
-        generatedAt: new Date(),
-      };
-    }
-
-    const explainability = this.redisService
-      ? await this.redisService.getRecommendationExplainability(userId)
-      : null;
-
-    const recommendedCourses = snapshot.recentCourses.length > 0
-      ? snapshot.recentCourses.slice(0, 3)
-      : ['rust-fundamentals', 'smart-contracts-101', 'stellar-basics'];
-
-    const recommendations = recommendedCourses.map((courseId, index) => ({
-      courseId,
-      score: Math.max(0, 1 - index * 0.2 - (snapshot.interactionCount > 0 ? 0 : 0.3)),
-      reason: explainability?.factors[index] || 'course_popularity',
-    }));
-
-    if (this.monitoringService) {
-      this.monitoringService.recordDomainEvent('recommendation_generated', 'ai');
-    }
-
-    return {
-      userId,
-      recommendations,
-      explainability: explainability || {
-        factors: [],
-        confidence: 0.1,
-        userSignalAge: 0,
-        signalsUsed: [],
-        modelVersion: 'rustacademy-recommender-v2',
-      },
-      generatedAt: new Date(),
-    };
-  }
 
 describe("API Routes", () => {
   let db: jest.Mocked<Database>;
@@ -201,57 +155,6 @@ describe("API Routes", () => {
     });
 
     
-  async getRecommendation(userId: string): Promise<AiRecommendationResponse> {
-    const snapshot = this.redisService
-      ? await this.redisService.getUserSnapshot(userId)
-      : null;
-
-    if (!snapshot) {
-      return {
-        userId,
-        recommendations: [],
-        explainability: {
-          factors: ['insufficient_data'],
-          confidence: 0.1,
-          userSignalAge: 0,
-          signalsUsed: [],
-          modelVersion: 'rustacademy-recommender-v2',
-        },
-        generatedAt: new Date(),
-      };
-    }
-
-    const explainability = this.redisService
-      ? await this.redisService.getRecommendationExplainability(userId)
-      : null;
-
-    const recommendedCourses = snapshot.recentCourses.length > 0
-      ? snapshot.recentCourses.slice(0, 3)
-      : ['rust-fundamentals', 'smart-contracts-101', 'stellar-basics'];
-
-    const recommendations = recommendedCourses.map((courseId, index) => ({
-      courseId,
-      score: Math.max(0, 1 - index * 0.2 - (snapshot.interactionCount > 0 ? 0 : 0.3)),
-      reason: explainability?.factors[index] || 'course_popularity',
-    }));
-
-    if (this.monitoringService) {
-      this.monitoringService.recordDomainEvent('recommendation_generated', 'ai');
-    }
-
-    return {
-      userId,
-      recommendations,
-      explainability: explainability || {
-        factors: [],
-        confidence: 0.1,
-        userSignalAge: 0,
-        signalsUsed: [],
-        modelVersion: 'rustacademy-recommender-v2',
-      },
-      generatedAt: new Date(),
-    };
-  }
 
     it("returns 400 for whitespace-only address", async () => {
       const res = await request(app).get("/api/profiles/" + encodeURIComponent("   "));
@@ -281,57 +184,6 @@ describe("API Routes", () => {
   });
 
   
-  async getRecommendation(userId: string): Promise<AiRecommendationResponse> {
-    const snapshot = this.redisService
-      ? await this.redisService.getUserSnapshot(userId)
-      : null;
-
-    if (!snapshot) {
-      return {
-        userId,
-        recommendations: [],
-        explainability: {
-          factors: ['insufficient_data'],
-          confidence: 0.1,
-          userSignalAge: 0,
-          signalsUsed: [],
-          modelVersion: 'rustacademy-recommender-v2',
-        },
-        generatedAt: new Date(),
-      };
-    }
-
-    const explainability = this.redisService
-      ? await this.redisService.getRecommendationExplainability(userId)
-      : null;
-
-    const recommendedCourses = snapshot.recentCourses.length > 0
-      ? snapshot.recentCourses.slice(0, 3)
-      : ['rust-fundamentals', 'smart-contracts-101', 'stellar-basics'];
-
-    const recommendations = recommendedCourses.map((courseId, index) => ({
-      courseId,
-      score: Math.max(0, 1 - index * 0.2 - (snapshot.interactionCount > 0 ? 0 : 0.3)),
-      reason: explainability?.factors[index] || 'course_popularity',
-    }));
-
-    if (this.monitoringService) {
-      this.monitoringService.recordDomainEvent('recommendation_generated', 'ai');
-    }
-
-    return {
-      userId,
-      recommendations,
-      explainability: explainability || {
-        factors: [],
-        confidence: 0.1,
-        userSignalAge: 0,
-        signalsUsed: [],
-        modelVersion: 'rustacademy-recommender-v2',
-      },
-      generatedAt: new Date(),
-    };
-  }
 
   describe("isValidStellarAddress", () => {
     it("returns true for a valid 56-char G-prefixed address", () => {
@@ -442,10 +294,10 @@ describe("API Routes", () => {
     it("returns followers list", async () => {
       db.getFollowers.mockResolvedValueOnce({ followers: ["GUSER1", "GUSER2"], total: 2 });
 
-      const res = await request(app).get("/api/follows/GABC123/followers");
+      const res = await request(app).get(`/api/follows/${FOLLOWS_A}/followers`);
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({
-        address: "GABC123",
+        address: FOLLOWS_A,
         total: 2,
         followers: ["GUSER1", "GUSER2"],
       });
@@ -454,13 +306,13 @@ describe("API Routes", () => {
     it("returns empty list when no followers", async () => {
       db.getFollowers.mockResolvedValueOnce({ followers: [], total: 0 });
 
-      const res = await request(app).get("/api/follows/GALONE/followers");
+      const res = await request(app).get(`/api/follows/${FOLLOWS_B}/followers`);
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({ followers: [], total: 0, has_more: false });
     });
 
     it("returns 400 for invalid limit", async () => {
-      const res = await request(app).get("/api/follows/GABC123/followers?limit=0");
+      const res = await request(app).get(`/api/follows/${FOLLOWS_A}/followers?limit=0`);
       expect(res.status).toBe(400);
     });
   });
@@ -469,15 +321,15 @@ describe("API Routes", () => {
     it("returns following list", async () => {
       db.getFollowing.mockResolvedValueOnce({ following: ["GUSER3"], total: 1 });
 
-      const res = await request(app).get("/api/follows/GABC123/following");
+      const res = await request(app).get(`/api/follows/${FOLLOWS_A}/following`);
       expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({ address: "GABC123", total: 1, following: ["GUSER3"] });
+      expect(res.body).toMatchObject({ address: FOLLOWS_A, total: 1, following: ["GUSER3"] });
     });
 
     it("returns empty list when not following anyone", async () => {
       db.getFollowing.mockResolvedValueOnce({ following: [], total: 0 });
 
-      const res = await request(app).get("/api/follows/GALONE/following");
+      const res = await request(app).get(`/api/follows/${FOLLOWS_B}/following`);
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({ following: [], total: 0, has_more: false });
     });
@@ -820,10 +672,10 @@ describe("API Routes", () => {
     it("GET /api/follows/:address/followers returns consistent shape when no followers", async () => {
       db.getFollowers.mockResolvedValueOnce({ followers: [], total: 0 });
 
-      const res = await request(app).get("/api/follows/GALONE/followers");
+      const res = await request(app).get(`/api/follows/${FOLLOWS_B}/followers`);
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({
-        address: "GALONE",
+        address: FOLLOWS_B,
         followers: [],
         total: 0,
         has_more: false,
@@ -833,7 +685,7 @@ describe("API Routes", () => {
     it("GET /api/follows/:address/followers returns empty with has_more=false when offset beyond total", async () => {
       db.getFollowers.mockResolvedValueOnce({ followers: [], total: 3 });
 
-      const res = await request(app).get("/api/follows/GABC123/followers?offset=100");
+      const res = await request(app).get(`/api/follows/${FOLLOWS_A}/followers?offset=100`);
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({
         followers: [],
@@ -845,10 +697,10 @@ describe("API Routes", () => {
     it("GET /api/follows/:address/following returns consistent shape when not following anyone", async () => {
       db.getFollowing.mockResolvedValueOnce({ following: [], total: 0 });
 
-      const res = await request(app).get("/api/follows/GALONE/following");
+      const res = await request(app).get(`/api/follows/${FOLLOWS_B}/following`);
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({
-        address: "GALONE",
+        address: FOLLOWS_B,
         following: [],
         total: 0,
         has_more: false,
@@ -858,7 +710,7 @@ describe("API Routes", () => {
     it("GET /api/follows/:address/following returns empty with has_more=false when offset beyond total", async () => {
       db.getFollowing.mockResolvedValueOnce({ following: [], total: 2 });
 
-      const res = await request(app).get("/api/follows/GABC123/following?offset=50");
+      const res = await request(app).get(`/api/follows/${FOLLOWS_A}/following?offset=50`);
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({
         following: [],

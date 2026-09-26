@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { ApiErrorResponse } from "../contracts";
-import { isValidStellarAddress } from "./profiles";
+import { isFailure, validateEnum, validateStellarAddress, validateString } from "../validation";
 
 /** A single community verification vote on a pending price submission. */
 export interface VerificationVote {
@@ -41,40 +41,41 @@ export function createVerificationVotesRouter(): Router {
     (req: Request, res: Response<{ vote: VerificationVote } | ApiErrorResponse>): void => {
       const { submissionId, voter, choice } = req.body ?? {};
 
-      if (typeof submissionId !== "string" || submissionId.trim() === "") {
-        res.status(400).json({ error: "submissionId is required", code: "INVALID_SUBMISSION_ID" });
+      // #665: every caller-controlled field is validated before it is stored.
+      const validatedId = validateString(submissionId, "submissionId", {
+        maxLength: 128,
+        code: "INVALID_SUBMISSION_ID",
+      });
+      if (isFailure(validatedId)) {
+        res.status(400).json(validatedId.failure);
         return;
       }
 
-      if (typeof voter !== "string" || !isValidStellarAddress(voter)) {
-        res.status(400).json({
-          error: "voter must be a valid Stellar address: starts with 'G', 56 alphanumeric characters",
-          code: "INVALID_VOTER",
-        });
+      const validatedVoter = validateStellarAddress(voter, "voter");
+      if (isFailure(validatedVoter)) {
+        res.status(400).json({ ...validatedVoter.failure, code: "INVALID_VOTER" });
         return;
       }
 
-      if (typeof choice !== "string" || !VALID_CHOICES.has(choice)) {
-        res.status(400).json({
-          error: `choice must be one of: ${[...VALID_CHOICES].join(", ")}`,
-          code: "INVALID_CHOICE",
-        });
+      const validatedChoice = validateEnum(choice, [...VALID_CHOICES] as ("approve" | "reject")[], "choice", "INVALID_CHOICE");
+      if (isFailure(validatedChoice)) {
+        res.status(400).json(validatedChoice.failure);
         return;
       }
 
       const vote: VerificationVote = {
-        submissionId,
-        voter,
-        choice: choice as "approve" | "reject",
+        submissionId: validatedId.value,
+        voter: validatedVoter.value,
+        choice: validatedChoice.value,
         votedAt: new Date().toISOString(),
       };
 
-      let votes = votesBySubmission.get(submissionId);
+      let votes = votesBySubmission.get(validatedId.value);
       if (!votes) {
         votes = new Map();
-        votesBySubmission.set(submissionId, votes);
+        votesBySubmission.set(validatedId.value, votes);
       }
-      votes.set(voter, vote);
+      votes.set(validatedVoter.value, vote);
 
       res.status(201).json({ vote });
     }

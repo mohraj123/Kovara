@@ -123,6 +123,9 @@ export const DEFAULT_ABUSE_CONFIG: AbuseConfig = {
   ],
 };
 
+/** Methods whose rapid repetition constitutes a burst (reads are exempt). */
+const BURST_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
 /** A single timestamped request, kept just long enough to age out. */
 interface Observation {
   at: number;
@@ -181,8 +184,15 @@ export class AbuseDetector {
     state.observations.push({ at: now, resource, status });
     state.distinctResources.add(resource);
 
-    const burst = this.detectBurst(state, now);
-    if (burst) return this.trip(state, identity, method, path, burst, now);
+    // Burst is a spike of *mutations*. Reads are already governed by the
+    // tiered budgets (a browser paging a feed fires dozens of cheap GETs a
+    // second and is legitimate), so treating a read spike as abuse would
+    // throttle exactly the client the limiter exists to protect. A fast run
+    // of writes is the case worth catching before the long window moves.
+    if (BURST_METHODS.has(method.toUpperCase())) {
+      const burst = this.detectBurst(state, now);
+      if (burst) return this.trip(state, identity, method, path, burst, now);
+    }
 
     const shaped = this.detectEnumerationOrScraping(state, now);
     if (shaped) return this.trip(state, identity, method, path, shaped, now);

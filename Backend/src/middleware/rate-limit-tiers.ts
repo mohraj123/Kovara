@@ -65,7 +65,7 @@ export function getTierConfig(): TierConfig {
  * because it is attacker-controlled and irrelevant to routing.
  */
 export function effectivePath(req: Request): string {
-  const full = req.originalUrl ?? req.url ?? "";
+  const full = req.originalUrl ?? req.url ?? req.path ?? "";
   const queryStart = full.indexOf("?");
   return queryStart >= 0 ? full.slice(0, queryStart) : full;
 }

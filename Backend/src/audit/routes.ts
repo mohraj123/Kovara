@@ -160,7 +160,7 @@ function serializeEntry(entry: {
   subject: string;
   ledger?: number;
   transactionHash?: string;
-  metadata: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   occurredAt: Date;
   hash: string;
   previousHash: string;
