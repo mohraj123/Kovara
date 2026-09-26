@@ -91,6 +91,25 @@ const MAX_PRICE_USD_CENTS: u64 = 1_000_000_000;
 /// Maximum price value in local currency units (1 billion).
 const MAX_PRICE_LOCAL: u64 = 1_000_000_000;
 
+/// The widest `submissions_in_time_window` range, in seconds.
+///
+/// A window query reads one persistent entry per submission recorded for the
+/// country, so the span is bounded for the same reason the daily index
+/// history is: a caller must not be able to turn the query into an unbounded
+/// iteration. One year (366 days) is the widest window the submission feed
+/// is meant to be read at; wider windows should page instead.
+pub const MAX_SUBMISSION_WINDOW: u64 = 366 * 24 * 60 * 60;
+
+/// The unit every timestamp in this contract is expressed in.
+///
+/// Submission record timestamps, the `PriceSubmitted` event's `timestamp`
+/// field, and the `from`/`to` bounds accepted by
+/// [`PriceVault::submissions_in_time_window`] are all **Unix seconds UTC**,
+/// taken from the ledger via `Env::ledger().timestamp()`. One unit, one
+/// source, everywhere — a consumer never has to guess whether a stored
+/// timestamp is seconds, milliseconds, or a ledger sequence.
+pub const TIMESTAMP_UNIT: &str = "unix_seconds_utc";
+
 // ── Status enums ─────────────────────────────────────────────────────────
 
 /// Lifecycle state of a submission in the peer-verification flow.
@@ -165,6 +184,12 @@ pub enum Error {
 
     /// The caller is not authorized to submit prices.
     UnauthorizedSubmitter = 10,
+
+    /// A time window whose end precedes its start.
+    InvalidTimeWindow = 11,
+
+    /// A `submissions_in_time_window` span wider than `MAX_SUBMISSION_WINDOW`.
+    TimeWindowTooLarge = 12,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────
@@ -521,7 +546,10 @@ impl PriceVault {
             .get(&DataKey::SubmissionCounter)
             .unwrap_or(0);
 
-        let timestamp = env.ledger().timestamp();
+        // One source for the submission timestamp: the ledger clock, in Unix
+        // seconds UTC. The record and the `PriceSubmitted` event below are
+        // built from the same value, so they can never disagree.
+        let timestamp = Self::ledger_timestamp(&env);
 
         // Build the submission record with default status values.
         let submission = Submission {
@@ -781,6 +809,62 @@ impl PriceVault {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Read every submission for a country whose record timestamp lies in the
+    /// inclusive window `[from_timestamp, to_timestamp]`.
+    ///
+    /// This is the historical-record filter. The primary record is keyed by
+    /// `(schema_version, country, category, submitter, timestamp)` and the
+    /// per-country index is insertion-ordered, so a window is served by
+    /// scanning the country's IDs once and returning the records whose stored
+    /// `timestamp` falls inside the range.
+    ///
+    /// Timestamps are Unix seconds UTC — the same unit the [`PriceSubmitted`]
+    /// event carries (see [`TIMESTAMP_UNIT`]).
+    ///
+    /// # Errors
+    /// * `NotInitialized` / `IncompatibleSchema` — as above
+    /// * `InvalidTimeWindow` — `from_timestamp` is after `to_timestamp`
+    /// * `TimeWindowTooLarge` — the span exceeds [`MAX_SUBMISSION_WINDOW`]
+    pub fn submissions_in_time_window(
+        env: Env,
+        country_iso: Symbol,
+        from_timestamp: u64,
+        to_timestamp: u64,
+    ) -> Result<Vec<Submission>, Error> {
+        let schema_version = Self::require_compatible_schema(&env)?;
+
+        if from_timestamp > to_timestamp {
+            return Err(Error::InvalidTimeWindow);
+        }
+        if to_timestamp - from_timestamp > MAX_SUBMISSION_WINDOW {
+            return Err(Error::TimeWindowTooLarge);
+        }
+
+        let country_key = DataKey::CountrySubmissions(country_iso, schema_version);
+        let submission_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&country_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut submissions = Vec::new(&env);
+        for id in submission_ids.iter() {
+            if let Some(submission) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Submission>(&DataKey::SubmissionById(id))
+            {
+                if submission.timestamp >= from_timestamp
+                    && submission.timestamp <= to_timestamp
+                {
+                    submissions.push_back(submission);
+                }
+            }
+        }
+
+        Ok(submissions)
+    }
+
     // ── Schema / admin introspection ──────────────────────────────────────
 
     /// The schema version this deployment was initialized at.
@@ -791,6 +875,16 @@ impl PriceVault {
     /// The schema version this build of the contract understands.
     pub fn expected_schema_version(_env: Env) -> u32 {
         SCHEMA_VERSION
+    }
+
+    /// The unit every timestamp in this contract is expressed in.
+    ///
+    /// Exposed so a consumer does not have to read the source to know whether
+    /// a stored timestamp is seconds, milliseconds, or a ledger sequence:
+    /// records, events, and the bounds of `submissions_in_time_window` are all
+    /// Unix seconds UTC.
+    pub fn timestamp_unit(env: Env) -> Symbol {
+        Symbol::new(&env, TIMESTAMP_UNIT)
     }
 
     /// Whether this deployment's data is compatible with this build.
@@ -812,6 +906,14 @@ impl PriceVault {
     }
 
     // ── Internal guards ───────────────────────────────────────────────────
+
+    /// The current ledger time, in Unix seconds UTC.
+    ///
+    /// Every timestamp this contract stores or emits is taken from here, which
+    /// is what keeps a stored record and its event in the same unit.
+    fn ledger_timestamp(env: &Env) -> u64 {
+        env.ledger().timestamp()
+    }
 
     /// Return the deployment's schema version, or fail if it is unusable.
     fn require_compatible_schema(env: &Env) -> Result<u32, Error> {

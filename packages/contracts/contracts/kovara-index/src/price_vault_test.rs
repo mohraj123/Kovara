@@ -8,7 +8,7 @@
 //!   and category validation, price bounds, schema versioning, authorization)
 
 use crate::price_vault::{
-    Error, PriceVault, PriceVaultClient, RewardStatus, VerificationStatus,
+    Error, PriceVault, PriceVaultClient, RewardStatus, VerificationStatus, MAX_SUBMISSION_WINDOW,
 };
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::Events;
@@ -921,4 +921,126 @@ fn an_unsigned_submission_is_rejected() {
 
     f.client
         .submit(&f.submitter, &US, &FOOD, &BREAD, &100, &USD, &100);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Timestamped submission record format (#690)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A submission records the ledger time at which it was submitted, in Unix
+/// seconds UTC, so historical records carry accurate timestamp metadata.
+#[test]
+fn a_submission_records_the_ledger_timestamp() {
+    let f = deploy_initialized();
+
+    f.env.ledger().set_timestamp(1_700_000_000);
+    let id = f
+        .client
+        .submit(&f.submitter, &US, &FOOD, &BREAD, &100, &USD, &100);
+
+    let submission = f.client.get_submission(&id);
+    assert_eq!(submission.timestamp, 1_700_000_000);
+}
+
+/// The contract exposes the unit its timestamps are expressed in, so a consumer
+/// never has to guess between seconds, milliseconds, and ledger sequence.
+#[test]
+fn the_contract_reports_its_timestamp_unit() {
+    let f = deploy_initialized();
+
+    assert_eq!(
+        f.client.timestamp_unit(),
+        Symbol::new(&f.env, "unix_seconds_utc")
+    );
+}
+
+/// A time window returns only the submissions whose timestamp falls inside it,
+/// and the bounds are inclusive.
+#[test]
+fn submissions_are_filtered_by_time_window() {
+    let f = deploy_initialized();
+
+    f.env.ledger().set_timestamp(1_000);
+    f.client
+        .submit(&f.submitter, &US, &FOOD, &BREAD, &100, &USD, &100);
+
+    f.env.ledger().set_timestamp(2_000);
+    f.client
+        .submit(&f.submitter, &US, &RENT, &BR1_CTR, &200, &USD, &200);
+
+    f.env.ledger().set_timestamp(3_000);
+    f.client
+        .submit(&f.submitter, &US, &TRANSPORT, &MON_PASS, &300, &USD, &300);
+
+    let middle = f
+        .client
+        .submissions_in_time_window(&US, &1_500, &2_500);
+    assert_eq!(middle.len(), 1);
+    assert_eq!(middle.get(0).unwrap().timestamp, 2_000);
+
+    let all = f.client.submissions_in_time_window(&US, &1_000, &3_000);
+    assert_eq!(all.len(), 3);
+
+    let edges = f.client.submissions_in_time_window(&US, &2_000, &3_000);
+    assert_eq!(edges.len(), 2);
+}
+
+/// A window that matches no submission is an empty list, not an error.
+#[test]
+fn an_empty_time_window_returns_no_submissions() {
+    let f = deploy_initialized();
+
+    f.env.ledger().set_timestamp(1_000);
+    f.client
+        .submit(&f.submitter, &US, &FOOD, &BREAD, &100, &USD, &100);
+
+    let none = f.client.submissions_in_time_window(&US, &5_000, &6_000);
+    assert_eq!(none.len(), 0);
+}
+
+/// A window only sees the country it was asked about.
+#[test]
+fn a_time_window_is_scoped_to_one_country() {
+    let f = deploy_initialized();
+
+    f.env.ledger().set_timestamp(1_000);
+    f.client
+        .submit(&f.submitter, &US, &FOOD, &BREAD, &100, &USD, &100);
+    f.client
+        .submit(&f.submitter, &NG, &FOOD, &RICE, &300, &NGN, &50_000);
+
+    let us = f.client.submissions_in_time_window(&US, &0, &2_000);
+    assert_eq!(us.len(), 1);
+    assert_eq!(us.get(0).unwrap().country_iso, US);
+
+    let ng = f.client.submissions_in_time_window(&NG, &0, &2_000);
+    assert_eq!(ng.len(), 1);
+    assert_eq!(ng.get(0).unwrap().country_iso, NG);
+}
+
+/// An inverted window is rejected rather than silently returning nothing.
+#[test]
+fn an_inverted_time_window_is_rejected() {
+    let f = deploy_initialized();
+
+    assert_eq!(
+        f.client
+            .try_submissions_in_time_window(&US, &2_000, &1_000),
+        Err(Ok(Error::InvalidTimeWindow))
+    );
+}
+
+/// A window wider than the bound is rejected so the query stays O(submissions).
+#[test]
+fn a_time_window_wider_than_the_max_is_rejected() {
+    let f = deploy_initialized();
+
+    assert_eq!(
+        f.client.try_submissions_in_time_window(
+            &US,
+            &0,
+            &(MAX_SUBMISSION_WINDOW + 1)
+        ),
+        Err(Ok(Error::TimeWindowTooLarge))
+    );
 }
