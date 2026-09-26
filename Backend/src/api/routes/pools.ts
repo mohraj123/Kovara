@@ -2,10 +2,9 @@ import { Router, Request, Response } from "express";
 import { Database, PoolRecord } from "../../db";
 import { ApiErrorResponse, PoolListResponse, PoolResponse } from "../contracts";
 import { serializeBigInt } from "../index";
+import { isFailure, validatePagination, validateString } from "../validation";
 
 const MAX_LIMIT = 100;
-const DEFAULT_LIMIT = 20;
-const DEFAULT_OFFSET = 0;
 
 function isThresholdValid(pool: PoolRecord): boolean {
   return pool.threshold > 0 && pool.threshold <= pool.admins.length;
@@ -37,21 +36,14 @@ export function createPoolsRouter(db: Database): Router {
   router.get(
     "/",
     async (req: Request, res: Response<PoolListResponse | ApiErrorResponse>): Promise<void> => {
-      const rawLimit = req.query.limit !== undefined ? Number(req.query.limit) : DEFAULT_LIMIT;
-      const rawOffset = req.query.offset !== undefined ? Number(req.query.offset) : DEFAULT_OFFSET;
-
-      if (!Number.isInteger(rawLimit) || rawLimit < 1) {
-        res.status(400).json({ error: "limit must be a positive integer", code: "INVALID_QUERY" });
+      const pagination = validatePagination(req.query as Record<string, unknown>, {
+        maxLimit: MAX_LIMIT,
+      });
+      if (isFailure(pagination)) {
+        res.status(400).json(pagination.failure);
         return;
       }
-      if (rawLimit > MAX_LIMIT) {
-        res.status(400).json({ error: `limit cannot exceed ${MAX_LIMIT}`, code: "LIMIT_EXCEEDED" });
-        return;
-      }
-      if (!Number.isInteger(rawOffset) || rawOffset < 0) {
-        res.status(400).json({ error: "offset must be a non-negative integer", code: "INVALID_QUERY" });
-        return;
-      }
+      const { limit: rawLimit, offset: rawOffset } = pagination.value;
 
       const { pools, total } = await db.listPools({ limit: rawLimit, offset: rawOffset });
 
@@ -93,14 +85,13 @@ export function createPoolsRouter(db: Database): Router {
   router.get(
     "/:id",
     async (req: Request, res: Response<PoolResponse | ApiErrorResponse>): Promise<void> => {
-      const { id } = req.params;
-
-      if (!id || typeof id !== "string" || id.trim() === "") {
-        res.status(400).json({ error: "Invalid pool ID: must be a non-empty string", code: "INVALID_ID" });
+      const validatedId = validateString(req.params.id, "pool id", { maxLength: 128, code: "INVALID_ID" });
+      if (isFailure(validatedId)) {
+        res.status(400).json(validatedId.failure);
         return;
       }
 
-      const pool = await db.getPool(id);
+      const pool = await db.getPool(validatedId.value);
       if (!pool) {
         res.status(404).json({ error: "Pool not found", code: "NOT_FOUND" });
         return;

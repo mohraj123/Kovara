@@ -234,6 +234,25 @@ export interface Database {
   // Tips
   insertTip(tip: Tip): Promise<void>;
 
+  // ── Activity reads (#675) ──────────────────────────────────────────────────
+  // Optional so an existing `Database` implementation (and the many test
+  // doubles that construct one) does not have to grow a method to keep
+  // compiling; callers feature-detect with `typeof db.listLikes === "function"`.
+  /** True when a tip with this transaction hash has already been recorded. */
+  hasTip?(tx_hash: string): Promise<boolean>;
+  /** Recent likes on a post, newest first. */
+  listLikes?(
+    post_id: bigint,
+    limit: number,
+    offset: number
+  ): Promise<{ likes: { user: string; ledger: number }[]; total: number }>;
+  /** Recent tips on a post, newest first. */
+  listTips?(
+    post_id: bigint,
+    limit: number,
+    offset: number
+  ): Promise<{ tips: Tip[]; total: number }>;
+
   // Pools
   upsertPool(pool: PoolRecord): Promise<void>;
   adjustPoolBalance(pool_id: string, delta: bigint, ledger: number): Promise<void>;
@@ -581,6 +600,62 @@ export class PostgresDatabase implements Database {
         tip.tx_hash,
       ]
     );
+  }
+
+  // ── Activity reads (#675) ──────────────────────────────────────────────────
+
+  async hasTip(tx_hash: string): Promise<boolean> {
+    const result = await this.runQuery(`SELECT 1 FROM tips WHERE tx_hash = $1 LIMIT 1`, [tx_hash]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async listLikes(
+    post_id: bigint,
+    limit: number,
+    offset: number
+  ): Promise<{ likes: { user: string; ledger: number }[]; total: number }> {
+    const countResult = await this.pool.query(
+      `SELECT COUNT(*)::int AS total FROM likes WHERE post_id = $1`,
+      [post_id.toString()]
+    );
+    const result = await this.pool.query(
+      `SELECT user, ledger FROM likes WHERE post_id = $1 ORDER BY ledger DESC LIMIT $2 OFFSET $3`,
+      [post_id.toString(), limit, offset]
+    );
+    return {
+      likes: result.rows.map((row) => ({
+        user: String(row.user),
+        ledger: Number(row.ledger),
+      })),
+      total: Number(countResult.rows[0]?.total ?? 0),
+    };
+  }
+
+  async listTips(
+    post_id: bigint,
+    limit: number,
+    offset: number
+  ): Promise<{ tips: Tip[]; total: number }> {
+    const countResult = await this.pool.query(
+      `SELECT COUNT(*)::int AS total FROM tips WHERE post_id = $1`,
+      [post_id.toString()]
+    );
+    const result = await this.pool.query(
+      `SELECT id, tipper, post_id, amount, fee, ledger, tx_hash FROM tips WHERE post_id = $1 ORDER BY ledger DESC LIMIT $2 OFFSET $3`,
+      [post_id.toString(), limit, offset]
+    );
+    return {
+      tips: result.rows.map((row) => ({
+        id: row.id === undefined || row.id === null ? undefined : Number(row.id),
+        tipper: String(row.tipper),
+        post_id: this.toBigInt(row.post_id),
+        amount: this.toBigInt(row.amount),
+        fee: this.toBigInt(row.fee),
+        ledger: Number(row.ledger),
+        tx_hash: String(row.tx_hash),
+      })),
+      total: Number(countResult.rows[0]?.total ?? 0),
+    };
   }
 
   async upsertPool(pool: PoolRecord): Promise<void> {

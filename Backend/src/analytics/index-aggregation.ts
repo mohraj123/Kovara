@@ -163,22 +163,21 @@ function countByReason(decisions: FilterDecision[]): Record<FilterReason, number
 }
 
 /**
- * Median of a non-empty array, truncated toward zero.
+ * Median of a non-empty array.
  *
- * With an even count, the mathematical median is the mean of the two central
- * values and may be a half-integer. Truncating is the right choice for a
- * fixed-point price: the index must land on a representable amount, and
- * rounding up would systematically overstate the cost of living.
+ * With an even count the lower of the two central values is returned, not
+ * their average. An average can be dragged by a single extreme observation
+ * (appending one huge value to an odd-sized sample moves the two central
+ * values and therefore the average), which defeats the entire point of using
+ * the median as a robust centre. Taking an actual observation keeps the result
+ * an element of the sample and makes the breakdown point a true 50%.
  *
- * The input is sorted in place, so pass a copy if the caller needs the original
- * order preserved.
+ * The input is not mutated; a sorted copy is used.
  */
 export function median(values: bigint[]): bigint | null {
   if (values.length === 0) return null;
   const sorted = [...values].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  const mid = sorted.length >> 1;
-  if (sorted.length % 2 === 1) return sorted[mid];
-  return (sorted[mid - 1] + sorted[mid]) / 2n;
+  return sorted[(sorted.length - 1) >> 1];
 }
 
 /**
@@ -191,10 +190,11 @@ export function quartile(values: bigint[], which: 1 | 3): bigint | null {
   const sorted = [...values].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const mid = sorted.length >> 1;
 
-  // Odd count: the median is a real observation, so the halves exclude it.
-  // Even count: split at the midpoint, giving an equal lower and upper half.
-  const lower = sorted.slice(0, sorted.length % 2 === 1 ? mid : mid);
-  const upper = sorted.slice(sorted.length % 2 === 1 ? mid + 1 : mid);
+  // Odd count: the median is a real observation and is shared by both halves
+  // (the inclusive method), so Q1 of [1,2,3,4,5] is 2 rather than 1. Even
+  // count: split at the midpoint, giving an equal lower and upper half.
+  const lower = sorted.slice(0, sorted.length % 2 === 1 ? mid + 1 : mid);
+  const upper = sorted.slice(sorted.length % 2 === 1 ? mid : mid);
   return median(which === 1 ? lower : upper);
 }
 
@@ -474,7 +474,13 @@ export function aggregate(
   } = options;
 
   const decisions: FilterDecision[] = [];
-  const { kept } = applyBasicFilters(points, { includeStatuses, ...options });
+  const { kept, decisions: basicDecisions } = applyBasicFilters(points, {
+    includeStatuses,
+    ...options,
+  });
+  // Basic-filter exclusions (invalid value, wrong status, out of bounds) are
+  // decisions too: dropping them here is what made the audit trail incomplete.
+  decisions.push(...basicDecisions);
 
   // Each filter appends to the shared decision log, so a submission excluded by
   // an earlier filter is never re-examined by a later one.

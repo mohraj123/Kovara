@@ -45,6 +45,7 @@ import { Pool } from "pg";
 import { randomUUID } from "crypto";
 import { streamEvents, EventHandler, RawEvent } from "./stream";
 import { createApp, AuthMiddleware } from "./api";
+import { createTokenAuthMiddleware } from "./middleware/auth";
 import { runMigrations } from "./migrate";
 import { PostgresDatabase } from "./db";
 import { EventStore } from "./event-store";
@@ -656,14 +657,7 @@ async function main(): Promise<void> {
     const db = new PostgresDatabase(pgPool);
     // Set up auth middleware if enabled
     const authMiddleware: AuthMiddleware = ENABLE_AUTH_MIDDLEWARE
-      ? (req, res, next) => {
-          const token = req.headers.authorization?.replace("Bearer ", "");
-          if (!token || token !== process.env.API_SECRET) {
-            res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED" });
-            return;
-          }
-          next();
-        }
+      ? createTokenAuthMiddleware(process.env.API_SECRET)
       : noopAuthMiddleware;
     const app = createApp(db, { authMiddleware });
     const server = app.listen(PORT, HOST);
@@ -804,14 +798,7 @@ async function main(): Promise<void> {
 
 // Create and start API server
   const authMiddleware: AuthMiddleware = ENABLE_AUTH_MIDDLEWARE
-    ? (req, res, next) => {
-        const token = req.headers.authorization?.replace("Bearer ", "");
-        if (!token || token !== process.env.API_SECRET) {
-          res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED" });
-          return;
-        }
-        next();
-      }
+    ? createTokenAuthMiddleware(process.env.API_SECRET)
     : noopAuthMiddleware;
   // #657/#658/#659: the stores are handed to the app so their routes mount.
   // Each is optional; omitting one leaves the rest untouched, which is what the
@@ -821,11 +808,9 @@ async function main(): Promise<void> {
     rewardStore: new RewardStore(pgPool),
     auditStore: new AuditStore(pgPool),
     submissionFeed: new PostgresSubmissionFeed(pgPool),
-  // #654/#655: the analytics store is handed to the app so /index is mounted.
-  // Omitting it leaves the other routes untouched, which is what the replay-mode
-  // path below relies on.
-  const app = createApp(db, {
-    authMiddleware,
+    // #654/#655: the analytics store is handed to the app so /index is mounted.
+    // Omitting it leaves the other routes untouched, which is what the replay-mode
+    // path below relies on.
     analyticsStore: new PostgresAnalyticsStore(pgPool),
   });
   const server = app.listen(PORT, HOST);

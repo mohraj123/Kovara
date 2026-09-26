@@ -113,7 +113,7 @@ describe("POST /api/search/posts", () => {
         body: JSON.stringify({ query: "popular", limit: 10, offset: 0 }),
       });
       expect(response.status).toBe(200);
-      const body = await response.json();
+      const body = (await response.json()) as any;
       expect(body.posts[0].like_count).toBe("9007199254740993");
       expect(body.posts[0].tip_total).toBe("9999999999999999");
       expect(typeof body.posts[0].like_count).toBe("string");

@@ -449,7 +449,7 @@ export class PostgresAnalyticsStore {
    */
   async getLeaderboard(
     scope: LeaderboardScope,
-    options: { from?: string; to?: string; limit: unknown; offset: unknown } = {}
+    options: { from?: string; to?: string; limit?: unknown; offset?: unknown } = {}
   ): Promise<LeaderboardPage> {
     const { limit, offset } = parsePagination(options);
     const from = options.from ? parseDateBound(options.from, "from") : null;

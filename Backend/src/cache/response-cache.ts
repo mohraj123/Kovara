@@ -82,7 +82,7 @@ export interface CacheStats {
 export class ResponseCache {
   private readonly entries = new Map<string, CacheEntry>();
   /** In-flight refreshes, keyed by cache key — the single-flight table. */
-  private readonly inFlight = new Map<string, Promise<string | null>>();
+  private readonly inFlight = new Map<string, Promise<{ body: string; stale: boolean } | null>>();
   private hits = 0;
   private misses = 0;
   private staleServed = 0;
@@ -168,7 +168,12 @@ export class ResponseCache {
         const value = await produce();
         // Serialize once, here, and store the bytes — so a hit costs no
         // serialization and every response for this entry is identical.
-        const body = JSON.stringify(value ?? null);
+        // BigInt has no JSON representation and `JSON.stringify` throws on it,
+        // so render it as a decimal string (matching the API serializer) rather
+        // than letting one bigint value turn a cacheable response into a 500.
+        const body = JSON.stringify(value ?? null, (_key, v) =>
+          typeof v === "bigint" ? v.toString() : v
+        );
         await this.store(key, body);
         return { body, stale: false };
       } catch {

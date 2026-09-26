@@ -104,9 +104,14 @@ export function parseIdempotencyKey(value: string): IdempotencyKey | null {
   if (!isValidIdempotencyKey(value)) return null;
 
   const parts = value.trim().split(":");
-  // prefix : version : contractId : ledger : eventId
-  if (parts.length !== 5) return null;
-  const [prefix, version, contractId, ledgerRaw, eventId] = parts;
+  // The prefix itself contains a colon, so a well-formed key has six parts:
+  // kovara:event : v1 : contractId : ledger : eventId
+  if (parts.length !== 6) return null;
+  const prefix = `${parts[0]}:${parts[1]}`;
+  const version = parts[2];
+  const contractId = parts[3];
+  const ledgerRaw = parts[4];
+  const eventId = parts[5];
   if (prefix !== IDEMPOTENCY_KEY_PREFIX) return null;
   if (version !== IDEMPOTENCY_KEY_VERSION) return null;
   if (contractId === "") return null;
@@ -216,7 +221,7 @@ export async function runOnce<T>(
     if (current.status === "processed") {
       return { status: "duplicate", previous: current };
     }
-    return { status: "duplicate", previous: { ...current, status: "processed" } };
+    return { status: "duplicate", previous: { ...current, status: "processed", processedAt: null } };
   }
 
   try {

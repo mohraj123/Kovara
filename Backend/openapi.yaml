@@ -112,6 +112,171 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
 
+  /follows:
+    post:
+      summary: Follow an account
+      operationId: createFollow
+      tags: [Follows]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FollowRequest"
+      responses:
+        "201":
+          description: Follow edge created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FollowState"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /follows/{follower}/{followee}:
+    delete:
+      summary: Unfollow an account
+      operationId: deleteFollow
+      tags: [Follows]
+      parameters:
+        - name: follower
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: followee
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Follow edge removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FollowState"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /follows/{address}/relationship/{target}:
+    get:
+      summary: Read the relationship between two accounts
+      operationId: getFollowRelationship
+      tags: [Follows]
+      parameters:
+        - $ref: "#/components/parameters/address"
+        - name: target
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Relationship state in both directions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FollowRelationship"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /follows/{address}/counts:
+    get:
+      summary: Reliable follower and following totals for an account
+      operationId: getFollowCounts
+      tags: [Follows]
+      parameters:
+        - $ref: "#/components/parameters/address"
+      responses:
+        "200":
+          description: Follower and following totals
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FollowCounts"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /posts/{id}/like:
+    post:
+      summary: Like a post
+      operationId: likePost
+      tags: [Activity]
+      parameters:
+        - $ref: "#/components/parameters/postId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LikeRequest"
+      responses:
+        "201":
+          description: Like recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LikeState"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /posts/{id}/tip:
+    post:
+      summary: Tip a post
+      operationId: tipPost
+      tags: [Activity]
+      parameters:
+        - $ref: "#/components/parameters/postId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TipRequest"
+      responses:
+        "201":
+          description: Tip recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TipState"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /posts/{id}/activity:
+    get:
+      summary: Persisted like and tip activity for a post
+      operationId: getPostActivity
+      tags: [Activity]
+      parameters:
+        - $ref: "#/components/parameters/postId"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/offset"
+      responses:
+        "200":
+          description: Activity rows and aggregate totals
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostActivity"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /pools/{id}:
     get:
       summary: Get pool by ID
@@ -162,6 +327,13 @@ components:
         minimum: 0
         default: 0
       description: Number of items to skip before returning results.
+    postId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Numeric post ID (as a string to support large integers).
 
   schemas:
     Profile:
@@ -278,6 +450,146 @@ components:
         updated_ledger:
           type: integer
 
+    FollowRequest:
+      type: object
+      required: [follower, followee]
+      properties:
+        follower:
+          type: string
+        followee:
+          type: string
+        ledger:
+          type: integer
+          minimum: 0
+          default: 0
+
+    FollowState:
+      type: object
+      required: [follower, followee, following]
+      properties:
+        follower:
+          type: string
+        followee:
+          type: string
+        following:
+          type: boolean
+
+    FollowRelationship:
+      type: object
+      required: [address, target, following, followed_by, mutual]
+      properties:
+        address:
+          type: string
+        target:
+          type: string
+        following:
+          type: boolean
+        followed_by:
+          type: boolean
+        mutual:
+          type: boolean
+
+    FollowCounts:
+      type: object
+      required: [address, followers, following]
+      properties:
+        address:
+          type: string
+        followers:
+          type: integer
+        following:
+          type: integer
+
+    LikeRequest:
+      type: object
+      required: [user]
+      properties:
+        user:
+          type: string
+          description: Stellar address of the liker.
+        ledger:
+          type: integer
+          minimum: 0
+          default: 0
+
+    LikeState:
+      type: object
+      required: [post_id, user, liked, like_count]
+      properties:
+        post_id:
+          type: string
+        user:
+          type: string
+        liked:
+          type: boolean
+        like_count:
+          type: string
+
+    TipRequest:
+      type: object
+      required: [tipper, amount, tx_hash]
+      properties:
+        tipper:
+          type: string
+          description: Stellar address of the tipper.
+        amount:
+          type: string
+          description: Tip amount in the asset's smallest unit.
+        fee:
+          type: string
+          default: "0"
+        tx_hash:
+          type: string
+          description: 64-character hex transaction hash (idempotency key).
+        ledger:
+          type: integer
+          minimum: 0
+          default: 0
+
+    TipState:
+      type: object
+      required: [post_id, tipper, amount, fee, tip_total]
+      properties:
+        post_id:
+          type: string
+        tipper:
+          type: string
+        amount:
+          type: string
+        fee:
+          type: string
+        tip_total:
+          type: string
+
+    PostActivity:
+      type: object
+      required: [post_id, like_count, tip_total, likes, likes_total, tips, tips_total]
+      properties:
+        post_id:
+          type: string
+        like_count:
+          type: string
+        tip_total:
+          type: string
+        likes:
+          type: array
+          items:
+            type: object
+            required: [user, ledger]
+            properties:
+              user:
+                type: string
+              ledger:
+                type: integer
+        likes_total:
+          type: integer
+        tips:
+          type: array
+          items:
+            type: object
+        tips_total:
+          type: integer
+
     Error:
       type: object
       required: [error, code]
@@ -306,3 +618,30 @@ components:
           example:
             error: limit must be a positive integer
             code: INVALID_QUERY
+    Conflict:
+      description: The request conflicts with existing state
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: already following this account
+            code: ALREADY_FOLLOWING
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: Unauthorized
+            code: UNAUTHORIZED
+    Forbidden:
+      description: Authenticated but not permitted
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: Forbidden
+            code: FORBIDDEN

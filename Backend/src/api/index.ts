@@ -17,7 +17,10 @@ import {
   AbuseDetector,
 } from "../middleware/abuse-detection";
 import { tieredRateLimits } from "../middleware/rate-limit-tiers";
+import { noopAuthMiddleware } from "../middleware/auth";
+import type { AuthMiddleware } from "../middleware/auth";
 import { createSearchRouter } from "./search-router";
+import { isFailure, validatePagination, validateSearchQuery } from "./validation";
 import { PostgresSearchStore } from "../search/store";
 import { Pool } from "pg";
 
@@ -107,13 +110,7 @@ import { ModerationStore } from "../verification/moderation";
  *     },
  *   });
  */
-export type AuthMiddleware = (req: Request, res: Response, next: NextFunction) => void;
-
-/**
- * A no-op middleware used when no auth is configured.
- * Passes every request straight through, preserving existing anonymous access.
- */
-const noopAuthMiddleware: AuthMiddleware = (_req, _res, next) => next();
+export type { AuthMiddleware } from "../middleware/auth";
 
 // ── App options ───────────────────────────────────────────────────────────────
 
@@ -162,6 +159,8 @@ export interface AppOptions {
    * #659: the paginated, filtered submission feed.
    */
   submissionFeed?: PostgresSubmissionFeed;
+
+  /**
    * #654/#655: Analytics store backing the historical index series, the country
    * leaderboard, and the filter-decision log.
    *
@@ -312,14 +311,21 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
     app.use(LEGACY_API_PREFIX, abuseDetection({ detector: abuse }));
   }
 
-// BE-25: Apply the auth middleware to all /api routes after rate limiting.
-// Routes registered below this line are covered; the health check above is
-// intentionally excluded.
-// Note: authMiddleware is now passed via options to createApp, so we don't apply it here.
-// Instead, it's applied in the app factory (see createApp function).
-// We keep this comment for historical context but the actual middleware application
-// happens in the options passed to createApp.
-// app.use("/api", authMiddleware);
+  // ── Authentication / authorization (#666) ───────────────────────────────────
+  // Applied to every route mounted on the API router (both /api and /api/v1).
+  // Health and version are registered on `app` above, so they stay public and a
+  // load balancer can still probe liveness while auth is enabled. When no
+  // middleware is supplied this is the no-op, so deployments that want anonymous
+  // access are unaffected.
+  apiRouter.use(authMiddleware);
+
+  // ── Per-address rate limiting (#616) ────────────────────────────────────────
+  // Complements the IP limiter above: a single IP (a NAT, a script behind one
+  // proxy) can otherwise exhaust the shared budget on behalf of everyone behind
+  // it. Requests with no identifiable address are skipped by the limiter itself.
+  if (process.env.ENABLE_ADDRESS_RATE_LIMITING !== "false") {
+    app.use(LEGACY_API_PREFIX, addressRateLimiter());
+  }
 
   apiRouter.use("/profiles", createProfilesRouter(db));
   apiRouter.use("/posts", createPostsRouter(db));
@@ -377,10 +383,11 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
   // would make every case unreachable a moment after it was filed.
   apiRouter.use("/moderation", createModerationRouter(new ModerationStore()));
 
-// Conditionally mount experimental routes
-  if (process.env.EXPERIMENTAL_FEATURES === "true") {
-    apiRouter.use("/pools", createPoolsRouter(db));
-  }
+  // Pools are a first-class public resource with their own pagination and
+  // serialization contract; they are mounted unconditionally. (The previous
+  // EXPERIMENTAL_FEATURES gate meant the endpoints existed in tests but were
+  // absent at runtime unless an undocumented variable was set.)
+  apiRouter.use("/pools", createPoolsRouter(db));
 
   // #659: submission feed with pagination and status/user/date filters.
   if (options.submissionFeed) {
@@ -395,6 +402,8 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
   // #658: audit reads and chain verification.
   if (options.auditStore) {
     apiRouter.use("/audit", createAuditRouter(options.auditStore));
+  }
+
   // #654/#655: historical index series, country leaderboards, and the filter
   // decision log. Mounted only when a store is supplied — see AppOptions.
   if (options.analyticsStore) {
@@ -460,54 +469,26 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
     "/search/posts",
     async (req: Request, res: Response<SearchResponse | ErrorResponse>): Promise<void> => {
       const body = req.body as Partial<SearchQuery>;
-      const rawQuery = body.query;
 
-      if (rawQuery === undefined || rawQuery === null || typeof rawQuery !== "string") {
-        res.status(400).json({ error: "query is required", code: "INVALID_QUERY" });
+      // #665: normalize/cap the query and validate the page window with the
+      // shared helpers, so this endpoint's error shape cannot drift from the
+      // rest of the API.
+      const validatedQuery = validateSearchQuery(body.query, { maxLength: MAX_QUERY_LENGTH });
+      if (isFailure(validatedQuery)) {
+        res.status(400).json(validatedQuery.failure);
         return;
       }
 
-      const query = rawQuery.trim().replace(/\s+/g, " ");
-      if (query === "") {
-        res.status(400).json({ error: "query is required", code: "INVALID_QUERY" });
+      const pagination = validatePagination(
+        { limit: body.limit ?? undefined, offset: body.offset ?? undefined },
+        { defaultLimit: DEFAULT_LIMIT, defaultOffset: DEFAULT_OFFSET, maxLimit: MAX_LIMIT }
+      );
+      if (isFailure(pagination)) {
+        res.status(400).json(pagination.failure);
         return;
       }
 
-      if (query.length > MAX_QUERY_LENGTH) {
-        res.status(400).json({
-          error: `query cannot exceed ${MAX_QUERY_LENGTH} characters`,
-          code: "QUERY_TOO_LONG",
-        });
-        return;
-      }
-
-      if (body.limit !== undefined && body.limit !== null && typeof body.limit !== "number") {
-        res.status(400).json({ error: "limit must be a number", code: "INVALID_QUERY" });
-        return;
-      }
-
-      if (body.offset !== undefined && body.offset !== null && typeof body.offset !== "number") {
-        res.status(400).json({ error: "offset must be a number", code: "INVALID_QUERY" });
-        return;
-      }
-
-      const limit = body.limit !== undefined ? Number(body.limit) : DEFAULT_LIMIT;
-      const offset = body.offset !== undefined ? Number(body.offset) : DEFAULT_OFFSET;
-
-      if (!Number.isInteger(limit) || limit < 1) {
-        res.status(400).json({ error: "limit must be a positive integer", code: "INVALID_QUERY" });
-        return;
-      }
-
-      if (limit > MAX_LIMIT) {
-        res.status(400).json({ error: `limit cannot exceed ${MAX_LIMIT}`, code: "LIMIT_EXCEEDED" });
-        return;
-      }
-
-      if (!Number.isInteger(offset) || offset < 0) {
-        res.status(400).json({ error: "offset must be a non-negative integer", code: "INVALID_QUERY" });
-        return;
-      }
+      const { limit, offset } = pagination.value;
 
       if (typeof db.searchPosts !== "function") {
         res.status(500).json({ error: "search backend unavailable", code: "SEARCH_UNAVAILABLE" });
@@ -515,7 +496,7 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
       }
 
       const { posts, total } = await db.searchPosts({
-        query,
+        query: validatedQuery.value,
         limit,
         offset,
       });

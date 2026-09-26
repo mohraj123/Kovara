@@ -121,8 +121,10 @@ export class PostgresSubmissionFeed {
       limit: query.limit,
       offset: query.offset,
       // Derived from the returned row count, so the final page reports false
-      // even when the total is an exact multiple of the page size.
-      hasMore: query.offset + result.rows.length < total,
+      // even when the total is an exact multiple of the page size: only a full
+      // page can indicate that another page exists. A short (or empty) page is
+      // the last page regardless of what `total` claims.
+      hasMore: result.rows.length === query.limit && query.offset + result.rows.length < total,
     };
   }
 
