@@ -236,10 +236,83 @@ and back off until the database is reachable again.
   and largely additive, a previous binary can usually run against the newer schema;
   if the schema is incompatible, restore from a backup first.
 
-## 9. Backups and scaling
+## 9. Backups, restore and scaling
 
-- Compose persists PostgreSQL in the `pgdata` named volume. Back it up with
-  `pg_dump` against `DATABASE_URL`; the repo provides no automated backup job.
+### 9.1 Create a backup
+
+Compose persists PostgreSQL in the `pgdata` named volume. The repo provides a
+controlled backup process (`Backend/scripts/backup.js`, #681) that wraps
+`pg_dump` and writes a **manifest** beside the dump:
+
+```bash
+cd Backend
+npm run build                                   # scripts load dist/backup/backup.js
+DATABASE_URL=postgresql://… npm run backup -- --out backups
+```
+
+This writes two files into `backups/` (override with `--out`):
+
+| File | Contents |
+| --- | --- |
+| `kovara-<timestamp>.dump` | `pg_dump` output (`--format=custom` by default; `--format plain` also supported). |
+| `kovara-<timestamp>.manifest.json` | When/where the dump was taken, its SHA-256 and byte size, and the row count of every tracked table. |
+
+The manifest is what makes the backup verifiable: without it a truncated or
+corrupted dump is indistinguishable from a good one. Keep the dump and its
+manifest together — a dump without its manifest cannot be validated or restored
+by the scripts.
+
+### 9.2 Validate a backup
+
+Run this before trusting a backup, and on a schedule against the most recent one
+so corruption is found before the day it is needed:
+
+```bash
+cd Backend
+npm run backup:validate -- backups/kovara-<timestamp>.dump backups/kovara-<timestamp>.manifest.json
+```
+
+It re-computes the dump's SHA-256 and size and compares them to the manifest.
+Exit code `0` means the file is the backup it claims to be; `1` means it is
+truncated, corrupted, or the wrong file. A non-zero exit is a hard stop — do not
+restore an unvalidated dump.
+
+### 9.3 Restore a backup
+
+Restore is gated so a bad dump cannot be applied over a live database:
+
+```bash
+cd Backend
+DATABASE_URL=postgresql://… npm run restore -- backups/kovara-<timestamp>.dump backups/kovara-<timestamp>.manifest.json
+```
+
+The script:
+
+1. **Verifies the dump against its manifest first** and refuses to continue if
+   they disagree.
+2. **Names the target database and asks for confirmation.** Pass `--yes` for
+   non-interactive/automated restores.
+3. Runs `pg_restore --clean --if-exists` (or `psql -v ON_ERROR_STOP=1 -f` for a
+   plain dump), so the restore is idempotent and re-runnable.
+4. **Reads the row counts back and compares them to the manifest.** A mismatch
+   exits non-zero with the offending tables listed — the restore is not
+   considered done until the data is proven back.
+
+After a successful restore, restart the indexer so it reconnects and resumes
+from `stream_state` (see §6.4 if the cursor needs correcting).
+
+### 9.4 Recovery checklist
+
+1. Stop the indexer (`docker compose stop indexer`) so nothing writes during the
+   restore.
+2. `npm run backup:validate -- <dump> <manifest>` — confirm the backup is intact.
+3. `npm run restore -- <dump> <manifest>` — restore and validate row counts.
+4. `curl -fsS http://localhost:3000/health` after restarting — expect `db: "ok"`.
+5. Check the event backlog (§6.3) and replay any ledger range missed while the
+   database was down (§6.1).
+
+### 9.5 Scaling
+
 - Run **one** indexer instance. The stream keeps its dedup ring buffer and cursor
   in process and there is no leader election, so multiple live indexers are not
   supported as-is (the `events`/`stream_state` unique constraints keep data
