@@ -25,4 +25,4 @@ export type {
   SchedulerOptions,
   SubmissionStatus,
 } from "./job";
-export { PostgresAggregationStore } from "./stores";
+export { PostgresAggregationStore, PostgresDeadLetterStore } from "./stores";

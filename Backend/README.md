@@ -1065,6 +1065,89 @@ migrations by filename prefix alone (`migrate.ts`), so two files sharing a
 prefix means one is silently skipped. **If you add a migration while both
 branches are open, pick a prefix not already claimed.**
 
+## Pool views, ranked feeds, wallet auth, and reconciliation (#669–#677)
+
+### Pool membership and liquidity (#677)
+
+Pool state was already stored (`balance`, `admins`, `threshold`); these
+endpoints answer the two questions a client actually has about it.
+
+```
+GET /api/v1/pools/liquidity                    Whole-system summary
+GET /api/v1/pools/:id/liquidity                 One pool's liquidity view
+GET /api/v1/pools/:id/membership/:address       Membership + role
+```
+
+The summary reports pool counts, the active/inactive split (a pool is active
+when it holds a positive balance), total balance and distinct tokens. Balances
+are decimal **strings**: a pool balance routinely exceeds `Number.MAX_SAFE_INTEGER`
+and a numeric coercion would silently round it. An empty deployment is a `200`
+with all-zero counts, never a `404`; a non-member is a `200` with
+`member: false, role: "none"`. Membership and liquidity logic is pure
+(`src/pools/liquidity.ts`), so counts can never disagree with the rows shown
+beside them.
+
+### Ranked feed and trending (#676)
+
+```
+GET /api/v1/feed                       Ranked (engagement + recency)
+GET /api/v1/feed?mode=recent           Newest first
+GET /api/v1/feed?mode=trending         Engagement rate within a window
+GET /api/v1/feed?author=<address>      Scoped to one author
+```
+
+Ranking (`src/feed/ranking.ts`) is pure and deterministic. `ranked` combines
+log-scaled engagement and recency; `trending` uses engagement **rate** over an
+explicit window (posts outside it are excluded, not merely ranked last), so a
+long-accumulated viral post does not trend forever. Every response echoes the
+weights and window it applied, and each entry carries the signals behind its
+score, so the order is explainable. Ties break by `id` descending, making the
+order total and pageable without repeats or skips.
+
+### Wallet signature verification (#670)
+
+`src/middleware/wallet-signature.ts` verifies a real ed25519 signature against
+a Stellar `G…` address — an address header alone proves nothing. Compose it
+where the app already accepts an auth hook:
+
+```ts
+createApp(db, {
+  authMiddleware: walletSignatureMiddleware({
+    store: myIdentityStore,       // verified address → user identity
+    nonces: new InMemoryNonceRegistry(),
+  }),
+});
+```
+
+Clients send `x-wallet-address`, `x-wallet-signature` (base64),
+`x-wallet-timestamp`, and `x-wallet-nonce`. The signed bytes are a canonical
+message built by `buildSignableMessage` from method, path, timestamp and nonce,
+so a proof cannot be replayed against another route. Failures are the standard
+`{ error, code }` shape, with a distinct code per cause
+(`WALLET_PROOF_REQUIRED`, `WALLET_SIGNATURE_INVALID`, `WALLET_PROOF_EXPIRED`,
+`WALLET_ADDRESS_INVALID`, `WALLET_NONCE_REUSED`). Verification uses Node's
+`crypto`; no extra dependency.
+
+### Daily reconciliation (#669)
+
+`src/reconciliation/job.ts` compares the published `price_index_aggregates` for
+a day against the verified `price_submissions` they came from, and records every
+difference (missing aggregate, stale aggregate, count mismatch, value
+mismatch). It runs once a day under a lease, catches up missed days, and never
+repairs anything — detecting and reporting leaves the decision to an operator.
+
+```
+GET /api/v1/reconciliation/runs                 Recent runs, newest first
+GET /api/v1/reconciliation/runs/:runDate        One run with its discrepancies
+```
+
+Configuration (both optional):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `RECONCILIATION_INTERVAL_MS` | `3600000` | Reconciliation tick interval |
+| `RECONCILIATION_CATCH_UP_DAYS` | `7` | How many days back to catch up |
+
 ## Troubleshooting
 
 ### Indexer falls behind

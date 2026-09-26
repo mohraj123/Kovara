@@ -33,7 +33,7 @@ export class ResilientHandler {
     return required.every(key => data[key] != null);
   }
 
-  async handleWithValidation<T, R>(
+  async handleWithValidation<T extends Record<string, any>, R>(
     data: T,
     requiredFields: (keyof T)[],
     handler: (data: T) => Promise<R>
