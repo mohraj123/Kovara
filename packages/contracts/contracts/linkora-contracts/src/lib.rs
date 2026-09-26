@@ -36,10 +36,9 @@ pub enum StorageKey {
     Admin,                     // persistent or instance admin reference
     Verifier(Address),          // persistent: registered verifier marker
     VerifierStake(Address, Address), // persistent: (verifier, token) -> i128
-    VoteRound(u64),                            // persistent: submission_id -> VoteRound
-    HasVoted(u64, Address),                    // persistent: (submission_id, verifier) -> bool
     VoteRound(u64),                  // persistent: submission_id -> VoteRound
     HasVoted(u64, Address),          // persistent: (submission_id, verifier) -> bool
+    QuorumConfig,                    // instance: quorum configuration parameters
 }
 
 // ── Error Codes ────────────────────────────────────────────────────────────────
@@ -221,6 +220,13 @@ pub struct Proposal {
     pub recipient: Address,
     pub signers: Vec<Address>,
     pub status: ProposalStatus,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuorumConfig {
+    pub min_quorum_size: u32,
+    pub approval_threshold_percent: u32,
 }
 
 // ── Events ────────────────────────────────────────────────────────────────────
@@ -446,6 +452,16 @@ pub struct PauseEvent {
 pub struct UnpauseEvent {
     pub admin: Address,
 }
+
+#[contractevent]
+#[derive(Clone)]
+pub struct QuorumConfigUpdatedEvent {
+    #[topic]
+    pub name: Symbol,
+    pub min_quorum_size: u32,
+    pub approval_threshold_percent: u32,
+}
+
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -1852,6 +1868,61 @@ impl KovaraContract {
         env.storage().instance().get(&PAUSED).unwrap_or(false)
     }
 
+    // ── Quorum Configuration ──────────────────────────────────────────────────
+
+    /// Set the quorum configuration parameters. Admin-only.
+    ///
+    /// `min_quorum_size` must be > 0 and `approval_threshold_percent` must be
+    /// > 0 and <= 100. Emits a `QuorumConfigUpdatedEvent`.
+    ///
+    /// # Panics
+    /// - `InvalidThreshold` if either parameter is out of range.
+    pub fn set_quorum_config(
+        env: Env,
+        min_quorum_size: u32,
+        approval_threshold_percent: u32,
+    ) {
+        Self::require_initialized(&env);
+        Self::bump_instance(&env);
+        Self::require_admin(&env);
+
+        if min_quorum_size == 0 {
+            panic_with_error!(&env, ContractError::InvalidThreshold);
+        }
+        if approval_threshold_percent == 0 || approval_threshold_percent > 100 {
+            panic_with_error!(&env, ContractError::InvalidThreshold);
+        }
+
+        let config = QuorumConfig {
+            min_quorum_size,
+            approval_threshold_percent,
+        };
+
+        env.storage()
+            .instance()
+            .set(&StorageKey::QuorumConfig, &config);
+
+        QuorumConfigUpdatedEvent {
+            name: symbol_short!("quorum"),
+            min_quorum_size,
+            approval_threshold_percent,
+        }
+        .publish(&env);
+    }
+
+    /// Return the current quorum configuration, or a default (1, 51) if none
+    /// has been set.
+    pub fn get_quorum_config(env: Env) -> QuorumConfig {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&StorageKey::QuorumConfig)
+            .unwrap_or(QuorumConfig {
+                min_quorum_size: 1,
+                approval_threshold_percent: 51,
+            })
+    }
+
     pub(crate) fn require_not_paused(env: &Env) {
         if env.storage().instance().get(&PAUSED).unwrap_or(false) {
             panic_with_error!(env, ContractError::Paused);
@@ -1859,6 +1930,7 @@ impl KovaraContract {
     }
 }
 
+#[cfg(test)]
 mod test;
 pub mod flow_rewards;
 pub mod sentinel_pool;
