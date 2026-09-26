@@ -1,4 +1,4 @@
-import type { Pool, Post, Profile } from "../db";
+import type { PoolRecord, Post, Profile } from "../db";
 
 export interface ApiErrorResponse {
   error: string;
@@ -32,7 +32,7 @@ export interface FollowingResponse extends PaginationResponse {
   total: number;
 }
 
-export interface PoolResponse extends Pool {}
+export interface PoolResponse extends PoolRecord {}
 
 export interface SearchPost {
   id: number;

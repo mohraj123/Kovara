@@ -216,7 +216,9 @@ export async function runOnce<T>(
     if (current.status === "processed") {
       return { status: "duplicate", previous: current };
     }
-    return { status: "duplicate", previous: { ...current, status: "processed" } };
+    // The work is still in flight, so it has no completion timestamp. Report a
+    // processed marker with a null time rather than synthesising one.
+    return { status: "duplicate", previous: { status: "processed", processedAt: null } };
   }
 
   try {

@@ -62,6 +62,8 @@ import {
   PostgresAggregationStore,
   PostgresDeadLetterStore,
 } from "./aggregation";
+import { ReconciliationScheduler } from "./reconciliation/job";
+import { PostgresReconciliationStore } from "./reconciliation/stores";
 import { logger } from "./logger";
 import {
   alertManager,
@@ -773,6 +775,16 @@ async function main(): Promise<void> {
     log: logger,
   });
 
+  // #669: Daily reconciliation. It compares the aggregates written above
+  // against the verified submissions they came from and records any drift, so
+  // a wrong index is detectable rather than merely published.
+  const reconciliationStore = new PostgresReconciliationStore(pgPool);
+  const reconciliationScheduler = new ReconciliationScheduler(reconciliationStore, {
+    intervalMs: parseEnvNumber("RECONCILIATION_INTERVAL_MS", 3_600_000),
+    catchUpDays: parseEnvNumber("RECONCILIATION_CATCH_UP_DAYS", 7),
+    log: logger,
+  });
+
   // Recover any event persisted but not fully processed by a previous run
   // before the live stream starts, so recovery does not race the new stream.
   const recoveredAtStartup = await recoverPendingEvents((e) => handleEvent(e, db));
@@ -803,6 +815,11 @@ async function main(): Promise<void> {
     intervalMs: parseEnvNumber("AGGREGATION_INTERVAL_MS", 3_600_000),
   });
 
+  reconciliationScheduler.start();
+  logger.info("reconciliation_scheduled", {
+    intervalMs: parseEnvNumber("RECONCILIATION_INTERVAL_MS", 3_600_000),
+  });
+
 // Create and start API server
   const authMiddleware: AuthMiddleware = ENABLE_AUTH_MIDDLEWARE
     ? (req, res, next) => {
@@ -825,6 +842,10 @@ async function main(): Promise<void> {
     activityFeed: new PostgresActivityFeed(pgPool),
     analyticsStore: new PostgresAnalyticsStore(pgPool),
     pool: pgPool,
+    // #654/#655: the analytics store is handed to the app so /index is mounted.
+    analyticsStore: new PostgresAnalyticsStore(pgPool),
+    // #669: exposes the reconciliation run history and discrepancies.
+    reconciliationStore,
   });
   const server = app.listen(PORT, HOST);
 
@@ -839,9 +860,10 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info("shutdown_initiated", { signal });
     abortController.abort();
-    // #651: stop the timer before closing the pool, so a tick cannot start a
-    // query against a pool that is already closing.
+    // #651 / #669: stop the timers before closing the pool, so a tick cannot
+    // start a query against a pool that is already closing.
     aggregationScheduler.stop();
+    reconciliationScheduler.stop();
     server.close(async () => {
       await pgPool.end().catch(() => {});
       logger.info("shutdown_complete", { signal });
