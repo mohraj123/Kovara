@@ -268,7 +268,7 @@ export class PostgresSearchStore {
           case "posts":
             return this.searchPosts(query, fetch, weights);
           case "categories":
-            return this.searchCategories(query, fetch, weights);
+            return this.searchCategories(query, fetch);
           default:
             return { hits: [] as SearchHit[], total: 0 };
         }

@@ -17,7 +17,7 @@ const HOST = process.env.HOST || '0.0.0.0';
 
 // Mock database responses
 const mockDb = {
-  searchPosts: async ({ query, limit, offset }) => ({
+  searchPosts: async (_params: { query: string; limit: number; offset: number }) => ({
     posts: [],
     total: 0
   }),
@@ -25,7 +25,8 @@ const mockDb = {
 };
 
     // current.requestCount++;
-const server = http.createServer(async (req, res) => {
+const server = http.createServer(
+  async (req: import('http').IncomingMessage, res: import('http').ServerResponse) => {
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
 
@@ -50,7 +51,7 @@ const server = http.createServer(async (req, res) => {
   // Search endpoint
   if (pathname === '/api/search/posts' && req.method === 'POST') {
     let body = '';
-    req.on('data', chunk => body += chunk);
+    req.on('data', (chunk: Buffer) => (body += chunk));
     req.on('end', async () => {
       try {
         const data = JSON.parse(body);

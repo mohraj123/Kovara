@@ -82,7 +82,10 @@ export interface CacheStats {
 export class ResponseCache {
   private readonly entries = new Map<string, CacheEntry>();
   /** In-flight refreshes, keyed by cache key — the single-flight table. */
-  private readonly inFlight = new Map<string, Promise<string | null>>();
+  private readonly inFlight = new Map<
+    string,
+    Promise<{ body: string; stale: boolean } | null>
+  >();
   private hits = 0;
   private misses = 0;
   private staleServed = 0;

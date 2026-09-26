@@ -109,13 +109,13 @@ export interface RewardAssessment {
 /** Why a verification did not produce a reward. */
 export type IgnoreReason =
   /** The same address already voted on this submission. */
-  "duplicate_vote"
+  | "duplicate_vote"
   /** The verifier verified their own submission. */
-  "self_verification"
+  | "self_verification"
   /** The submission is not in a state that can earn. */
-  "submission_not_verified"
+  | "submission_not_verified"
   /** The verifier is not a valid address. */
-  "invalid_verifier";
+  | "invalid_verifier";
 
 /** Stellar addresses are 56 characters, base32, starting with G. */
 const ADDRESS_PATTERN = /^G[A-Z2-7]{55}$/;

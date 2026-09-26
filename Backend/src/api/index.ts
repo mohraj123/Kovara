@@ -73,6 +73,7 @@ import { createProfilesRouter } from "./routes/profiles";
 import { createPostsRouter } from "./routes/posts";
 import { createFollowsRouter } from "./routes/follows";
 import { createPoolsRouter } from "./routes/pools";
+import { createFeedRouter } from "../feed/routes";
 import { createSubmissionsRouter } from "./routes/submissions";
 import { createRewardsRouter } from "../rewards/routes";
 import { RewardStore } from "../rewards/store";
@@ -83,6 +84,8 @@ import { createIndexRouter } from "../analytics/routes";
 import { PostgresAnalyticsStore } from "../analytics/store";
 import { createModerationRouter } from "./routes/moderation";
 import { ModerationStore } from "../verification/moderation";
+import { createReconciliationRouter } from "../reconciliation/routes";
+import type { ReconciliationQueryStore } from "../reconciliation/stores";
 
 // ── Auth middleware (BE-25) ───────────────────────────────────────────────────
 
@@ -162,6 +165,8 @@ export interface AppOptions {
    * #659: the paginated, filtered submission feed.
    */
   submissionFeed?: PostgresSubmissionFeed;
+
+  /**
    * #654/#655: Analytics store backing the historical index series, the country
    * leaderboard, and the filter-decision log.
    *
@@ -172,6 +177,13 @@ export interface AppOptions {
    * before, so existing deployments and tests need no change.
    */
   analyticsStore?: PostgresAnalyticsStore;
+
+  /**
+   * #669: the run history and discrepancies behind the daily reconciliation
+   * job. Optional like the other stores; omitting it leaves `/reconciliation`
+   * unmounted and every other route unchanged.
+   */
+  reconciliationStore?: ReconciliationQueryStore;
 }
 
 // ── Runtime configuration (all values are env-overridable) ─────────────────
@@ -323,6 +335,8 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
 
   apiRouter.use("/profiles", createProfilesRouter(db));
   apiRouter.use("/posts", createPostsRouter(db));
+  // #676: ranked / recent / trending content feed.
+  apiRouter.use("/feed", createFeedRouter(db));
   apiRouter.use("/follows", createFollowsRouter(db));
 
   // ── Ranked unified search (#660/#662/#663) ──────────────────────────────────
@@ -395,10 +409,17 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
   // #658: audit reads and chain verification.
   if (options.auditStore) {
     apiRouter.use("/audit", createAuditRouter(options.auditStore));
+  }
+
   // #654/#655: historical index series, country leaderboards, and the filter
   // decision log. Mounted only when a store is supplied — see AppOptions.
   if (options.analyticsStore) {
     apiRouter.use("/index", createIndexRouter(options.analyticsStore));
+  }
+
+  // #669: reconciliation run history and discrepancies.
+  if (options.reconciliationStore) {
+    apiRouter.use("/reconciliation", createReconciliationRouter(options.reconciliationStore));
   }
 
   interface SearchQuery {

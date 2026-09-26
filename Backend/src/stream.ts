@@ -387,8 +387,10 @@ export async function streamEvents(
         if (!validateEventPayload(event)) {
           // BA-039: Route through the structured logger so the payload is
           // redacted before it reaches the console.
-          logger.warn("skipping_invalid_event", { eventType: String(event.type) });
-          cursor = event.pagingToken;
+          logger.warn("skipping_invalid_event", {
+            eventType: String((event as RawEvent).type),
+          });
+          cursor = (event as RawEvent).pagingToken;
           continue;
         }
 
@@ -636,7 +638,7 @@ export async function replayLedgerRange(
 
         // BA-037: record the cursor this page was fetched from so a page that
         // returns the same cursor can be detected and bounded.
-        const fetchCursor = cursor;
+        const fetchCursor: string | undefined = cursor;
 
         for (const event of events) {
           if (signal.aborted) break;
