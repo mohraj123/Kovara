@@ -87,6 +87,14 @@ import { ModerationStore } from "../verification/moderation";
 import { createActivityRouter } from "./routes/activity";
 import { createReconciliationRouter } from "../reconciliation/routes";
 import type { ReconciliationQueryStore } from "../reconciliation/stores";
+import {
+  createMetricsMiddleware,
+  jsonMetricsHandler,
+  metrics,
+  metricsTokenGuard,
+  MetricsRegistry,
+  prometheusHandler,
+} from "../metrics";
 import { parseStellarAddress, sendValidationError } from "./validation";
 
 // ── Auth middleware (BE-25) ───────────────────────────────────────────────────
@@ -146,6 +154,12 @@ export interface AppOptions {
    * endpoint, so the endpoint reports live state rather than an empty set.
    */
   abuseDetector?: AbuseDetector;
+
+  /**
+   * #679: the process-wide metrics registry. Injected in tests so assertions
+   * read an isolated registry rather than the shared default.
+   */
+  metricsRegistry?: MetricsRegistry;
 
   /**
    * #657: reward status, claim history, and the claim endpoint.
@@ -283,13 +297,26 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
   // echoes that only covered a subset of routes.
   app.use(requestIdMiddleware);
 
+  // ── Metrics collection (#679) ───────────────────────────────────────────────
+  // Every request is recorded into one registry — latency, throughput and
+  // errors — so `/metrics` and `/api/v1/metrics` report live traffic rather
+  // than requiring an operator to grep logs. Scrape paths are skipped by the
+  // middleware itself so reading the metrics does not change them.
+  const metricsRegistry: MetricsRegistry = options.metricsRegistry ?? metrics;
+  app.use(createMetricsMiddleware({ registry: metricsRegistry }));
+
   // ── Health check (unlimited) ────────────────────────────────────────────────
   app.get("/health", async (_req: Request, res: Response): Promise<void> => {
     let dbStatus = "ok";
+    const probeStartedAt = Date.now();
     try {
       await db.getProfile("__health_check_probe__");
     } catch {
       dbStatus = "unavailable";
+    }
+    if (metricsRegistry.has("db_probe_duration_ms")) {
+      metricsRegistry.observe("db_probe_duration_ms", Date.now() - probeStartedAt);
+      metricsRegistry.setGauge("service_up", dbStatus === "ok" ? 1 : 0);
     }
 
     const status = dbStatus === "ok" ? "ok" : "degraded";
@@ -299,6 +326,11 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
       db: dbStatus,
     });
   });
+
+  // ── Prometheus metrics (unlimited, no auth unless METRICS_TOKEN is set) ──────
+  // Registered before the rate limiter, like `/health`: a scraper that gets
+  // throttled stops reporting exactly when the service is under load.
+  app.get("/metrics", metricsTokenGuard(), prometheusHandler(metricsRegistry));
 
   // ── Version metadata (unlimited, no auth required) ──────────────────────────
   app.get("/version", (_req: Request, res: Response): void => {
@@ -619,6 +651,12 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
       );
     }
   );
+
+  // ── Metrics snapshot (#679) ─────────────────────────────────────────────────
+  // The same registry as the Prometheus endpoint, rendered as JSON for an
+  // operator who wants the current latency/throughput/error picture without a
+  // Prometheus stack. `/metrics` is the Prometheus form of this data.
+  apiRouter.get("/metrics", metricsTokenGuard(), jsonMetricsHandler(metricsRegistry));
 
   // ── 404 catch-all for API routes (BE-26) ───────────────────────────────────
   // Returns a consistent JSON error body instead of the default Express HTML.

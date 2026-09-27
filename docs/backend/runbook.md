@@ -86,6 +86,21 @@ with every configuration problem listed if a required value is missing.
 > Alerting only fires when `SENTRY_DSN` or `ALERT_WEBHOOK_URL` is set; with neither,
 > the service logs `alerting_disabled` and behaves exactly as before.
 
+### Metrics (optional)
+
+| Variable | Default |
+| --- | --- |
+| `METRICS_TOKEN` | unset (open) |
+
+`GET /metrics` serves Prometheus text and `GET /api/v1/metrics` serves the same
+registry as JSON. Both are unlimited and unauthenticated unless `METRICS_TOKEN`
+is set, in which case clients must send it as `x-metrics-token` or
+`Authorization: Bearer`. To check service health without additional tooling:
+
+```bash
+curl -s localhost:3000/api/v1/metrics | jq '.gauges, .counters'
+```
+
 ## 3. Local development
 
 ```bash

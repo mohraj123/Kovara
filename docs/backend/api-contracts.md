@@ -26,10 +26,31 @@ Request and response shapes below were read from the route modules on `main`
 | --- | --- | --- |
 | GET | `/health` | `{ "status": "ok" | "degraded", "uptime": <seconds>, "db": "ok" | "unavailable" }` |
 | GET | `/version` | `{ "version", "git_commit", "build_time", "node_version" }` |
+| GET | `/metrics` | Prometheus text exposition (`text/plain; version=0.0.4`) |
+| GET | `/api/v1/metrics` | JSON snapshot of the same registry |
 
 `status` is `ok` only when the health probe query succeeds; otherwise `degraded`
 with `db: "unavailable"`. `git_commit`/`build_time` come from `GIT_COMMIT` and
 `BUILD_TIME` and default to `"unknown"`.
+
+### Metrics (issue #679)
+
+All request latency, throughput and error counts are recorded in one in-process
+registry (`Backend/src/metrics/`) and exposed two ways over the same data:
+
+- `GET /metrics` — Prometheus text. Series: `http_requests_total` (throughput),
+  `http_request_duration_ms` (latency histogram), `http_errors_total`,
+  `http_requests_in_flight`, `db_probe_duration_ms`, `service_up`, plus
+  `process_uptime_seconds` / `process_resident_memory_bytes`.
+- `GET /api/v1/metrics` — the same registry as JSON
+  (`{ generated_at, series_count, counters, gauges, histograms }`) for operators
+  without a Prometheus stack.
+
+The route label is the matched route pattern (or a normalized path with `:id`
+substitutions), so cardinality is bounded by the number of routes rather than
+the size of the database. Scrape and health paths are not counted. When
+`METRICS_TOKEN` is set, both endpoints require it via the `x-metrics-token`
+header or `Authorization: Bearer`; when unset they are open.
 
 ## Data endpoints
 
