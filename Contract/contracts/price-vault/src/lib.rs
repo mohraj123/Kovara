@@ -195,14 +195,21 @@ use soroban_sdk::{
 //!
 //! ## Storage layout extension
 //!
-//! The existing `DataKey::Price(country, category, timestamp)` keys remain
-//! unchanged — no existing records are modified.  A new
-//! `DataKey::SubmissionIndex(country, category)` key accumulates a
-//! `Vec<u64>` of every timestamp written for a given `(country, category)`
-//! pair, in insertion order.  The full list remains deterministic because
-//! Soroban persistent storage is immutable once written: re-submitting at
-//! the same timestamp is a no-op (the existing record wins, the index is not
-//! doubled).
+//! Each record is stored under the typed composite key
+//! `DataKey::Price(country, category, timestamp)`.  Its value is the complete
+//! `PriceSubmission`, so price, submitter, validity window, and status are read
+//! atomically and cannot drift across separately keyed metadata.  The enum
+//! variant and tuple components provide explicit namespaces and avoid building
+//! ambiguous keys by concatenating strings.
+//!
+//! `DataKey::SubmissionIndex(country, category)` stores a `Vec<u64>` of record
+//! timestamps for grouped lookups.  Each timestamp in the index identifies the
+//! corresponding `Price` key.  Both keys use the observation timestamp
+//! (`valid_from`); re-submitting the same composite key is a no-op and does not
+//! add a duplicate index entry.  Preserve these key variants and their
+//! component types across upgrades.  A future incompatible layout needs a new
+//! versioned key and an explicit migration; do not silently reinterpret old
+//! records.
 //!
 //! ## Query determinism
 //!
@@ -811,6 +818,9 @@ impl PriceVault {
         valid_from: u64,
         validity_window_secs: u64,
     ) -> Result<(), Error> {
+        // Keep the legacy observation timestamp aligned with the key value.
+        let timestamp = valid_from;
+
         // Schema validation runs before require_auth so malformed payloads
         // are rejected without touching the auth subsystem.
         payload::validate(
@@ -860,7 +870,6 @@ impl PriceVault {
         }
 
         env.storage().persistent().set(
-            &DataKey::Price(country_iso.clone(), category.clone(), valid_from),
             &key,
             &PriceSubmission {
                 submitter: submitter.clone(),
