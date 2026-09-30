@@ -51,8 +51,55 @@ export interface AuditPage {
   hasMore: boolean;
 }
 
+/** Minimal logging hook so the store can report anomalies without pulling in a logging framework. */
+export interface AuditStoreLogger {
+  warn(message: string, meta?: Record<string, unknown>): void;
+}
+
+export interface AuditStoreOptions {
+  /**
+   * Cap, in milliseconds, on how long an append will wait for another append
+   * on the same stream to release the head lock. Without this, a client that
+   * dies mid-transaction (connection drop, crash) leaves the row locked until
+   * Postgres notices the connection is gone, and every other append to that
+   * stream queues silently behind it. Unset means no cap (previous behaviour).
+   */
+  lockTimeoutMs?: number;
+  logger?: AuditStoreLogger;
+}
+
+/** Upper bound on `AuditQuery.limit`, regardless of what the caller asks for. */
+const MAX_PAGE_SIZE = 500;
+
+/** Row shape as returned by Postgres for `audit_log`, before mapping to {@link AuditEntry}. */
+interface AuditLogRow {
+  id: string;
+  stream: string;
+  action: string;
+  actor: string;
+  outcome: string;
+  subject: string;
+  ledger: number | null;
+  transaction_hash: string | null;
+  metadata: unknown;
+  occurred_at: string | Date;
+  hash: string;
+  previous_hash: string;
+}
+
+const AUDIT_COLUMNS = `
+  id, stream, action, actor, outcome, subject, ledger, transaction_hash,
+  metadata, occurred_at, hash, previous_hash
+`;
+
 export class AuditStore {
-  constructor(private readonly pool: Pool) {}
+  private readonly lockTimeoutMs?: number;
+  private readonly logger?: AuditStoreLogger;
+
+  constructor(private readonly pool: Pool, options: AuditStoreOptions = {}) {
+    this.lockTimeoutMs = options.lockTimeoutMs;
+    this.logger = options.logger;
+  }
 
   /**
    * Append one entry, chained to the current head of its stream.
@@ -62,20 +109,12 @@ export class AuditStore {
    * stream never blocks another.
    */
   async append(input: AuditEntryInput, id: string): Promise<AuditEntry> {
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN");
+    return this.withTransaction(async (client) => {
       const previousHash = await this.lockHead(client, input.stream);
       const entry = chainEntry(input, previousHash, id);
       await this.insert(client, entry);
-      await client.query("COMMIT");
       return entry;
-    } catch (err) {
-      await client.query("ROLLBACK").catch(() => {});
-      throw err;
-    } finally {
-      client.release();
-    }
+    });
   }
 
   /**
@@ -87,9 +126,7 @@ export class AuditStore {
    */
   async appendBatch(inputs: AuditEntryInput[], idFor: (index: number) => string): Promise<AuditEntry[]> {
     if (inputs.length === 0) return [];
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN");
+    return this.withTransaction(async (client) => {
       // Lock every affected stream in a deterministic order (sorted) so two
       // batches touching the same streams in different orders cannot deadlock.
       const streams = [...new Set(inputs.map((i) => i.stream))].sort();
@@ -107,10 +144,35 @@ export class AuditStore {
         written.push(entry);
       }
 
-      await client.query("COMMIT");
       return written;
+    });
+  }
+
+  /**
+   * Run `fn` inside a transaction, guaranteeing COMMIT on success and ROLLBACK
+   * on failure. Centralising this means `append` and `appendBatch` cannot drift
+   * apart on error handling, and gives every write path the same lock-timeout
+   * and rollback-failure logging for free.
+   */
+  private async withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (this.lockTimeoutMs !== undefined) {
+        // SET LOCAL doesn't accept a bound parameter; lockTimeoutMs is trusted
+        // config (not request input), so inlining the number is safe.
+        const ms = Math.max(0, Math.trunc(this.lockTimeoutMs));
+        await client.query(`SET LOCAL lock_timeout = '${ms}ms'`);
+      }
+      const result = await fn(client);
+      await client.query("COMMIT");
+      return result;
     } catch (err) {
-      await client.query("ROLLBACK").catch(() => {});
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackErr) {
+        this.logger?.warn("audit store rollback failed", { error: rollbackErr });
+      }
       throw err;
     } finally {
       client.release();
@@ -146,8 +208,21 @@ export class AuditStore {
     return locked.rows[0]?.hash ?? GENESIS_HASH;
   }
 
+  /**
+   * Insert one entry and advance its stream's head.
+   *
+   * `ON CONFLICT (id) DO NOTHING` makes a retried append with the same id
+   * idempotent instead of erroring — but a blind retry must not blindly
+   * advance the head a second time, and a genuine id collision (same id,
+   * different content) must not be mistaken for a retry. So when the insert
+   * is a no-op, the existing row is read back and compared: if it matches
+   * what we were about to write, the earlier call already updated the head
+   * and there is nothing left to do here; if it doesn't match, this is a real
+   * collision and must not be allowed to silently advance the head to a hash
+   * it doesn't actually own.
+   */
   private async insert(client: PoolClient, entry: AuditEntry): Promise<void> {
-    await client.query(
+    const inserted = await client.query(
       `
       INSERT INTO audit_log
         (id, stream, action, actor, outcome, subject, ledger, transaction_hash,
@@ -170,12 +245,41 @@ export class AuditStore {
         entry.previousHash,
       ]
     );
+
+    if (inserted.rowCount === 0) {
+      const existing = await client.query<AuditLogRow>(
+        `SELECT ${AUDIT_COLUMNS} FROM audit_log WHERE id = $1`,
+        [entry.id]
+      );
+      const row = existing.rows[0];
+      if (!row || row.hash !== entry.hash || row.previous_hash !== entry.previousHash) {
+        throw new Error(
+          `audit entry id collision: "${entry.id}" already exists with different content`
+        );
+      }
+      // Genuine retry of an already-committed append. The original call
+      // already advanced the head, so doing it again here would be a
+      // harmless no-op — but it's still worth surfacing, since a caller
+      // retrying writes it should be treating as already-succeeded usually
+      // points at a bug one layer up.
+      this.logger?.warn("audit entry append retried after success", {
+        id: entry.id,
+        stream: entry.stream,
+      });
+      return;
+    }
+
     // Keep the head in step with the insert. The row is already locked by
     // lockHead, so this update cannot race another append in the same stream.
-    await client.query(
+    const headUpdate = await client.query(
       "UPDATE audit_chain_heads SET hash = $2, updated_at = NOW() WHERE stream = $1",
       [entry.stream, entry.hash]
     );
+    if (headUpdate.rowCount !== 1) {
+      // Should be unreachable: lockHead guarantees the row exists before we
+      // get here. Treated as corruption rather than silently proceeding.
+      throw new Error(`audit chain head row missing for stream "${entry.stream}"`);
+    }
   }
 
   /**
@@ -207,34 +311,42 @@ export class AuditStore {
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
-    const countResult = await this.pool.query(
-      `SELECT COUNT(*)::int AS total FROM audit_log ${where}`,
-      params
-    );
-    const result = await this.pool.query<Record<string, unknown>>(
-      `
-      SELECT * FROM audit_log ${where}
-      ORDER BY occurred_at DESC, id DESC
-      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
-      `,
-      [...params, query.limit, query.offset]
-    );
+    // Clamp rather than trust the caller: `limit`/`offset` often arrive
+    // straight from request query params, and an unbounded limit turns one
+    // slow request into a full table scan.
+    const limit = Math.min(Math.max(1, Math.trunc(query.limit) || 1), MAX_PAGE_SIZE);
+    const offset = Math.max(0, Math.trunc(query.offset) || 0);
 
-    const total = Number(countResult.rows[0]?.total ?? 0);
+    // Independent reads (no snapshot guarantee across the two queries, same
+    // as before), but issued concurrently instead of sequentially — halves
+    // the round-trip latency on every call.
+    const [countResult, result] = await Promise.all([
+      this.pool.query<{ total: number }>(`SELECT COUNT(*)::int AS total FROM audit_log ${where}`, params),
+      this.pool.query<AuditLogRow>(
+        `
+        SELECT ${AUDIT_COLUMNS} FROM audit_log ${where}
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+        `,
+        [...params, limit, offset]
+      ),
+    ]);
+
+    const total = countResult.rows[0]?.total ?? 0;
     return {
       entries: result.rows.map((row) => this.mapEntry(row)),
       total,
-      limit: query.limit,
-      offset: query.offset,
-      hasMore: query.offset + result.rows.length < total,
+      limit,
+      offset,
+      hasMore: offset + result.rows.length < total,
     };
   }
 
   /** Read a whole stream in chain order, for verification. */
   async getStream(stream: string): Promise<AuditEntry[]> {
-    const result = await this.pool.query<Record<string, unknown>>(
+    const result = await this.pool.query<AuditLogRow>(
       `
-      SELECT * FROM audit_log
+      SELECT ${AUDIT_COLUMNS} FROM audit_log
       WHERE stream = $1
       ORDER BY occurred_at ASC, id ASC
       `,
@@ -254,23 +366,21 @@ export class AuditStore {
     return verifyChain(await this.getStream(stream));
   }
 
-  private mapEntry(row: Record<string, unknown>): AuditEntry {
-    const actor = String(row.actor);
-    const transactionHash = row.transaction_hash ? String(row.transaction_hash) : undefined;
+  private mapEntry(row: AuditLogRow): AuditEntry {
+    const transactionHash = row.transaction_hash ?? undefined;
     return {
-      id: String(row.id),
-      stream: String(row.stream),
-      action: String(row.action) as AuditAction,
-      actor: parseActorKey(actor),
-      outcome: String(row.outcome) as AuditOutcome,
-      subject: String(row.subject),
-      ledger:
-        row.ledger === null || row.ledger === undefined ? undefined : Number(row.ledger),
+      id: row.id,
+      stream: row.stream,
+      action: row.action as AuditAction,
+      actor: parseActorKey(row.actor),
+      outcome: row.outcome as AuditOutcome,
+      subject: row.subject,
+      ledger: row.ledger === null ? undefined : row.ledger,
       ...(transactionHash ? { transactionHash } : {}),
       metadata: (row.metadata ?? {}) as Record<string, unknown>,
-      occurredAt: new Date(row.occurred_at as string),
-      hash: String(row.hash),
-      previousHash: String(row.previous_hash),
+      occurredAt: new Date(row.occurred_at),
+      hash: row.hash,
+      previousHash: row.previous_hash,
     };
   }
 }
