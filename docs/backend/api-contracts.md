@@ -83,6 +83,35 @@ The result is a uniform contract:
   fails, rather than being silently ignored by the rate limiter and falling back
   to IP-based accounting.
 
+#### Unsafe numeric identifier rejection (BE-31)
+
+`parseNumericId` rejects all inputs that are not a non-negative integer string,
+**before** any database call:
+
+- Negative values (`-1`, `-99`) → `400 INVALID_ID`
+- Fractional values (`1.5`, `0.1`) → `400 INVALID_ID`
+- Hex / scientific notation (`0xff`, `1e10`) → `400 INVALID_ID`
+- Strings with trailing letters (`123abc`) → `400 INVALID_ID`
+- Non-string, non-number types (`null`, `{}`) → `400 INVALID_ID`
+- Values above `Number.MAX_SAFE_INTEGER` are preserved exactly as `bigint`
+  (no silent rounding).
+
+#### Optional address filter normalization (BE-32)
+
+Endpoints that accept an optional wallet address filter (`author`, wallet
+lookup parameters) use `parseOptionalStellarAddress`:
+
+| Input | Interpretation |
+| --- | --- |
+| `undefined` / `null` / `""` | Absent — no filter applied; proceeds to business logic |
+| A valid Stellar address | Filter applied |
+| A malformed address | `400 INVALID_ADDRESS` — rejected before business logic |
+
+This means a client that omits the filter, sends an empty string, or sends
+`null` all get the same "no filter" behaviour. A client that sends a value that
+looks like an address but is malformed (wrong alphabet, wrong length) is
+rejected with the same `INVALID_ADDRESS` code as any other address failure.
+
 | Code | Meaning |
 | --- | --- |
 | `400 INVALID_ADDRESS` | Address missing/blank, or not a base-32 `G…` Stellar public key (`x-stellar-address` included) |
@@ -227,28 +256,32 @@ both and an idempotent retry would look like a failure.
 | GET | `/api/v1/search/facets?q=<term>` | Per-entity match counts. |
 | GET | `/api/v1/search/cache` | Operator view of the search response cache. |
 
-#### Query validation (BE-26)
+#### Query validation and whitespace normalization (BE-26 / BE-28)
 
-- `q` is required, trimmed, and whitespace-collapsed before validation.
-- Empty or whitespace-only queries are rejected (`400 INVALID_QUERY`) before any
-  database call — an empty full-text query matches every row and would return the
-  full table.
-- Queries longer than **200 characters** (after normalization) are rejected with
-  `400 QUERY_TOO_LONG`.
+All search queries pass through `normalizeQuery` before validation or execution:
+
+1. Leading and trailing whitespace is trimmed.
+2. Internal runs of whitespace (spaces, tabs, newlines) are collapsed to a
+   single space.
+
+So `"  foo   bar  "` and `"foo bar"` execute the same query and share the same
+cache entry. Normalization is applied **before** the length check, so trailing
+padding cannot be used to bypass the cap.
+
+After normalization:
+
+- An empty or whitespace-only query is rejected with `400 INVALID_QUERY`.
+- A normalized query longer than **200 characters** is rejected with `400 QUERY_TOO_LONG`.
 - Boundary: a 200-character query is accepted; a 201-character query is rejected.
 
-#### Whitespace normalization (detail)
+#### Bounded search result payload size (BE-29)
 
-`normalizeQuery` trims and collapses internal runs of whitespace, so `" foo   bar "` and `"foo bar"` execute the same query and hit the same cache key. Normalization is applied before the length check, so trailing/leading whitespace cannot be used to push a query over the cap.
+- `limit` default **20**, max **100**; a value above 100 is `400 LIMIT_EXCEEDED`.
+- `offset` default 0, max 10 000; above max is `400 OFFSET_EXCEEDED`.
 
-#### Deterministic pagination (BE-27)
-
-Results are sorted by `score DESC, entity ASC, id ASC`. The trailing `entity` and `id` columns guarantee a total order, so adjacent pages with equal-ranked results do not overlap or skip rows. A client that pages through equal-scored results will see each hit exactly once.
-
-Pagination parameters:
-
-- `limit` default 20, max 100; a value above 100 is `400 LIMIT_EXCEEDED`.
-- `offset` default 0, max 10 000.
+These bounds are enforced in the route handler before the store is called, so
+an oversized `limit` cannot be used to pull the whole search index through the
+cache in one request.
 
 Response:
 

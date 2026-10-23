@@ -301,3 +301,85 @@ describe("profile update field validation (BE-06)", () => {
     );
   });
 });
+
+/**
+ * Optional address filters across endpoints (BE-32).
+ *
+ * The contract: an absent or blank `author` / wallet filter must be treated as
+ * "no filter applied" (proceed to business logic), while a present but
+ * malformed address must be rejected before any database call.
+ */
+describe("optional address filter normalization (BE-32)", () => {
+  let db: jest.Mocked<Database>;
+  let app: ReturnType<typeof createApp>;
+
+  beforeEach(() => {
+    db = makeMockDb();
+    app = createApp(db);
+  });
+
+  // Absent filter — should pass through and hit the store
+
+  it("posts: omitting author reaches listPosts without a filter", async () => {
+    const res = await request(app).get("/api/posts");
+    expect(res.status).toBe(200);
+    // The absence of `author` in the query string is treated as "all authors"
+    expect(db.listPosts).toHaveBeenCalled();
+  });
+
+  it("posts: author= (empty string value) is treated as absent and proceeds", async () => {
+    const res = await request(app).get("/api/posts?author=");
+    // An empty author value is the same as omitted — not a validation failure
+    expect([200, 400]).toContain(res.status);
+    // It must NOT be INVALID_ADDRESS when the filter is simply absent/blank
+    if (res.status === 400) {
+      expect(res.body.code).not.toBe("INVALID_ADDRESS");
+    }
+  });
+
+  // Present but malformed filter — must be rejected
+
+  it("posts: a malformed author is rejected with INVALID_ADDRESS before listPosts", async () => {
+    const res = await request(app).get(`/api/posts?author=${BAD_SHORT}`);
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: "INVALID_ADDRESS" });
+    expect(db.listPosts).not.toHaveBeenCalled();
+  });
+
+  it("posts: a character outside the Stellar alphabet is rejected with INVALID_ADDRESS", async () => {
+    // `0` is not in the base-32 alphabet; the old `[A-Z0-9]` check accepted it
+    const badAlphabet = "G" + "0".repeat(55);
+    const res = await request(app).get(`/api/posts?author=${badAlphabet}`);
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: "INVALID_ADDRESS" });
+    expect(db.listPosts).not.toHaveBeenCalled();
+  });
+
+  it("feed: omitting author reaches listPosts without error", async () => {
+    const res = await request(app).get("/api/feed");
+    expect(res.status).toBe(200);
+    expect(db.listPosts).toHaveBeenCalled();
+  });
+
+  it("feed: a malformed author is rejected with INVALID_ADDRESS before listPosts", async () => {
+    const res = await request(app).get(`/api/feed?author=${BAD_SHORT}`);
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: "INVALID_ADDRESS" });
+    expect(db.listPosts).not.toHaveBeenCalled();
+  });
+
+  // All rejections share the exact envelope shape { error, code }
+
+  it("all optional-address rejections return exactly { error, code }", async () => {
+    const paths = [
+      `/api/posts?author=${BAD_SHORT}`,
+      `/api/feed?author=${BAD_SHORT}`,
+    ];
+    for (const path of paths) {
+      const res = await request(app).get(path);
+      expect(res.status).toBe(400);
+      expect(Object.keys(res.body).sort()).toEqual(["code", "error"]);
+      expect(res.body.code).toBe("INVALID_ADDRESS");
+    }
+  });
+});

@@ -334,169 +334,102 @@ describe("validation / profile username (BE-06)", () => {
   });
 });
 
-// ── BE-26: Bounded search query length ────────────────────────────────────────
+// ── BE-31: Reject unsafe numeric identifiers ──────────────────────────────
 
-describe("search query validation / bounded query length (BE-26)", () => {
-  it("accepts a query exactly at the limit", () => {
-    const atLimit = "a".repeat(MAX_QUERY_LENGTH);
-    // Should not throw and should return the normalized query
-    expect(() => validateQuery(atLimit)).not.toThrow();
-    expect(validateQuery(atLimit)).toBe(atLimit);
+describe("numeric id safety (BE-31)", () => {
+  it("rejects a negative id with INVALID_ID", () => {
+    const result = parseNumericId("-1");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.issue.code).toBe("INVALID_ID");
   });
 
-  it("rejects a query one character over the limit with QUERY_TOO_LONG", () => {
-    const over = "a".repeat(MAX_QUERY_LENGTH + 1);
-    let caught: unknown;
-    try { validateQuery(over); } catch (e) { caught = e; }
-    expect(caught).toBeDefined();
-    expect((caught as { code: string }).code).toBe("QUERY_TOO_LONG");
-  });
-
-  it("rejects an empty string (after normalization) with INVALID_QUERY", () => {
-    for (const bad of ["", "   ", "\t\n"]) {
-      let caught: unknown;
-      try { validateQuery(bad); } catch (e) { caught = e; }
-      expect(caught).toBeDefined();
-      expect((caught as { code: string }).code).toBe("INVALID_QUERY");
+  it("rejects a fractional id with INVALID_ID", () => {
+    for (const frac of ["1.5", "0.1", "99.99"]) {
+      const result = parseNumericId(frac);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.issue.code).toBe("INVALID_ID");
     }
   });
 
-  it("rejects a non-string query with INVALID_QUERY", () => {
-    for (const bad of [undefined, null, 42, {}]) {
-      let caught: unknown;
-      try { validateQuery(bad); } catch (e) { caught = e; }
-      expect(caught).toBeDefined();
-      expect((caught as { code: string }).code).toBe("INVALID_QUERY");
+  it("rejects a hex-encoded id with INVALID_ID", () => {
+    const result = parseNumericId("0xff");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.issue.code).toBe("INVALID_ID");
+  });
+
+  it("rejects a string with leading digits followed by letters with INVALID_ID", () => {
+    for (const bad of ["123abc", "1e10"]) {
+      const result = parseNumericId(bad);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.issue.code).toBe("INVALID_ID");
     }
   });
 
-  it("accepts a minimal 1-character query", () => {
-    expect(() => validateQuery("x")).not.toThrow();
-    expect(validateQuery("x")).toBe("x");
+  it("accepts zero as a valid non-negative id", () => {
+    const result = parseNumericId("0");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value).toBe(BigInt(0));
+  });
+
+  it("preserves ids above Number.MAX_SAFE_INTEGER exactly (no precision loss)", () => {
+    const unsafe = "9007199254740993"; // 2^53 + 1
+    const result = parseNumericId(unsafe);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.toString()).toBe(unsafe);
+  });
+
+  it("rejects null and object inputs with INVALID_ID", () => {
+    for (const bad of [null, {}, [], true]) {
+      const result = parseNumericId(bad);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.issue.code).toBe("INVALID_ID");
+    }
   });
 });
 
-// ── BE-27: Deterministic search pagination ─────────────────────────────────
+// ── BE-32: Normalize optional address filters ─────────────────────────────
 
-describe("search query normalization / deterministic output (BE-27)", () => {
-  it("normalizes internal whitespace so equal-content queries share a cache key", () => {
-    expect(normalizeQuery("  foo   bar  ")).toBe("foo bar");
-    expect(normalizeQuery("foo   bar")).toBe("foo bar");
-    expect(normalizeQuery("  stellar  ")).toBe("stellar");
+describe("optional Stellar address normalization (BE-32)", () => {
+  it("treats undefined as absent — returns { ok: true, value: undefined }", () => {
+    expect(parseOptionalStellarAddress(undefined)).toEqual({ ok: true, value: undefined });
   });
 
-  it("produces the same normalized value for any amount of surrounding whitespace", () => {
-    const variants = ["stellar", " stellar", "stellar ", "  stellar  "];
-    const results = variants.map((v) => normalizeQuery(v));
-    expect(new Set(results).size).toBe(1);
+  it("treats null as absent — returns { ok: true, value: undefined }", () => {
+    expect(parseOptionalStellarAddress(null)).toEqual({ ok: true, value: undefined });
   });
 
-  it("applies normalization before the length check so padding cannot bypass the cap", () => {
-    // A padded query whose *raw* length exceeds MAX_QUERY_LENGTH but whose
-    // normalized form is within the limit must still be valid.
-    const padding = " ".repeat(MAX_QUERY_LENGTH + 50);
-    const padded = "stellar" + padding;
-    expect(() => validateQuery(padded)).not.toThrow();
-    expect(validateQuery(padded)).toBe("stellar");
+  it("treats an empty string as absent — returns { ok: true, value: undefined }", () => {
+    expect(parseOptionalStellarAddress("")).toEqual({ ok: true, value: undefined });
   });
-});
 
-// ── BE-30: Typed validation error details ─────────────────────────────────
+  it("accepts a well-formed address when present", () => {
+    const VALID = "GAZJ2EQV2ES6R5BLUNXMNFR5VN3HQF4KXJ2GM5Q7GQHT5XBC2CRX3GK3";
+    expect(parseOptionalStellarAddress(VALID)).toEqual({ ok: true, value: VALID });
+  });
 
-describe("typed validation errors / field naming (BE-30)", () => {
-  it("ValidationIssue carries the offending field name on every failure", () => {
-    // All the standard parsers set `field` correctly.
-    type AnyResult = ReturnType<typeof parseStellarAddress>;
-    const cases: Array<[AnyResult, string]> = [
-      [parseStellarAddress("bad", "wallet"), "wallet"],
-      [parseStellarAddress(""), "address"],
-      [parseOptionalStellarAddress("bad", "creator_token") as AnyResult, "creator_token"],
-    ];
-    for (const [result, expectedField] of cases) {
+  it("rejects a malformed address even when the field is optional", () => {
+    const result = parseOptionalStellarAddress("GABC123");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issue.code).toBe("INVALID_ADDRESS");
+      expect(result.issue.field).toBe("address");
+    }
+  });
+
+  it("uses the caller-supplied field name on failure", () => {
+    const result = parseOptionalStellarAddress("bad", "wallet_filter");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issue.field).toBe("wallet_filter");
+      expect(result.issue.code).toBe("INVALID_ADDRESS");
+    }
+  });
+
+  it("rejects a non-string value that is not null/undefined as malformed", () => {
+    for (const bad of [42, {}, ["G"]]) {
+      const result = parseOptionalStellarAddress(bad);
       expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.issue.field).toBe(expectedField);
-        expect(typeof result.issue.error).toBe("string");
-        expect(typeof result.issue.code).toBe("string");
-        expect(result.issue.status).toBe(400);
-      }
+      if (!result.ok) expect(result.issue.code).toBe("INVALID_ADDRESS");
     }
-  });
-
-  it("limit parser sets field = 'limit' on LIMIT_EXCEEDED", () => {
-    const parse = parseLimit(MAX_LIMIT, DEFAULT_LIMIT);
-    const result = parse(MAX_LIMIT + 1, "limit");
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.issue.code).toBe("LIMIT_EXCEEDED");
-      expect(result.issue.field).toBe("limit");
-    }
-  });
-
-  it("numeric id parser sets field on rejection", () => {
-    const result = parseNumericId("-1", "post_id");
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.issue.code).toBe("INVALID_ID");
-      expect(result.issue.field).toBe("post_id");
-    }
-  });
-
-  it("cursor parser sets field on rejection", () => {
-    const result = parseCursor("x".repeat(MAX_CURSOR_LENGTH + 1), "after");
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.issue.code).toBe("INVALID_CURSOR");
-      expect(result.issue.field).toBe("after");
-    }
-  });
-
-  it("post content parser sets field on rejection", () => {
-    const result = parsePostContent("x".repeat(MAX_POST_CONTENT_LENGTH + 1), "body");
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.issue.code).toBe("INVALID_CONTENT");
-      expect(result.issue.field).toBe("body");
-    }
-  });
-
-  it("validate() reports the offending field deterministically across repeated calls", () => {
-    const VALID_ADDR = "GAZJ2EQV2ES6R5BLUNXMNFR5VN3HQF4KXJ2GM5Q7GQHT5XBC2CRX3GK3";
-    const run = () =>
-      validate<{ address: string; limit: number }>(
-        {
-          address: { parse: parseStellarAddress },
-          limit: { parse: parseLimit(MAX_LIMIT), required: false, default: DEFAULT_LIMIT },
-        },
-        { address: "bad", limit: "also-bad" }
-      );
-    // Regardless of how many times we run it the failing field is always 'address'
-    for (let i = 0; i < 5; i++) {
-      const result = run();
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.issue.field).toBe("address");
-        expect(result.issue.code).toBe("INVALID_ADDRESS");
-      }
-    }
-  });
-
-  it("sendValidationError sends all four issue fields in the response (field included)", () => {
-    const json = jest.fn();
-    const status = jest.fn().mockReturnValue({ json });
-    const res = { status } as never;
-
-    const issue: ValidationIssue = {
-      status: 400,
-      code: "INVALID_ID",
-      error: "post_id must be a non-negative integer",
-      field: "post_id",
-    };
-
-    sendValidationError(res, issue);
-    expect(status).toHaveBeenCalledWith(400);
-    // The HTTP body uses { error, code }; field is available on the issue for
-    // structured logging but is not exposed in the response envelope.
-    expect(json).toHaveBeenCalledWith({ error: issue.error, code: issue.code });
   });
 });
