@@ -4,7 +4,12 @@ dist/
 build/
 target/
 coverage/
-*.env
+
+# Environment files
+.env
 .env.*
 !.env.example
-\n*.tsbuildinfo
+
+*.env
+
+*.tsbuildinfo
