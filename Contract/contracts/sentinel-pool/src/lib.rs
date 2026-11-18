@@ -47,6 +47,10 @@
 //!   content hash. They are stored on the record and republished on
 //!   [`SlashedEvent`], so an off-chain audit consumer never has to infer *why*
 //!   a balance changed.
+//! * **Supplementary appeal evidence.** An appellant may append references
+//!   without mutating the original [`SlashEvidence`]. Each reference is limited
+//!   to [`MAX_APPEAL_EVIDENCE_REF_BYTES`] bytes, with at most
+//!   [`MAX_APPEAL_EVIDENCE_REFS`] references per slash.
 //! * **A bounded appeal window.** A slash records `appeal_deadline =
 //!   slashed_at + appeal_window`. An appeal after that ledger is refused with
 //!   [`Error::AppealWindowClosed`] — the window is what stops an appeal from
@@ -67,7 +71,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, Env, Map,
-    String, Symbol,
+    String, Symbol, Vec,
 };
 
 /// Default appeal window: seven days expressed in ledger sequence numbers.
@@ -85,6 +89,12 @@ pub const DEFAULT_APPEAL_WINDOW_LEDGERS: u64 = 604_800;
 /// be special-cased everywhere. Bounding it keeps the deadline representable for
 /// every reachable `slashed_at`.
 pub const MAX_APPEAL_WINDOW_LEDGERS: u64 = 6_000_000;
+
+/// Maximum UTF-8 byte length of an appended appeal evidence reference.
+pub const MAX_APPEAL_EVIDENCE_REF_BYTES: u32 = 256;
+
+/// Maximum number of supplementary references stored for one appeal.
+pub const MAX_APPEAL_EVIDENCE_REFS: u32 = 16;
 //! # The withdrawal lock is a window, not a counter
 //!
 //! A sentinel's lock is stored as a single ledger — `staked_at` — and the lock
@@ -233,6 +243,10 @@ pub enum Error {
     UnknownProof = 14,
     /// The evidence is missing a proof reference or a URI.
     InvalidEvidence = 15,
+    /// An appeal evidence reference is empty or too long.
+    InvalidAppealEvidence = 16,
+    /// The appeal already has the maximum number of supplementary references.
+    AppealEvidenceLimitReached = 17,
     /// `staked_at + lock_period` is not representable as a `u64`. Append-only
     /// discriminant; see the ABI note in `README.md`.
     InvalidLockPeriod = 9,
@@ -298,6 +312,8 @@ pub const MAX_RESOLVED_PAGE: u32 = 50;
 pub struct GovernanceProposal {
     pub id: u64,
     pub governance: Address,
+    /// `proof_ref` -> append-only supplementary appeal evidence references.
+    AppealEvidence,
 }
 
 /// A recorded deregistration.
@@ -499,6 +515,21 @@ pub struct SlashAppealedEvent {
     pub appealed_at: u64,
     /// The deadline the appeal was filed against, recorded so a later
     /// `set_appeal_window` cannot be used to argue the window was different.
+    pub appeal_deadline: u64,
+}
+
+/// Emitted when supplementary evidence is appended to an appeal.
+#[contractevent]
+#[derive(Clone)]
+pub struct AppealEvidenceAppendedEvent {
+    #[topic]
+    pub sentinel: Address,
+    #[topic]
+    pub proof_ref: String,
+    /// The appellant who supplied this reference.
+    pub appellant: Address,
+    pub evidence_ref: String,
+    pub appended_at: u64,
     pub appeal_deadline: u64,
 }
 
@@ -1945,6 +1976,86 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
         Ok(())
     }
 
+    /// # Append supplementary evidence to an appeal
+    ///
+    /// The slashed sentinel or governance may append a reference while the
+    /// slash is pending and its original appeal deadline is still open. The
+    /// original [`SlashEvidence`] remains unchanged. Each reference and the
+    /// total number stored per slash are bounded.
+    ///
+    /// # Errors
+    /// * [`Error::UnknownProof`] — no record under `proof_ref`.
+    /// * [`Error::NotGovernance`] — `appellant` is neither the sentinel nor
+    ///   governance.
+    /// * [`Error::AlreadyResolved`] — the slash has been resolved.
+    /// * [`Error::AppealWindowClosed`] — the appeal deadline has passed.
+    /// * [`Error::InvalidAppealEvidence`] — the reference is empty or too long.
+    /// * [`Error::AppealEvidenceLimitReached`] — the per-slash reference limit
+    ///   has been reached.
+    pub fn append_appeal_evidence(
+        env: Env,
+        appellant: Address,
+        proof_ref: String,
+        evidence_ref: String,
+    ) -> Result<(), Error> {
+        let records: Map<String, SlashRecord> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SlashProofs)
+            .unwrap_or_else(|| Map::new(&env));
+        let record = records
+            .get(proof_ref.clone())
+            .ok_or(Error::UnknownProof)?;
+
+        appellant.require_auth();
+        if appellant != record.sentinel {
+            Self::require_governance(&env, &appellant)?;
+        }
+
+        if record.outcome != SlashOutcome::Pending {
+            return Err(Error::AlreadyResolved);
+        }
+
+        let now = u64::from(env.ledger().sequence());
+        if record.appeal_window == 0 || now > record.appeal_deadline {
+            return Err(Error::AppealWindowClosed);
+        }
+
+        if evidence_ref.is_empty() || evidence_ref.len() > MAX_APPEAL_EVIDENCE_REF_BYTES {
+            return Err(Error::InvalidAppealEvidence);
+        }
+
+        let mut evidence: Map<String, Vec<String>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AppealEvidence)
+            .unwrap_or_else(|| Map::new(&env));
+        let mut references = evidence
+            .get(proof_ref.clone())
+            .unwrap_or_else(|| Vec::new(&env));
+        if references.len() >= MAX_APPEAL_EVIDENCE_REFS {
+            return Err(Error::AppealEvidenceLimitReached);
+        }
+
+        references.push_back(evidence_ref.clone());
+        evidence.set(proof_ref.clone(), references);
+        env.storage()
+            .instance()
+            .set(&DataKey::AppealEvidence, &evidence);
+
+        AppealEvidenceAppendedEvent {
+            sentinel: record.sentinel,
+            proof_ref,
+            appellant,
+            evidence_ref,
+            appended_at: now,
+            appeal_deadline: record.appeal_deadline,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
     /// # Resolve a slash, upholding or reversing it
     ///
     /// Terminal, and **exactly once**: a second call on the same `proof_ref` is
@@ -2050,6 +2161,29 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
     /// outcome, without replaying the event stream.
     pub fn slash_record(env: Env, proof_ref: String) -> Option<SlashRecord> {
         let records: Map<String, SlashRecord> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SlashProofs)
+            .unwrap_or_else(|| Map::new(&env));
+
+        records.get(proof_ref)
+    }
+
+    /// Supplementary references appended to the appeal for `proof_ref`.
+    ///
+    /// Returns an empty list when no references have been added.
+    pub fn appeal_evidence(env: Env, proof_ref: String) -> Vec<String> {
+        let evidence: Map<String, Vec<String>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AppealEvidence)
+            .unwrap_or_else(|| Map::new(&env));
+
+        evidence
+            .get(proof_ref)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
     /// The proof record stored under `proof_id`, if any.
     ///
     /// The counterpart to `slash`'s uniqueness check: an auditor holding an
@@ -2063,7 +2197,6 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
             .get(&DataKey::SlashProofs)
             .unwrap_or_else(|| Map::new(&env));
 
-        records.get(proof_ref)
         proofs.get(proof_id)
     }
 }
