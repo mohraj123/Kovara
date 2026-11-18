@@ -277,6 +277,8 @@ pub enum DataKey {
     ChallengePeriod,
     /// `sentinel` -> [`Deregistration`].
     Deregistrations,
+    /// Admin proposed by the current admin, awaiting acceptance.
+    PendingAdmin,
 }
 
 /// A recorded deregistration.
@@ -2029,6 +2031,36 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
 
         records.get(proof_ref)
         proofs.get(proof_id)
+    }
+
+    /// Admin-only. Propose `new_admin` as the next admin. The active admin
+    /// does not change until `new_admin` calls [`Self::accept_admin`]. A new
+    /// proposal replaces any earlier one.
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// Accept a pending admin proposal. Only the proposed address may accept;
+    /// the pending proposal is cleared on acceptance.
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        new_admin.require_auth();
+        let pending: Option<Address> = env.storage().instance().get(&DataKey::PendingAdmin);
+        match pending {
+            Some(pending) if pending == new_admin => {
+                env.storage().instance().set(&DataKey::Admin, &new_admin);
+                env.storage().instance().remove(&DataKey::PendingAdmin);
+                Ok(())
+            }
+            _ => Err(Error::Unauthorized),
+        }
+    }
+
+    /// The admin awaiting acceptance, if any.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 }
 
