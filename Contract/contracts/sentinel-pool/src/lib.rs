@@ -247,6 +247,10 @@ pub enum Error {
     NotInitialized = 9,
     /// `lock_period` is zero or above [`MAX_LOCK_PERIOD`].
     InvalidLockPeriod = 10,
+    /// The governance proposal being accepted is not the current one (#1097).
+    StaleProposal = 16,
+    /// More sentinels were supplied than the caller's cap allows (#1096).
+    TooManySentinels = 17,
 }
 
 #[contracttype]
@@ -277,6 +281,23 @@ pub enum DataKey {
     ChallengePeriod,
     /// `sentinel` -> [`Deregistration`].
     Deregistrations,
+    /// Last issued governance proposal id (#1097).
+    ProposalNonce,
+    /// The pending [`GovernanceProposal`], if any (#1097).
+    PendingProposal,
+    /// Proof references in the order their slashes were resolved (#1093).
+    ResolvedSlashes,
+}
+
+/// Largest page [`SentinelPool::resolved_slashes`] returns (#1093).
+pub const MAX_RESOLVED_PAGE: u32 = 50;
+
+/// A pending governance-address change, bound to a unique id (#1097).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceProposal {
+    pub id: u64,
+    pub governance: Address,
 }
 
 /// A recorded deregistration.
@@ -821,6 +842,12 @@ impl SentinelPool {
         env.storage()
             .instance()
             .set(&DataKey::Governance, &governance);
+
+        GovernanceUpdatedEvent {
+            actor: admin,
+            governance,
+        }
+        .publish(&env);
 
         Ok(())
     }
@@ -1990,6 +2017,15 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
         records.set(proof_ref.clone(), record);
         env.storage().instance().set(&DataKey::SlashProofs, &records);
 
+        // Append-only, so the audit order is the resolution order (#1093).
+        let mut resolved: soroban_sdk::Vec<String> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ResolvedSlashes)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+        resolved.push_back(proof_ref.clone());
+        env.storage().instance().set(&DataKey::ResolvedSlashes, &resolved);
+
         SlashResolvedEvent {
             sentinel,
             proof_ref,
@@ -2029,6 +2065,120 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
 
         records.get(proof_ref)
         proofs.get(proof_id)
+    }
+}
+
+#[contractimpl]
+impl SentinelPool {
+    /// # Resolved slash history
+    ///
+    /// Returns up to `limit` resolved slash records starting at `cursor`, in
+    /// resolution order. `limit` is capped at [`MAX_RESOLVED_PAGE`]; pass
+    /// `cursor + returned_len` to fetch the next page (#1093).
+    pub fn resolved_slashes(env: Env, cursor: u32, limit: u32) -> soroban_sdk::Vec<SlashRecord> {
+        let ids: soroban_sdk::Vec<String> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ResolvedSlashes)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+        let records: Map<String, SlashRecord> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SlashProofs)
+            .unwrap_or_else(|| Map::new(&env));
+
+        let end = cursor
+            .saturating_add(limit.min(MAX_RESOLVED_PAGE))
+            .min(ids.len());
+        let mut page = soroban_sdk::Vec::new(&env);
+        let mut i = cursor;
+        while i < end {
+            if let Some(record) = ids.get(i).and_then(|id| records.get(id)) {
+                page.push_back(record);
+            }
+            i += 1;
+        }
+        page
+    }
+
+    /// # Aggregate eligible stake
+    ///
+    /// Sums the balances of the supplied sentinels that are eligible at
+    /// `at_ledger`. Refuses more than `max` sentinels so the call stays bounded,
+    /// and uses checked arithmetic so an overflow is an error (#1096).
+    pub fn eligible_stake(
+        env: Env,
+        sentinels: soroban_sdk::Vec<Address>,
+        at_ledger: u32,
+        max: u32,
+    ) -> Result<i128, Error> {
+        if sentinels.len() > max {
+            return Err(Error::TooManySentinels);
+        }
+
+        let mut total: i128 = 0;
+        for sentinel in sentinels.iter() {
+            if Self::is_eligible(env.clone(), sentinel.clone(), at_ledger) {
+                total = total
+                    .checked_add(Self::balance(env.clone(), sentinel))
+                    .ok_or(Error::InvalidAmount)?;
+            }
+        }
+        Ok(total)
+    }
+
+    /// # Propose a governance change
+    ///
+    /// Admin-only. Each proposal gets the next id from a monotonically
+    /// increasing nonce and replaces any pending one, so an acceptance for an
+    /// older proposal can no longer apply (#1097).
+    pub fn propose_governance(env: Env, admin: Address, governance: Address) -> Result<u64, Error> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        let id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProposalNonce)
+            .unwrap_or(0u64)
+            .checked_add(1)
+            .ok_or(Error::InvalidAmount)?;
+        env.storage().instance().set(&DataKey::ProposalNonce, &id);
+        env.storage().instance().set(
+            &DataKey::PendingProposal,
+            &GovernanceProposal { id, governance },
+        );
+        Ok(id)
+    }
+
+    /// # Accept a governance change
+    ///
+    /// The proposed address accepts by id. A stale id, or a second acceptance
+    /// of the same proposal, is refused with [`Error::StaleProposal`] (#1097).
+    pub fn accept_governance(env: Env, governance: Address, proposal_id: u64) -> Result<(), Error> {
+        governance.require_auth();
+
+        let pending: GovernanceProposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingProposal)
+            .ok_or(Error::StaleProposal)?;
+        if pending.id != proposal_id || pending.governance != governance {
+            return Err(Error::StaleProposal);
+        }
+
+        env.storage().instance().remove(&DataKey::PendingProposal);
+        env.storage()
+            .instance()
+            .set(&DataKey::Governance, &governance);
+
+        GovernanceUpdatedEvent {
+            actor: governance.clone(),
+            governance,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 }
 
