@@ -1,5 +1,7 @@
 #![no_std]
 
+pub mod tip;
+
 //! `PriceVault` — stores raw price submissions keyed by `(country_iso,
 //! category, valid_from)`.
 //!
@@ -153,6 +155,20 @@ pub enum Error {
     AlreadyInitialized = 25,
     /// A bounded page size was zero or above its API-specific limit.
     InvalidPageSize = 26,
+    /// Category is disabled by admin policy.
+    CategoryDisabled = 27,
+    /// Validity window exceeds the configured maximum.
+    WindowTooLong = 28,
+    /// A submission already exists for this key.
+    DuplicateSubmission = 29,
+    /// Submitted price exceeds the category-specific maximum (#1080).
+    CategoryPriceExceeded = 40,
+    /// History cursor version is not supported (#1083).
+    UnsupportedCursorVersion = 41,
+    /// Tip amount is zero (#1084).
+    TipAmountZero = 42,
+    /// Tip amount exceeds the configured maximum (#1084).
+    TipAmountTooLarge = 43,
 }
 
 /// Which categories one submitter is allowed to write.
@@ -612,6 +628,8 @@ pub enum DataKey {
     CountryAllowlist,
     /// Allowed categories.
     CategoryAllowlist,
+    /// Category max price override (#1080).
+    CategoryMaxPrice(Symbol),
     /// Submitter authorizations.
     Authorizations,
 }
@@ -664,12 +682,35 @@ pub struct SubmitterEntry {
     pub timestamp: u64,
 }
 
+/// Versioned history cursor (#1083 / CT-012).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoryCursor {
+    pub version: u32,
+    pub offset: u32,
+}
+
+pub const HISTORY_CURSOR_VERSION: u32 = 1;
+
+impl HistoryCursor {
+    #[inline]
+    pub fn new(offset: u32) -> Self {
+        Self { version: HISTORY_CURSOR_VERSION, offset }
+    }
+    pub fn validate(self) -> Result<u32, Error> {
+        if self.version != HISTORY_CURSOR_VERSION {
+            return Err(Error::UnsupportedCursorVersion);
+        }
+        Ok(self.offset)
+    }
+}
+
 /// A bounded page of submissions.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistoryPage {
     pub submissions: Vec<PriceSubmission>,
-    pub next_cursor: u32,
+    pub next_cursor: HistoryCursor,
     pub has_more: bool,
 }
 
@@ -707,6 +748,23 @@ pub struct IndexConsistencyReport {
 /// replayed submission is a no-op and emits nothing.
 #[contractevent]
 #[derive(Clone)]
+/// #1081 allowlist removal events
+#[contractevent]
+#[derive(Clone)]
+pub struct CountryAllowlistRemoved {
+    #[topic]
+    pub country_iso: Symbol,
+    pub admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct CategoryAllowlistRemoved {
+    #[topic]
+    pub category: Symbol,
+    pub admin: Address,
+}
+
 pub struct PriceSubmitted {
     /// Topic — the country this observation belongs to.
     #[topic]
@@ -879,6 +937,16 @@ impl PriceVault {
         }
         if !submitter_allowed(&env, &submitter, &category) {
             return Err(Error::SubmitterNotAllowed);
+        }
+
+        // #1080 category-specific ceiling
+        let cat_max: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CategoryMaxPrice(category.clone()))
+            .unwrap_or(MAX_PRICE);
+        if value > cat_max {
+            return Err(Error::CategoryPriceExceeded);
         }
 
         // 2. Payload schema — pure, before auth and before storage.
@@ -1263,12 +1331,13 @@ impl PriceVault {
         env: Env,
         country_iso: Symbol,
         category: Symbol,
-        cursor: u32,
+        cursor: HistoryCursor,
         limit: u32,
     ) -> Result<HistoryPage, Error> {
         if limit == 0 || limit > MAX_HISTORY_PAGE_SIZE {
             return Err(Error::InvalidPageSize);
         }
+        let cursor = cursor.validate()?;
         let timestamps: Vec<u64> = env.storage().persistent()
             .get(&DataKey::SubmissionIndex(country_iso.clone(), category.clone()))
             .unwrap_or_else(|| Vec::new(&env));
@@ -1283,7 +1352,7 @@ impl PriceVault {
         }
         Ok(HistoryPage {
             submissions: Self::collect_submissions(&env, &country_iso, &category, &page),
-            next_cursor: end,
+            next_cursor: HistoryCursor::new(end),
             has_more: end < total,
         })
     }
@@ -1293,7 +1362,7 @@ impl PriceVault {
         env: Env,
         country_iso: Symbol,
         category: Symbol,
-        cursor: u32,
+        cursor: HistoryCursor,
         limit: u32,
     ) -> Result<HistoryPage, Error> {
         Self::get_country_history(env, country_iso, category, cursor, limit)
@@ -1358,12 +1427,13 @@ impl PriceVault {
     pub fn get_submitter_history(
         env: Env,
         submitter: Address,
-        cursor: u32,
+        cursor: HistoryCursor,
         limit: u32,
     ) -> Result<HistoryPage, Error> {
         if limit == 0 || limit > MAX_HISTORY_PAGE_SIZE {
             return Err(Error::InvalidPageSize);
         }
+        let cursor = cursor.validate()?;
 
         let sub_key = DataKey::SubmitterIndex(submitter);
         let entries: Vec<SubmitterEntry> = env
@@ -1395,7 +1465,7 @@ impl PriceVault {
 
         Ok(HistoryPage {
             submissions,
-            next_cursor: end,
+            next_cursor: HistoryCursor::new(end),
             has_more: end < total,
         })
     }
@@ -1476,7 +1546,7 @@ impl PriceVault {
             checked_count,
             missing_count,
             consistent: missing_count == 0,
-            next_cursor: end,
+            next_cursor: HistoryCursor::new(end),
             has_more: end < total,
         })
     }
@@ -1765,7 +1835,19 @@ mod tests {
                 return Err(Error::InvalidCountry);
             }
         }
+        let previous: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&DataKey::CountryAllowlist)
+            .unwrap_or_else(|| Vec::new(&env));
         env.storage().instance().set(&DataKey::CountryAllowlist, &countries);
+        for i in 0..previous.len() {
+            let c = previous.get(i).unwrap();
+            let still = (0..countries.len()).any(|j| countries.get(j).unwrap() == c);
+            if !still {
+                CountryAllowlistRemoved { country_iso: c, admin: admin.clone() }.publish(&env);
+            }
+        }
         Ok(())
     }
 
@@ -1797,7 +1879,19 @@ mod tests {
                 return Err(Error::InvalidCategory);
             }
         }
+        let previous: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&DataKey::CategoryAllowlist)
+            .unwrap_or_else(|| Vec::new(&env));
         env.storage().instance().set(&DataKey::CategoryAllowlist, &categories);
+        for i in 0..previous.len() {
+            let c = previous.get(i).unwrap();
+            let still = (0..categories.len()).any(|j| categories.get(j).unwrap() == c);
+            if !still {
+                CategoryAllowlistRemoved { category: c, admin: admin.clone() }.publish(&env);
+            }
+        }
         Ok(())
     }
 
@@ -1807,6 +1901,37 @@ mod tests {
             .instance()
             .get(&DataKey::CategoryAllowlist)
             .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// #1080 CT-009 — category-specific max price (1..=MAX_PRICE), or clear with None.
+    pub fn set_category_max_price(
+        env: Env,
+        admin: Address,
+        category: Symbol,
+        max_price: Option<i128>,
+    ) -> Result<(), Error> {
+        require_admin(&env, &admin)?;
+        if !registry::is_supported_category(&env, &category) {
+            return Err(Error::InvalidCategory);
+        }
+        match max_price {
+            Some(m) if m <= 0 => return Err(Error::NonPositiveAmount),
+            Some(m) if m > MAX_PRICE => return Err(Error::ValueAboveMaximum),
+            Some(m) => {
+                env.storage().instance().set(&DataKey::CategoryMaxPrice(category), &m);
+            }
+            None => {
+                env.storage().instance().remove(&DataKey::CategoryMaxPrice(category));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn get_category_max_price(env: Env, category: Symbol) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::CategoryMaxPrice(category))
+            .unwrap_or(MAX_PRICE)
     }
 
     /// # Restrict which submitters may write which categories
@@ -4254,7 +4379,7 @@ mod tests {
         seed_submitter(&env, &client, &other, 2);
 
         let mut seen: Vec<u64> = Vec::new();
-        let mut cursor: u32 = 0;
+        let mut cursor = HistoryCursor::new(0);
         loop {
             let page = client.get_submitter_history(&submitter, &cursor, &3).unwrap();
             for record in page.submissions.iter() {
@@ -4263,10 +4388,10 @@ mod tests {
             assert!(page.submissions.len() <= 3);
             if !page.has_more {
                 // An exhausted cursor terminates the walk.
-                assert_eq!(page.next_cursor, 7);
+                assert_eq!(page.next_cursor.offset, 7);
                 break;
             }
-            cursor = page.next_cursor;
+            cursor = page.next_cursor.clone();
         }
 
         assert_eq!(seen.len(), 7);
@@ -4287,14 +4412,14 @@ mod tests {
 
         assert_eq!(
             client
-                .try_get_submitter_history(&submitter, &0, &0)
+                .try_get_submitter_history(&submitter, &HistoryCursor::new(0), &0)
                 .unwrap_err()
                 .unwrap(),
             Error::InvalidPageSize
         );
         assert_eq!(
             client
-                .try_get_submitter_history(&submitter, &0, &(MAX_HISTORY_PAGE_SIZE + 1))
+                .try_get_submitter_history(&submitter, &HistoryCursor::new(0), &(MAX_HISTORY_PAGE_SIZE + 1))
                 .unwrap_err()
                 .unwrap(),
             Error::InvalidPageSize
@@ -4311,7 +4436,7 @@ mod tests {
         seed_submitter(&env, &client, &submitter, 4);
 
         // Read the first page, then let more records land mid-pagination.
-        let first = client.get_submitter_history(&submitter, &0, &2).unwrap();
+        let first = client.get_submitter_history(&submitter, &HistoryCursor::new(0), &2).unwrap();
         assert_eq!(first.submissions.len(), 2);
         assert!(first.has_more);
 
@@ -4333,11 +4458,11 @@ mod tests {
         let env = make_env();
         let client = deploy(&env);
         let page = client
-            .get_submitter_history(&Address::generate(&env), &0, &10)
+            .get_submitter_history(&Address::generate(&env), &HistoryCursor::new(0), &10)
             .unwrap();
         assert_eq!(page.submissions.len(), 0);
         assert!(!page.has_more);
-        assert_eq!(page.next_cursor, 0);
+        assert_eq!(page.next_cursor.offset, 0);
     }
 
     // â”€â”€ pure helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
