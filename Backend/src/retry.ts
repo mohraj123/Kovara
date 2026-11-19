@@ -189,6 +189,13 @@ function errorCode(err: unknown): string | undefined {
   if (err && typeof err === "object") {
     const code = (err as { code?: unknown }).code;
     if (typeof code === "string") return code;
+    // Database drivers/ORMs often wrap the driver error (e.g. a pg
+    // ECONNRESET or 57P01) as `cause`; look one level down for its code.
+    const cause = (err as { cause?: unknown }).cause;
+    if (cause && typeof cause === "object") {
+      const causeCode = (cause as { code?: unknown }).code;
+      if (typeof causeCode === "string") return causeCode;
+    }
   }
   return undefined;
 }
