@@ -127,6 +127,32 @@ export function normalizeEvent<T extends Record<string, unknown>>(
   return result;
 }
 
+// ── Topic/value pairing ──────────────────────────────────────────────────────
+
+/** Event topics the indexer dispatches; each carries a non-empty value. */
+const KNOWN_TOPICS: ReadonlySet<string> = new Set([
+  "profile_set", "post_created", "post_deleted", "like", "follow", "unfollow",
+  "tip", "pool_created", "pool_deposit", "pool_withdraw",
+]);
+
+/**
+ * Reject a known topic paired with an empty or malformed value before it
+ * reaches a handler. A value that looks like JSON must parse.
+ * Unknown topics are left alone (dispatch logs and skips them).
+ */
+export function validateTopicValue(topic: string, value: string): void {
+  if (!KNOWN_TOPICS.has(topic)) return;
+  const v = value.trim();
+  if (v === "") throw new Error(`invalid payload: topic "${topic}" has an empty value`);
+  if (v.startsWith("{") || v.startsWith("[")) {
+    try {
+      JSON.parse(v);
+    } catch {
+      throw new Error(`invalid payload: topic "${topic}" has a malformed JSON value`);
+    }
+  }
+}
+
 // ── RawEvent normalization ───────────────────────────────────────────────────
 
 /**
@@ -140,6 +166,7 @@ export function normalizeEvent<T extends Record<string, unknown>>(
  * Returns a new `RawEvent` with normalized fields.
  */
 export function normalizeRawEvent(event: RawEvent): RawEvent {
+  validateTopicValue(event.topic[0]?.trim() ?? "", event.value);
   return {
     ...event,
     type: event.type.trim(),
