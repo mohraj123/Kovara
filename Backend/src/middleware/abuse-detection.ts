@@ -148,6 +148,12 @@ interface IdentityState {
   lastOffenseAt: number;
 }
 
+/** Source of the current time in epoch ms. Injected so tests control time. */
+export type Clock = () => number;
+
+/** The production clock. */
+export const systemClock: Clock = () => Date.now();
+
 export class AbuseDetector {
   private readonly states = new Map<string, IdentityState>();
   private readonly events: AbuseEvent[] = [];
@@ -155,10 +161,16 @@ export class AbuseDetector {
   private blockedRequests = 0;
   private readonly log: Logger;
   private readonly config: AbuseConfig;
+  private readonly clock: Clock;
 
-  constructor(config: Partial<AbuseConfig> = {}, log: Logger = defaultLogger) {
+  constructor(
+    config: Partial<AbuseConfig> = {},
+    log: Logger = defaultLogger,
+    clock: Clock = systemClock
+  ) {
     this.config = { ...DEFAULT_ABUSE_CONFIG, ...config };
     this.log = log;
+    this.clock = clock;
   }
 
   /**
@@ -175,7 +187,7 @@ export class AbuseDetector {
     status: number,
     userAgent: string
   ): { signal: AbuseSignal; cooldownMs: number; detail: string } | null {
-    const now = Date.now();
+    const now = this.clock();
     const state = this.stateFor(identity);
     this.prune(state, now);
 
@@ -200,14 +212,14 @@ export class AbuseDetector {
   isBlocked(identity: string): boolean {
     const state = this.states.get(identity);
     if (!state) return false;
-    return state.blockedUntil > Date.now();
+    return state.blockedUntil > this.clock();
   }
 
   /** Seconds left on the cooldown, for `Retry-After`. */
   retryAfterSeconds(identity: string): number {
     const state = this.states.get(identity);
     if (!state) return 0;
-    return Math.max(0, Math.ceil((state.blockedUntil - Date.now()) / 1000));
+    return Math.max(0, Math.ceil((state.blockedUntil - this.clock()) / 1000));
   }
 
   /**
@@ -239,7 +251,7 @@ export class AbuseDetector {
     recentEvents: AbuseEvent[];
     config: Omit<AbuseConfig, "scannerPathPatterns" | "scannerUserAgents">;
   } {
-    const now = Date.now();
+    const now = this.clock();
     let blockedIdentities = 0;
     for (const state of this.states.values()) {
       if (state.blockedUntil > now) blockedIdentities += 1;

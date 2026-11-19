@@ -218,6 +218,35 @@ export function buildSignableMessage(parts: {
   return Buffer.from(lines.join("\n"), "utf8");
 }
 
+/**
+ * The canonical request target a client signs: the full path (mount prefix
+ * included, trailing slash removed) plus the query string with its parameters
+ * sorted, so the same request always yields the same string and a signature for
+ * one target cannot be replayed against another route or another query.
+ *
+ * `req.path` alone is not enough: inside a router mounted at a prefix it is
+ * relative to the mount, so two endpoints under different prefixes can share a
+ * `req.path`, and it never includes the query string at all.
+ */
+export function canonicalRequestPath(req: {
+  baseUrl?: string;
+  path: string;
+  originalUrl?: string;
+}): string {
+  const original = req.originalUrl ?? `${req.baseUrl ?? ""}${req.path}`;
+  const queryStart = original.indexOf("?");
+  const rawPath = queryStart >= 0 ? original.slice(0, queryStart) : original;
+  const rawQuery = queryStart >= 0 ? original.slice(queryStart + 1) : "";
+  const path = rawPath.length > 1 ? rawPath.replace(/\/+$/, "") || "/" : rawPath || "/";
+  if (rawQuery === "") return path;
+  const sorted = rawQuery
+    .split("&")
+    .filter((part) => part !== "")
+    .sort()
+    .join("&");
+  return sorted === "" ? path : `${path}?${sorted}`;
+}
+
 // ── Identity mapping ─────────────────────────────────────────────────────
 
 /** A user identity resolved from a verified wallet address. */
@@ -428,7 +457,7 @@ export function walletSignatureMiddleware(
 
     const message = buildSignableMessage({
       method: req.method,
-      path: req.path,
+      path: canonicalRequestPath(req),
       timestamp,
       nonce,
       ...(bodyHash ? { bodyHash } : {}),

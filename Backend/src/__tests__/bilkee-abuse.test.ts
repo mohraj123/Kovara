@@ -233,3 +233,86 @@ describe("AbuseDetector (#661)", () => {
     });
   });
 });
+
+describe("AbuseDetector with an injected clock (BE-039)", () => {
+  const quiet = { warn: () => {}, info: () => {}, error: () => {}, always: () => {}, child: () => quiet } as unknown as Logger;
+
+  /** A controllable clock. It starts well above 0 because 0 means "never" in the detector state. */
+  function fakeClock(start = 1_000_000) {
+    let t = start;
+    return { now: () => t, advance: (ms: number) => void (t += ms), set: (v: number) => void (t = v) };
+  }
+
+  const burstConfig = { burstWindowMs: 1_000, burstThreshold: 5, scrapingDistinctThreshold: 10_000, enumerationDistinctThreshold: 10_000 };
+  const hit = (d: AbuseDetector, id = "id1") => d.record(id, "GET", "/api/v1/posts", "same", 200, "");
+
+  it("trips the burst threshold exactly at the threshold, not before", () => {
+    const clock = fakeClock();
+    const d = new AbuseDetector(burstConfig, quiet, clock.now);
+    for (let i = 0; i < 4; i += 1) expect(hit(d)).toBeNull();
+    expect(hit(d)?.signal).toBe("burst");
+  });
+
+  it("counts requests exactly on the window edge and drops them one millisecond later", () => {
+    const edge = fakeClock();
+    const d1 = new AbuseDetector(burstConfig, quiet, edge.now);
+    for (let i = 0; i < 4; i += 1) hit(d1);
+    edge.advance(1_000); // oldest requests are exactly burstWindowMs old: still inside
+    expect(hit(d1)?.signal).toBe("burst");
+
+    const past = fakeClock();
+    const d2 = new AbuseDetector(burstConfig, quiet, past.now);
+    for (let i = 0; i < 4; i += 1) hit(d2);
+    past.advance(1_001); // one millisecond older: outside the burst window
+    expect(hit(d2)).toBeNull();
+  });
+
+  it("rolls the observation window over without real-time delays", () => {
+    const clock = fakeClock();
+    const d = new AbuseDetector({ ...burstConfig, burstThreshold: 1_000, windowMs: 10_000, enumerationDistinctThreshold: 40 }, quiet, clock.now);
+    for (let i = 0; i < 30; i += 1) d.record("id1", "GET", "/api/v1/posts", `a${i}`, 200, "");
+    clock.advance(10_001);
+    for (let i = 0; i < 30; i += 1) d.record("id1", "GET", "/api/v1/posts", `b${i}`, 200, "");
+    // 60 distinct would have tripped the threshold of 40 had window one been kept.
+    expect(d.snapshot().detections).toBe(0);
+  });
+
+  it("expires a cooldown at exactly baseCooldownMs and reports the remaining seconds", () => {
+    const clock = fakeClock();
+    const d = new AbuseDetector({ baseCooldownMs: 30_000 }, quiet, clock.now);
+    d.record("id1", "GET", "/etc/passwd", "r", 404, "");
+    expect(d.isBlocked("id1")).toBe(true);
+    expect(d.retryAfterSeconds("id1")).toBe(30);
+    clock.advance(29_999);
+    expect(d.isBlocked("id1")).toBe(true);
+    expect(d.retryAfterSeconds("id1")).toBe(1);
+    clock.advance(1);
+    expect(d.isBlocked("id1")).toBe(false);
+    expect(d.retryAfterSeconds("id1")).toBe(0);
+  });
+
+  it("resets escalation after the offence decay time and escalates before it", () => {
+    const clock = fakeClock();
+    const d = new AbuseDetector({ baseCooldownMs: 1_000, offenseDecayMs: 60_000, maxCooldownMs: 1_000_000 }, quiet, clock.now);
+    const trip = () => d.record("id1", "GET", "/etc/passwd", "r", 404, "");
+    expect(trip()?.cooldownMs).toBe(1_000);
+    clock.advance(2_000);
+    expect(trip()?.cooldownMs).toBe(2_000); // escalated
+    clock.advance(60_000); // quiet for the full decay time
+    expect(trip()?.cooldownMs).toBe(1_000); // started over
+  });
+
+  it("keeps identities independent under the same clock", () => {
+    const clock = fakeClock();
+    const d = new AbuseDetector(burstConfig, quiet, clock.now);
+    for (let i = 0; i < 5; i += 1) hit(d, "noisy");
+    expect(d.isBlocked("noisy")).toBe(true);
+    expect(d.isBlocked("quiet")).toBe(false);
+  });
+
+  it("uses the production clock by default", () => {
+    const d = new AbuseDetector({}, quiet);
+    d.record("id1", "GET", "/etc/passwd", "r", 404, "");
+    expect(d.isBlocked("id1")).toBe(true);
+  });
+});

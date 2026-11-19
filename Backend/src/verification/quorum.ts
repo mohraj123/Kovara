@@ -60,6 +60,24 @@ export type QuorumReason =
   | "rejection_above_ceiling"
   | "no_active_votes";
 
+/**
+ * A typed, actionable summary of where a submission stands. It is derived from
+ * the same counts and reasons as before; it does not change any threshold.
+ *
+ *  - `insufficient`: too few distinct active voters for any verdict yet;
+ *    `votesNeeded` more are required.
+ *  - `conflicting`: enough voters, but approvals and rejections both exist and
+ *    the split misses the approval threshold or exceeds the rejection ceiling.
+ *    `approvalsShort` is how many more approvals the current voters would need.
+ *  - `rejected`: enough voters and no approvals at all (unanimous rejection).
+ *  - `satisfied`: quorum and ratio conditions are both met.
+ */
+export type QuorumOutcome =
+  | { status: "insufficient"; votesNeeded: number }
+  | { status: "conflicting"; approvals: number; rejections: number; approvalsShort: number }
+  | { status: "rejected"; rejections: number }
+  | { status: "satisfied" };
+
 export interface QuorumResult {
   /** True only when every quorum condition is satisfied. */
   passed: boolean;
@@ -80,6 +98,8 @@ export interface QuorumResult {
   requiredApprovals: number;
   approvalRatio: Ratio;
   rejectionCeiling: Ratio;
+  /** Typed status for callers that need to branch on why it is not verified. */
+  outcome: QuorumOutcome;
 }
 
 /** Default: three distinct voters, two-thirds approval, one-third rejection. */
@@ -216,26 +236,40 @@ export function evaluateQuorum(
     rejectionCeiling,
   };
 
+  const insufficient: QuorumOutcome = {
+    status: "insufficient",
+    votesNeeded: Math.max(0, minVoters - totalActive),
+  };
+  const failedOutcome = (): QuorumOutcome =>
+    approvals === 0
+      ? { status: "rejected", rejections }
+      : {
+          status: "conflicting",
+          approvals,
+          rejections,
+          approvalsShort: Math.max(0, requiredApprovals - approvals),
+        };
+
   if (totalActive === 0) {
-    return { ...base, passed: false, decided: false, reason: "no_active_votes" };
+    return { ...base, passed: false, decided: false, reason: "no_active_votes", outcome: insufficient };
   }
 
   // Order matters. Quorum is checked before any ratio so that a small vote set
   // with a flattering ratio is reported as undecided rather than as failed —
   // the submission is waiting for voters, not being rejected.
   if (totalActive < minVoters) {
-    return { ...base, passed: false, decided: false, reason: "insufficient_voters" };
+    return { ...base, passed: false, decided: false, reason: "insufficient_voters", outcome: insufficient };
   }
 
   if (!meetsRatio(approvals, totalActive, approvalRatio)) {
-    return { ...base, passed: false, decided: true, reason: "approval_below_threshold" };
+    return { ...base, passed: false, decided: true, reason: "approval_below_threshold", outcome: failedOutcome() };
   }
 
   if (!withinRatio(rejections, totalActive, rejectionCeiling)) {
-    return { ...base, passed: false, decided: true, reason: "rejection_above_ceiling" };
+    return { ...base, passed: false, decided: true, reason: "rejection_above_ceiling", outcome: failedOutcome() };
   }
 
-  return { ...base, passed: true, decided: true, reason: "approved" };
+  return { ...base, passed: true, decided: true, reason: "approved", outcome: { status: "satisfied" } };
 }
 
 /** True when a submission has enough voters for a verdict to exist at all. */
