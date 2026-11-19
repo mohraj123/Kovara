@@ -5,6 +5,7 @@ import {
   ReconciliationReport,
   ReconciliationScheduler,
   ReconciliationStore,
+  dryRunReconciliation,
   reconcile,
   runDailyReconciliation,
   toRunDate,
@@ -123,6 +124,26 @@ describe("reconcile (#669)", () => {
 });
 
 describe("runDailyReconciliation (#669)", () => {
+  it("dry-runs without claiming or persisting the reconciliation", async () => {
+    const store = new FakeReconciliationStore();
+    store.source = [totals("NG", "rent", 3, 300n)];
+    store.aggregates = [];
+
+    const result = await dryRunReconciliation(store, "2026-09-25");
+
+    expect(result).toMatchObject({
+      runDate: "2026-09-25",
+      dryRun: true,
+      discrepancyCount: 1,
+    });
+    expect(result.plannedCorrections).toEqual([
+      { countryIso: "NG", category: "rent", action: "recompute_aggregate", reason: "missing_aggregate" },
+    ]);
+    expect(store.claimed.size).toBe(0);
+    expect(store.written).toBeNull();
+    expect(store.report).toBeNull();
+  });
+
   it("records a balanced run and persists no discrepancies", async () => {
     const store = new FakeReconciliationStore();
     store.source = [totals("NG", "rent", 3, 300n)];

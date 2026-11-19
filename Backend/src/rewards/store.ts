@@ -206,7 +206,7 @@ export class RewardStore {
       // 1. Idempotency first. A unique key on the table is the real guard; this
       //    read just avoids doing the work.
       const existing = await client.query<Record<string, unknown>>(
-        "SELECT * FROM reward_claims WHERE idempotency_key = $1",
+        "SELECT * FROM reward_claims WHERE idempotency_key = $1 FOR UPDATE",
         [idempotencyKey]
       );
       if (existing.rows[0]) {
@@ -253,7 +253,7 @@ export class RewardStore {
         await client.query(
           `
           UPDATE reward_accruals a
-          SET state = 'claimed', updated_at = NOW()
+          SET state = 'claimed', updated_at = $4::timestamptz
           FROM unnest($2::text[], $3::text[]) AS t(submission_id, kind)
           WHERE a.address = $1
             AND a.state = 'claimable'
@@ -264,18 +264,24 @@ export class RewardStore {
             address,
             locked.rows.map((r) => String(r.submission_id)),
             locked.rows.map((r) => String(r.kind)),
+            inserted.rows[0].claimed_at,
           ]
         );
       }
 
-      await client.query("COMMIT");
-      if (inserted.rows[0]) return this.mapClaim(inserted.rows[0]);
+      if (inserted.rows[0]) {
+        await client.query("COMMIT");
+        return this.mapClaim(inserted.rows[0]);
+      }
 
       // Lost a race on the idempotency key: the winner's claim is the answer.
+      // Re-read before COMMIT, so it remains in the same transaction snapshot
+      // and is never answered from outside the atomic transition.
       const winner = await client.query<Record<string, unknown>>(
         "SELECT * FROM reward_claims WHERE idempotency_key = $1",
         [idempotencyKey]
       );
+      await client.query("COMMIT");
       return this.mapClaim(winner.rows[0]);
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
@@ -320,16 +326,37 @@ export class RewardStore {
 
       const claim = result.rows[0];
       if (claim && outcome.state === "failed") {
-        // Release the accruals so the amount is claimable again. Scoped to this
-        // claim's address and amount ceiling: a claim that partially settled
-        // must not drag unrelated lines back into the claimable pool.
+        // Release exactly this claim's amount in accrual-line order. The accrual
+        // table predates an explicit claim-line join table, so the cumulative
+        // amount ceiling is the atomic, database-enforced limit; unrelated
+        // claimed lines remain claimed.
         await client.query(
           `
-          UPDATE reward_accruals
+          WITH ranked AS (
+            SELECT address, submission_id, kind, amount,
+                   SUM(amount) OVER (
+                     PARTITION BY address
+                     ORDER BY submission_id ASC, kind ASC
+                   ) AS cumulative
+            FROM reward_accruals
+            WHERE address = $1
+              AND state = 'claimed'
+              AND updated_at = $3::timestamptz
+            FOR UPDATE
+          )
+          UPDATE reward_accruals a
           SET state = 'claimable', updated_at = NOW()
-          WHERE address = $1 AND state = 'claimed'
+          FROM ranked r
+          WHERE a.address = r.address
+            AND a.submission_id = r.submission_id
+            AND a.kind = r.kind
+            AND r.cumulative - r.amount < $2::numeric
           `,
-          [String(claim.address)]
+          [
+            String(claim.address),
+            String(toSafeBigInt(claim.amount)),
+            claim.claimed_at as string,
+          ]
         );
       }
 

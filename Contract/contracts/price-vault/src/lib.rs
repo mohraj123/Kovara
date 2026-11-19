@@ -78,6 +78,13 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// The ceiling bounds how far one rogue submission can skew an index median.
 pub const MAX_PRICE: i128 = 1_000_000_000_000;
 
+/// Maximum entries returned by a bounded country or submitter history page.
+pub const MAX_HISTORY_PAGE_SIZE: u32 = 50;
+/// Maximum submitter-index entries processed by one cleanup call.
+pub const MAX_CLEANUP_PAGE_SIZE: u32 = 50;
+/// Maximum submitter-index entries inspected by one consistency call.
+pub const MAX_CONSISTENCY_PAGE_SIZE: u32 = 50;
+
 // ── Errors ───────────────────────────────────────────────────────────────────
 
 /// Errors returned by `PriceVault`.
@@ -144,6 +151,8 @@ pub enum Error {
     SubmitterNotAllowed = 24,
     /// `initialize` was called more than once.
     AlreadyInitialized = 25,
+    /// A bounded page size was zero or above its API-specific limit.
+    InvalidPageSize = 26,
 }
 
 /// Which categories one submitter is allowed to write.
@@ -158,25 +167,6 @@ pub struct Authorization {
     pub submitter: Address,
     /// Categories this submitter may write; empty means all of them.
     pub categories: Vec<Symbol>,
-    // â”€â”€ bounded history queries â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    /// A page size was zero or above [`MAX_HISTORY_PAGE_SIZE`].
-    InvalidPageSize = 21,
-
-    // â”€â”€ duplicate submissions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    /// A record already exists for `(country_iso, category, valid_from)`.
-    DuplicateSubmission = 22,
-
-    // â”€â”€ admin configuration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    /// The caller is not the configured admin.
-    Unauthorized = 23,
-    /// The category is disabled by the configured policy.
-    CategoryDisabled = 24,
-    /// The submitter is not allowed by the configured policy.
-    SubmitterNotAllowed = 25,
-    /// The requested validity window exceeds the configured maximum.
-    WindowTooLong = 26,
-    /// An admin configuration call was made before any admin was configured.
-    AdminNotConfigured = 27,
 }
 
 // ── Identifier registry ──────────────────────────────────────────────────────
@@ -604,52 +594,25 @@ impl SubmissionStatus {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
-    /// `(country_iso, category, valid_from)` â†’ [`PriceSubmission`].
-    ///
-    /// `valid_from` is the observation timestamp; it is both the storage key
-    /// component and the start of the validity window.
+    /// `(country_iso, category, valid_from)` → `PriceSubmission`.
     Price(Symbol, Symbol, u64),
-
-    /// `(country_iso, category)` → `Vec<u64>` of observation timestamps, in
-    /// insertion order.
-    ///
-    /// Lets history queries enumerate records without a full-storage scan.
+    /// `(country_iso, category)` → `Vec<u64>` timestamps.
     SubmissionIndex(Symbol, Symbol),
-
-    /// Admin allowed to manage the access-control configuration.
+    /// Admin address used for configuration.
     Admin,
-    /// `submitter` â†’ `Vec<SubmitterEntry>` for that submitter's records, in
-    /// insertion order.
-    ///
-    /// Appended at the same moment as [`DataKey::SubmissionIndex`], so the two
-    /// can never disagree about which records exist. See
-    /// [`PriceVault::get_submitter_history`] for why this exists.
+    /// `submitter` → `Vec<SubmitterEntry>`.
     SubmitterIndex(Address),
-
-    /// The address authorized to change the configuration below.
-    ///
-    /// Absent means unconfigured. The lookup has no fallback to the caller.
-    Admin,
-
-    /// Longest validity window `submit` will accept. `None` = unbounded.
+    /// Longest allowed validity window.
     MaxValidityWindow,
-
-    /// `category` â†’ whether submissions are accepted. Absent = enabled.
+    /// Category policy.
     CategoryPolicy(Symbol),
-
-    /// `submitter` â†’ whether submissions are accepted. Absent = allowed.
+    /// Submitter policy.
     SubmitterPolicy(Address),
-}
-
-    /// `Vec<Symbol>` of countries submissions may be written for. Empty means
-    /// "every country the registry accepts".
+    /// Allowed countries.
     CountryAllowlist,
-
-    /// `Vec<Symbol>` of categories submissions may be written for. Empty means
-    /// "every category the registry accepts".
+    /// Allowed categories.
     CategoryAllowlist,
-
-    /// `Vec<Authorization>` describing who may write which category.
+    /// Submitter authorizations.
     Authorizations,
 }
 
@@ -690,6 +653,44 @@ impl PriceSubmission {
     pub fn is_valid_at(&self, query_ts: u64) -> bool {
         query_ts >= self.valid_from && query_ts < self.valid_until
     }
+}
+
+/// One entry in a submitter's append-only index.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubmitterEntry {
+    pub country_iso: Symbol,
+    pub category: Symbol,
+    pub timestamp: u64,
+}
+
+/// A bounded page of submissions.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoryPage {
+    pub submissions: Vec<PriceSubmission>,
+    pub next_cursor: u32,
+    pub has_more: bool,
+}
+
+/// Result of a bounded submitter-index cleanup page.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CleanupReport {
+    pub removed_count: u32,
+    pub next_cursor: u32,
+    pub has_more: bool,
+}
+
+/// Result of a bounded index-consistency page.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexConsistencyReport {
+    pub checked_count: u32,
+    pub missing_count: u32,
+    pub consistent: bool,
+    pub next_cursor: u32,
+    pub has_more: bool,
 }
 
 // ── Events ───────────────────────────────────────────────────────────────────
@@ -1257,6 +1258,47 @@ impl PriceVault {
         Ok(Self::collect_submissions(&env, &country_iso, &category, &filtered))
     }
 
+    /// One bounded page of a country/category index.
+    pub fn get_country_history(
+        env: Env,
+        country_iso: Symbol,
+        category: Symbol,
+        cursor: u32,
+        limit: u32,
+    ) -> Result<HistoryPage, Error> {
+        if limit == 0 || limit > MAX_HISTORY_PAGE_SIZE {
+            return Err(Error::InvalidPageSize);
+        }
+        let timestamps: Vec<u64> = env.storage().persistent()
+            .get(&DataKey::SubmissionIndex(country_iso.clone(), category.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        let total = timestamps.len();
+        let start = core::cmp::min(cursor, total);
+        let end = core::cmp::min(start.saturating_add(limit), total);
+        let mut page = Vec::new(&env);
+        for i in start..end {
+            if let Some(ts) = timestamps.get(i) {
+                page.push_back(ts);
+            }
+        }
+        Ok(HistoryPage {
+            submissions: Self::collect_submissions(&env, &country_iso, &category, &page),
+            next_cursor: end,
+            has_more: end < total,
+        })
+    }
+
+    /// Alias for bounded country/category history pagination.
+    pub fn get_history_page(
+        env: Env,
+        country_iso: Symbol,
+        category: Symbol,
+        cursor: u32,
+        limit: u32,
+    ) -> Result<HistoryPage, Error> {
+        Self::get_country_history(env, country_iso, category, cursor, limit)
+    }
+
     /// The most recently **inserted** submission for `(country_iso, category)`,
     /// or `None` when there is none.
     pub fn get_latest(
@@ -1353,6 +1395,87 @@ impl PriceVault {
 
         Ok(HistoryPage {
             submissions,
+            next_cursor: end,
+            has_more: end < total,
+        })
+    }
+
+    /// Admin-authorized cleanup of stale submitter-index entries, limited to one page.
+    pub fn cleanup_submitter_index(
+        env: Env,
+        actor: Address,
+        submitter: Address,
+        cursor: u32,
+        limit: u32,
+    ) -> Result<CleanupReport, Error> {
+        actor.require_auth();
+        if limit == 0 || limit > MAX_CLEANUP_PAGE_SIZE {
+            return Err(Error::InvalidPageSize);
+        }
+        let admin = env.storage().instance().get::<DataKey, Address>(&DataKey::Admin)
+            .or_else(|| env.storage().persistent().get::<DataKey, Address>(&DataKey::Admin));
+        if admin != Some(actor.clone()) {
+            return Err(Error::Unauthorized);
+        }
+        let key = DataKey::SubmitterIndex(submitter.clone());
+        let entries: Vec<SubmitterEntry> = env.storage().persistent()
+            .get(&key).unwrap_or_else(|| Vec::new(&env));
+        let total = entries.len();
+        let start = core::cmp::min(cursor, total);
+        let end = core::cmp::min(start.saturating_add(limit), total);
+        let mut kept = Vec::new(&env);
+        let mut removed_count = 0u32;
+        for i in 0..total {
+            if let Some(entry) = entries.get(i) {
+                let live = env.storage().persistent()
+                    .get::<DataKey, PriceSubmission>(&DataKey::Price(
+                        entry.country_iso.clone(), entry.category.clone(), entry.timestamp,
+                    ))
+                    .map(|record| record.submitter == submitter)
+                    .unwrap_or(false);
+                if i >= start && i < end && !live {
+                    removed_count = removed_count.saturating_add(1);
+                } else {
+                    kept.push_back(entry);
+                }
+            }
+        }
+        env.storage().persistent().set(&key, &kept);
+        Ok(CleanupReport { removed_count, next_cursor: end, has_more: end < total })
+    }
+
+    /// Read-only bounded consistency check for a country/category index page.
+    pub fn check_index_consistency(
+        env: Env,
+        country_iso: Symbol,
+        category: Symbol,
+        cursor: u32,
+        limit: u32,
+    ) -> Result<IndexConsistencyReport, Error> {
+        if limit == 0 || limit > MAX_CONSISTENCY_PAGE_SIZE {
+            return Err(Error::InvalidPageSize);
+        }
+        let timestamps: Vec<u64> = env.storage().persistent()
+            .get(&DataKey::SubmissionIndex(country_iso.clone(), category.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        let total = timestamps.len();
+        let start = core::cmp::min(cursor, total);
+        let end = core::cmp::min(start.saturating_add(limit), total);
+        let mut missing_count = 0u32;
+        for i in start..end {
+            if let Some(ts) = timestamps.get(i) {
+                if env.storage().persistent().get::<DataKey, PriceSubmission>(
+                    &DataKey::Price(country_iso.clone(), category.clone(), ts)
+                ).is_none() {
+                    missing_count = missing_count.saturating_add(1);
+                }
+            }
+        }
+        let checked_count = end.saturating_sub(start);
+        Ok(IndexConsistencyReport {
+            checked_count,
+            missing_count,
+            consistent: missing_count == 0,
             next_cursor: end,
             has_more: end < total,
         })

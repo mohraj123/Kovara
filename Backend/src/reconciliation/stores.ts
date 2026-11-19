@@ -30,8 +30,17 @@ export type ReconciliationRunSummary = Omit<ReconciliationReport, "discrepancies
 export interface ReconciliationQueryStore {
   listRuns(limit: number, offset: number): Promise<{ runs: ReconciliationRunSummary[]; total: number }>;
   getRun(
-    runDate: string
-  ): Promise<{ run: ReconciliationRunSummary; discrepancies: Discrepancy[] } | null>;
+    runDate: string,
+    limit?: number,
+    offset?: number
+  ): Promise<{
+    run: ReconciliationRunSummary;
+    discrepancies: Discrepancy[];
+    total?: number;
+    limit?: number;
+    offset?: number;
+    has_more?: boolean;
+  } | null>;
 }
 
 export class PostgresReconciliationStore
@@ -212,8 +221,17 @@ export class PostgresReconciliationStore
   }
 
   async getRun(
-    runDate: string
-  ): Promise<{ run: ReconciliationRunSummary; discrepancies: Discrepancy[] } | null> {
+    runDate: string,
+    limit = 20,
+    offset = 0
+  ): Promise<{
+    run: ReconciliationRunSummary;
+    discrepancies: Discrepancy[];
+    total: number;
+    limit: number;
+    offset: number;
+    has_more: boolean;
+  } | null> {
     const runResult = await this.pool.query(
       `
       SELECT run_date, status, source_groups, aggregate_groups,
@@ -225,20 +243,32 @@ export class PostgresReconciliationStore
     );
     if (!runResult.rowCount) return null;
 
-    const discrepancyResult = await this.pool.query(
-      `
-      SELECT country_iso, category, kind, source_count, aggregate_count,
-             source_value, aggregate_value, count_delta, value_delta
-      FROM reconciliation_discrepancies
-      WHERE run_date = $1::date
-      ORDER BY country_iso ASC, category ASC
-      `,
-      [runDate]
-    );
+    const [countResult, discrepancyResult] = await Promise.all([
+      this.pool.query(
+        `SELECT COUNT(*)::int AS total FROM reconciliation_discrepancies WHERE run_date = $1::date`,
+        [runDate]
+      ),
+      this.pool.query(
+        `
+        SELECT country_iso, category, kind, source_count, aggregate_count,
+               source_value, aggregate_value, count_delta, value_delta
+        FROM reconciliation_discrepancies
+        WHERE run_date = $1::date
+        ORDER BY country_iso ASC, category ASC
+        LIMIT $2 OFFSET $3
+        `,
+        [runDate, limit, offset]
+      ),
+    ]);
 
+    const total = Number(countResult.rows[0]?.total ?? 0);
     return {
       run: mapRunRow(runResult.rows[0]),
       discrepancies: discrepancyResult.rows.map(mapDiscrepancyRow),
+      total,
+      limit,
+      offset,
+      has_more: offset + discrepancyResult.rows.length < total,
     };
   }
 }
