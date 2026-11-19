@@ -19,7 +19,13 @@
 
 import { Router, Request, Response, NextFunction } from "express";
 import { Pool } from "pg";
-import { PostgresSearchStore, SEARCH_ENTITIES, SearchEntity, SearchValidationError } from "../search/store";
+import {
+  PostgresSearchStore,
+  SEARCH_ENTITIES,
+  SearchEntity,
+  SearchOptions,
+  SearchValidationError,
+} from "../search/store";
 import { ResponseCache, cacheKey } from "../cache/response-cache";
 import { defineSerializer, serializeValue, SerializationError } from "./serialize";
 import { sendError } from "./response";
@@ -130,6 +136,29 @@ function readEntities(raw: unknown): SearchEntity[] | undefined {
   return [...new Set(wanted as SearchEntity[])];
 }
 
+/** A category filter is a lowercase slug of at most 32 characters. */
+const CATEGORY_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+
+/**
+ * Read the optional `category` filter. Omitted or blank means "no filter";
+ * anything that is not a single well-formed category slug is rejected.
+ */
+export function readCategory(raw: unknown): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string") {
+    throw new SearchValidationError("category must be a single value", "INVALID_CATEGORY");
+  }
+  const category = raw.trim().toLowerCase();
+  if (category === "") return undefined;
+  if (!CATEGORY_PATTERN.test(category)) {
+    throw new SearchValidationError(
+      "category must be 1-32 characters: lowercase letters, digits, '-' or '_'",
+      "INVALID_CATEGORY"
+    );
+  }
+  return category;
+}
+
 export interface SearchRouterOptions {
   pool: Pool;
   /** Injected in tests; constructed from the pool otherwise. */
@@ -215,10 +244,12 @@ export function createSearchRouter(options: SearchRouterOptions): Router {
     void (async (): Promise<void> => {
       let params: { limit: number; offset: number };
       let entities: SearchEntity[] | undefined;
+      let category: string | undefined;
       try {
         const query = req.query as Record<string, unknown>;
         params = readPagination(query);
         entities = readEntities(query.type);
+        category = readCategory(query.category);
       } catch (err) {
         if (err instanceof SearchValidationError) {
           res.status(400).json({ error: err.message, code: err.code });
@@ -235,7 +266,7 @@ export function createSearchRouter(options: SearchRouterOptions): Router {
       // here — before the cache is consulted or the database is touched.
       let key: string;
       try {
-        key = cacheKey("search", { q: rawQuery, limit: params.limit, offset: params.offset, type: entities ?? SEARCH_ENTITIES });
+        key = cacheKey("search", { q: rawQuery, limit: params.limit, offset: params.offset, type: entities ?? SEARCH_ENTITIES, category: category ?? null });
       } catch (err) {
         if (err instanceof SearchValidationError) {
           res.status(400).json({ error: err.message, code: err.code });
@@ -247,9 +278,20 @@ export function createSearchRouter(options: SearchRouterOptions): Router {
 
       try {
         const { body, stale } = await cache.get(key, async () => {
-          const result = await store.search(rawQuery, { ...params, entities });
+          // `category` is forwarded for stores that can filter on it; stores
+          // that cannot simply ignore the extra option.
+          const searchOptions: SearchOptions & { category?: string } = { ...params, entities, category };
+          const result = await store.search(rawQuery, searchOptions);
+          // Category hits expose their own category, so a filtered request
+          // keeps only the matching one. Other hits are the store's to filter.
+          const hits = category
+            ? result.hits.filter((hit) => {
+                const own = (hit.attributes as Record<string, unknown> | undefined)?.category;
+                return own === undefined || own === category;
+              })
+            : result.hits;
           return {
-            hits: result.hits.map((hit) => serializeHit(hit as unknown as Record<string, unknown>)),
+            hits: hits.map((hit) => serializeHit(hit as unknown as Record<string, unknown>)),
             total: result.total,
             limit: result.limit,
             offset: result.offset,

@@ -249,3 +249,52 @@ describe("cacheKey", () => {
     expect(cacheKey("leaderboard", {})).toBe("leaderboard");
   });
 });
+
+describe("ResponseCache.invalidateResource (#1055)", () => {
+  const cache = () => new ResponseCache({ ttlMs: 60_000, readEpoch: async () => 0 });
+
+  it("drops only entries for the mutated resource and keeps unrelated ones", async () => {
+    const c = cache();
+    const a1 = cacheKey("profiles", { address: "GA" });
+    const a2 = cacheKey("posts", { author: "GA", limit: 10 });
+    const b1 = cacheKey("profiles", { address: "GB" });
+    for (const k of [a1, a2, b1]) await c.get(k, async () => ({ k }));
+
+    expect(c.invalidateResource("profiles", { address: "GA" })).toBe(1);
+    expect(c.stats().keys.sort()).toEqual([a2, b1].sort());
+  });
+
+  it("matches whole name=value segments, so id=1 does not drop id=10", async () => {
+    const c = cache();
+    const one = cacheKey("posts", { id: 1 });
+    const ten = cacheKey("posts", { id: 10 });
+    await c.get(one, async () => 1);
+    await c.get(ten, async () => 10);
+    expect(c.invalidateResource("posts", { id: 1 })).toBe(1);
+    expect(c.stats().keys).toEqual([ten]);
+  });
+
+  it("drops a whole namespace when no params are given and leaves others", async () => {
+    const c = cache();
+    await c.get(cacheKey("posts", { id: 1 }), async () => 1);
+    await c.get(cacheKey("posts", { id: 2 }), async () => 2);
+    await c.get(cacheKey("profiles", { address: "GA" }), async () => 3);
+    expect(c.invalidateResource("posts")).toBe(2);
+    expect(c.stats().keys).toEqual([cacheKey("profiles", { address: "GA" })]);
+  });
+
+  it("refetches an invalidated key but serves the untouched one from cache", async () => {
+    const c = cache();
+    const hit = countingProducer("x");
+    const gone = countingProducer("y");
+    const kHit = cacheKey("posts", { id: 1 });
+    const kGone = cacheKey("posts", { id: 2 });
+    await c.get(kHit, hit.produce);
+    await c.get(kGone, gone.produce);
+    c.invalidateResource("posts", { id: 2 });
+    await c.get(kHit, hit.produce);
+    await c.get(kGone, gone.produce);
+    expect(hit.calls()).toBe(1);
+    expect(gone.calls()).toBe(2);
+  });
+});
