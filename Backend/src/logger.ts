@@ -57,6 +57,31 @@ const STACK_MAX_LEN = 2048;
 const METRICS_MAX_KEYS = 100;
 
 /**
+ * Field names whose values are always credentials. Matching is done on a
+ * normalized key (lowercase, punctuation removed) so `api-key`, `api_key`
+ * and `APIKEY` are all covered (#1039).
+ */
+const SECRET_KEYS = new Set([
+  "password",
+  "passwd",
+  "pwd",
+  "secret",
+  "clientsecret",
+  "token",
+  "accesstoken",
+  "refreshtoken",
+  "apikey",
+  "privatekey",
+  "authorization",
+  "auth",
+  "cookie",
+  "session",
+]);
+
+/** Replacement used for secret fields so their length/type never leaks. */
+const REDACTED_SECRET = "[REDACTED]";
+
+/**
  * Mask a Stellar-style address (e.g. `GABCDE...WXYZ`) so its identity is
  * omitted from logs while remaining attributable.
  */
@@ -115,7 +140,12 @@ export function redact(arg: unknown, depth = 0): unknown {
   if (arg && typeof arg === "object") {
     const out: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(arg as Record<string, unknown>)) {
-      out[key] = redact(value, depth + 1);
+      const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+      // Credentials must not survive at any nesting level; sibling fields are
+      // still redacted recursively so non-sensitive context remains useful.
+      out[key] = SECRET_KEYS.has(normalizedKey)
+        ? REDACTED_SECRET
+        : redact(value, depth + 1);
     }
     return out;
   }
