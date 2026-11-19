@@ -1,12 +1,9 @@
 #![no_std]
-//! `FlowRewards` — releases XLM / Stellar USDC to verified submitters and
-//! verifiers.
-//!
-//! Balances are keyed by `(recipient, asset)` so grants in different assets
-//! never merge into one ambiguous total. Grants are paid out of a per-asset
-//! treasury, and earned and claimed totals are stored independently.
+//! `FlowRewards` releases rewards to verified submitters and verifiers.
 
 use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Map, Symbol,
+    Vec,
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Map, Symbol, Vec,
 };
 
@@ -21,14 +18,15 @@ pub const MAX_BATCH: u32 = 20;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum Error {
-    /// A zero or negative reward amount.
     InvalidAmount = 1,
-    /// The role is not a supported reward role.
     UnsupportedRole = 2,
-    /// A grant with this ID was already processed.
     DuplicateGrant = 3,
-    /// The recipient has nothing left to claim.
     NothingToClaim = 4,
+    InsufficientTreasury = 5,
+    InsufficientClaimable = 6,
+    GrantNotFound = 7,
+    GrantAlreadyClaimed = 8,
+    GrantAlreadyRevoked = 9,
     /// The grant exceeds the treasury funds available for the asset.
     InsufficientTreasury = 2,
     /// The claim exceeds the recipient's claimable balance.
@@ -40,16 +38,22 @@ pub enum Error {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
-    /// `(recipient, asset)` → cumulative rewards granted.
     Granted,
-    /// Marks a grant ID as already processed.
-    GrantId(u64),
-    /// `address` → cumulative rewards already claimed.
-    Claimed(Address),
-    /// `(recipient, asset)` → cumulative rewards claimed.
     Claimed,
-    /// `asset` → treasury funds available for new grants.
     Treasury,
+    GrantId(u64),
+    GrantRecord(u64),
+    GrantIds,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GrantRecord {
+    pub recipient: Address,
+    pub asset: Address,
+    pub amount: i128,
+    pub claimed: i128,
+    pub revoked: i128,
     /// The current rewards admin.
     Admin,
 }
@@ -74,7 +78,12 @@ fn treasury(env: &Env) -> Map<Address, i128> {
 #[contractimpl]
 impl FlowRewards {
     /// Add funds to the treasury for `asset`.
-    pub fn fund_treasury(env: Env, admin: Address, asset: Address, amount: i128) -> Result<(), Error> {
+    pub fn fund_treasury(
+        env: Env,
+        admin: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -88,18 +97,12 @@ impl FlowRewards {
     }
 
     /// Record a reward grant to a verified participant.
-    ///
-    /// `grant_id` is an idempotency key: replaying the same ID is rejected
-    /// without changing recipient totals.
-    /// Refused before any state change when the treasury for `asset` cannot
-    /// cover `amount`.
     pub fn grant(
         env: Env,
         admin: Address,
         recipient: Address,
-        role: Symbol,
         asset: Address,
-        _role: Symbol,
+        role: Symbol,
         amount: i128,
         grant_id: u64,
     ) -> Result<(), Error> {
@@ -114,6 +117,31 @@ impl FlowRewards {
         Self::apply_grant(&env, recipient, asset, amount, grant_id)
     }
 
+        let mut funds = treasury(&env);
+        let available = funds.get(asset.clone()).unwrap_or(0);
+        if amount > available {
+            return Err(Error::InsufficientTreasury);
+        }
+
+        let mut granted = balances(&env, &DataKey::Granted);
+        let key = (recipient.clone(), asset.clone());
+        let current = granted.get(key.clone()).unwrap_or(0);
+        granted.set(key, current + amount);
+
+        funds.set(asset.clone(), available - amount);
+        env.storage().instance().set(&DataKey::Treasury, &funds);
+        env.storage().instance().set(&DataKey::Granted, &granted);
+        env.storage().persistent().set(
+            &DataKey::GrantRecord(grant_id),
+            &GrantRecord {
+                recipient,
+                asset,
+                amount,
+                claimed: 0,
+                revoked: 0,
+            },
+        );
+        env.storage().persistent().set(&grant_key, &true);
     /// Record up to `MAX_BATCH` grants in one call. Each entry is
     /// `(recipient, role, asset, amount, grant_id)` and goes through the same
     /// checks as `grant`. Any failing entry aborts the whole call, so no
@@ -176,22 +204,25 @@ impl FlowRewards {
             return Err(Error::NothingToClaim);
         }
 
+        let mut grant_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::GrantIds)
+            .unwrap_or_else(|| Vec::new(&env));
+        grant_ids.push_back(grant_id);
         env.storage()
             .persistent()
-            .set(&DataKey::Claimed(recipient), &total);
-        Ok(amount)
+            .set(&DataKey::GrantIds, &grant_ids);
+        Ok(())
     }
 
-    /// Total rewards granted to an address so far.
-    pub fn total_granted(env: Env, recipient: Address) -> i128 {
-        let granted: Map<Address, i128> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Granted)
-            .unwrap_or_else(|| Map::new(&env));
-        granted.get(recipient).unwrap_or(0)
     /// Claim part or all of the recipient's claimable balance for `asset`.
-    pub fn claim(env: Env, recipient: Address, asset: Address, amount: i128) -> Result<(), Error> {
+    pub fn claim(
+        env: Env,
+        recipient: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -199,6 +230,32 @@ impl FlowRewards {
 
         if amount > Self::claimable(env.clone(), recipient.clone(), asset.clone()) {
             return Err(Error::InsufficientClaimable);
+        }
+
+        let mut remaining = amount;
+        let grant_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::GrantIds)
+            .unwrap_or_else(|| Vec::new(&env));
+        for index in 0..grant_ids.len() {
+            if remaining == 0 {
+                break;
+            }
+            let grant_id = grant_ids.get(index).unwrap();
+            let key = DataKey::GrantRecord(grant_id);
+            let mut record: GrantRecord = env.storage().persistent().get(&key).unwrap();
+            if record.recipient != recipient || record.asset != asset {
+                continue;
+            }
+
+            let unclaimed = record.amount - record.claimed - record.revoked;
+            let claimed = remaining.min(unclaimed);
+            if claimed > 0 {
+                record.claimed += claimed;
+                remaining -= claimed;
+                env.storage().persistent().set(&key, &record);
+            }
         }
 
         let mut claimed = balances(&env, &DataKey::Claimed);
@@ -209,14 +266,54 @@ impl FlowRewards {
         Ok(())
     }
 
-    /// Total rewards granted to `recipient` in `asset` so far.
-    pub fn total_granted(env: Env, recipient: Address, asset: Address) -> i128 {
-        balances(&env, &DataKey::Granted).get((recipient, asset)).unwrap_or(0)
+    /// Revoke the unclaimed portion of a grant and return it to the treasury.
+    ///
+    /// The processed grant ID and updated record are retained for auditability.
+    pub fn revoke(env: Env, admin: Address, grant_id: u64) -> Result<i128, Error> {
+        admin.require_auth();
+
+        let key = DataKey::GrantRecord(grant_id);
+        let mut record: GrantRecord = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::GrantNotFound)?;
+        let amount = record.amount - record.claimed - record.revoked;
+        if amount == 0 {
+            if record.claimed == record.amount {
+                return Err(Error::GrantAlreadyClaimed);
+            }
+            return Err(Error::GrantAlreadyRevoked);
+        }
+
+        let mut granted = balances(&env, &DataKey::Granted);
+        let balance_key = (record.recipient.clone(), record.asset.clone());
+        let current = granted.get(balance_key.clone()).unwrap_or(0);
+        granted.set(balance_key, current - amount);
+
+        let mut funds = treasury(&env);
+        let available = funds.get(record.asset.clone()).unwrap_or(0);
+        funds.set(record.asset.clone(), available + amount);
+        record.revoked += amount;
+
+        env.storage().instance().set(&DataKey::Granted, &granted);
+        env.storage().instance().set(&DataKey::Treasury, &funds);
+        env.storage().persistent().set(&key, &record);
+        Ok(amount)
     }
 
-    /// Total rewards claimed by `recipient` in `asset` so far.
+    /// Total rewards granted to `recipient` in `asset`, excluding revoked amounts.
+    pub fn total_granted(env: Env, recipient: Address, asset: Address) -> i128 {
+        balances(&env, &DataKey::Granted)
+            .get((recipient, asset))
+            .unwrap_or(0)
+    }
+
+    /// Total rewards claimed by `recipient` in `asset`.
     pub fn total_claimed(env: Env, recipient: Address, asset: Address) -> i128 {
-        balances(&env, &DataKey::Claimed).get((recipient, asset)).unwrap_or(0)
+        balances(&env, &DataKey::Claimed)
+            .get((recipient, asset))
+            .unwrap_or(0)
     }
 
     /// Rewards earned but not yet claimed.
@@ -230,17 +327,20 @@ impl FlowRewards {
         treasury(&env).get(asset).unwrap_or(0)
     }
 
-    /// Total rewards an address has already claimed.
-    pub fn total_claimed(env: Env, recipient: Address) -> i128 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Claimed(recipient))
-            .unwrap_or(0)
-    }
-
     /// Whether a grant ID has already been processed.
     pub fn is_grant_processed(env: Env, grant_id: u64) -> bool {
         env.storage().persistent().has(&DataKey::GrantId(grant_id))
+    }
+
+    /// Amount revoked from a grant, retained as an audit record.
+    pub fn revoked_amount(env: Env, grant_id: u64) -> i128 {
+        let record: Option<GrantRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::GrantRecord(grant_id));
+        record
+            .map(|record| record.revoked)
+            .unwrap_or(0)
     }
 }
 
