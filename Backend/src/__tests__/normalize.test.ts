@@ -1,3 +1,4 @@
+import { normalizeAddress, normalizeAmount, normalizeLedger, normalizeEvent, validateTopicValue } from "../normalize";
 import {
   normalizeAddress,
   normalizeAmount,
@@ -51,6 +52,9 @@ describe("price and event normalization (#667)", () => {
 /**
  * Canonical address representation (BE-08).
  *
+ * A Stellar strkey is base-32 over `A–Z` and `2–7`, so upper-case is the
+ * canonical encoding. Folding case means a profile created from `gabc…` is
+ * found again by a lookup for `GABC…` instead of silently producing a second
  * A Stellar strkey is base-32 over `A�Z` and `2�7`, so upper-case is the
  * canonical encoding. Folding case means a profile created from `gabc�` is
  * found again by a lookup for `GABC�` instead of silently producing a second
@@ -95,6 +99,18 @@ describe("address casing normalization (BE-08)", () => {
   });
 });
 
+describe("topic/value pairing", () => {
+  it("accepts JSON or integer values for known topics and ignores unknown topics", () => {
+    expect(() => validateTopicValue("like", "42")).not.toThrow();
+    expect(() => validateTopicValue("tip", '{"amount":"5"}')).not.toThrow();
+    expect(() => validateTopicValue("mystery", "")).not.toThrow();
+  });
+
+  it("rejects empty and malformed JSON values for known topics", () => {
+    expect(() => validateTopicValue("like", "  ")).toThrow(/empty value/);
+    expect(() => validateTopicValue("tip", "{bad")).toThrow(/malformed JSON/);
+  });
+});
 describe("timestamp normalization (#1030)", () => {
   const expectedMs = Date.parse("2026-01-02T03:04:05.000Z");
 
