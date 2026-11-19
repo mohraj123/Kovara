@@ -1,4 +1,4 @@
-import { normalizeAddress, normalizeAmount, normalizeLedger, normalizeEvent } from "../normalize";
+import { normalizeAddress, normalizeAmount, normalizeLedger, normalizeEvent, validateTopicValue } from "../normalize";
 
 const ADDRESS = `G${"A".repeat(55)}`;
 
@@ -44,9 +44,9 @@ describe("price and event normalization (#667)", () => {
 /**
  * Canonical address representation (BE-08).
  *
- * A Stellar strkey is base-32 over `A–Z` and `2–7`, so upper-case is the
- * canonical encoding. Folding case means a profile created from `gabc…` is
- * found again by a lookup for `GABC…` instead of silently producing a second
+ * A Stellar strkey is base-32 over `Aâ€“Z` and `2â€“7`, so upper-case is the
+ * canonical encoding. Folding case means a profile created from `gabcâ€¦` is
+ * found again by a lookup for `GABCâ€¦` instead of silently producing a second
  * row for the same account.
  */
 describe("address casing normalization (BE-08)", () => {
@@ -85,5 +85,18 @@ describe("address casing normalization (BE-08)", () => {
     const event = { user: ADDRESS.toLowerCase(), untouched: ADDRESS.toLowerCase() };
     const normalized = normalizeEvent(event, { user: normalizeAddress });
     expect(normalized).toEqual({ user: ADDRESS, untouched: ADDRESS.toLowerCase() });
+  });
+});
+
+describe("topic/value pairing", () => {
+  it("accepts JSON or integer values for known topics and ignores unknown topics", () => {
+    expect(() => validateTopicValue("like", "42")).not.toThrow();
+    expect(() => validateTopicValue("tip", '{"amount":"5"}')).not.toThrow();
+    expect(() => validateTopicValue("mystery", "")).not.toThrow();
+  });
+
+  it("rejects empty and malformed JSON values for known topics", () => {
+    expect(() => validateTopicValue("like", "  ")).toThrow(/empty value/);
+    expect(() => validateTopicValue("tip", "{bad")).toThrow(/malformed JSON/);
   });
 });
