@@ -129,3 +129,34 @@ describe("BA-042 error telemetry", () => {
     });
   });
 });
+
+describe("nested secret redaction (#1039)", () => {
+  it("redacts known credential keys at every nesting level", () => {
+    const out = redact({
+      password: "hunter2",
+      nested: {
+        items: [{ api_token: "abc123", keep: "visible" }],
+        Authorization: "Bearer xyz",
+      },
+      public: "safe-value",
+    }) as Record<string, unknown>;
+    const nested = out.nested as Record<string, unknown>;
+    const items = nested.items as Array<Record<string, unknown>>;
+
+    expect(out.password).toBe("[REDACTED]");
+    expect(nested.Authorization).toBe("[REDACTED]");
+    expect(items[0].api_token).toBe("[REDACTED]");
+    expect(items[0].keep).toBe("visible");
+    expect(out.public).toBe("safe-value");
+  });
+
+  it("does not redact similarly named non-secret fields", () => {
+    const out = redact({
+      tokenSymbol: "XLM",
+      publicKey: "G".repeat(56),
+    }) as Record<string, unknown>;
+
+    expect(out.tokenSymbol).toBe("XLM");
+    expect(out.publicKey).not.toBe("[REDACTED]");
+  });
+});

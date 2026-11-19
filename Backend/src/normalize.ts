@@ -87,6 +87,88 @@ export function normalizeAmount(value: string | number | bigint): string {
   return BigInt(stripped).toString();
 }
 
+// ── Timestamp normalization ──────────────────────────────────────────────────
+
+/** Explicitly supported timestamp representations (BE-009). */
+export type TimestampInput = number | string | Date;
+
+/**
+ * ISO-8601 with an explicit UTC designator or numeric offset. Timezone-less
+ * strings are rejected: interpreting them in the server's local zone would make
+ * the same input mean different things on different hosts.
+ */
+const ISO_TIMESTAMP_WITH_ZONE =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/** A numeric string of this length is Unix seconds; 13 digits is milliseconds. */
+const SECONDS_DIGITS = 10;
+const MILLISECONDS_DIGITS = 13;
+
+/**
+ * Convert a supported timestamp representation to one canonical value: Unix
+ * milliseconds since the epoch as a safe integer.
+ *
+ * Accepted forms:
+ *
+ * - a `Date` (invalid dates throw);
+ * - a finite safe-integer `number`, already interpreted as milliseconds;
+ * - a 10-digit numeric string, interpreted as Unix **seconds**;
+ * - a 13-digit numeric string, interpreted as Unix **milliseconds**;
+ * - an ISO-8601 string with an explicit `Z` or `±hh:mm` offset.
+ *
+ * Anything else — fractional numbers, other digit counts, timezone-less date
+ * strings, relative dates — is rejected as ambiguous rather than guessed.
+ */
+export function normalizeTimestamp(value: TimestampInput): number {
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    if (!Number.isSafeInteger(ms)) {
+      throw new Error("normalizeTimestamp: invalid Date");
+    }
+    return ms;
+  }
+
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value)) {
+      throw new Error(
+        `normalizeTimestamp: expected a safe integer number of milliseconds, got ${value}`
+      );
+    }
+    return value;
+  }
+
+  if (typeof value !== "string") {
+    throw new Error("normalizeTimestamp: expected a number, string, or Date");
+  }
+
+  const trimmed = value.trim();
+  if (/^[+-]?\d+$/.test(trimmed)) {
+    const digits = trimmed.replace(/^[+-]/, "");
+    if (digits.length !== SECONDS_DIGITS && digits.length !== MILLISECONDS_DIGITS) {
+      throw new Error(
+        `normalizeTimestamp: ambiguous numeric timestamp "${trimmed}" ` +
+          `(expected ${SECONDS_DIGITS} digits for seconds or ${MILLISECONDS_DIGITS} for milliseconds)`
+      );
+    }
+    const numeric = Number(trimmed);
+    if (!Number.isSafeInteger(numeric)) {
+      throw new Error(`normalizeTimestamp: numeric timestamp out of range "${trimmed}"`);
+    }
+    const millis = digits.length === SECONDS_DIGITS ? numeric * 1000 : numeric;
+    if (!Number.isSafeInteger(millis)) {
+      throw new Error(`normalizeTimestamp: timestamp out of range "${trimmed}"`);
+    }
+    return millis;
+  }
+
+  if (ISO_TIMESTAMP_WITH_ZONE.test(trimmed)) {
+    const parsed = Date.parse(trimmed);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+
+  throw new Error(`normalizeTimestamp: unsupported timestamp format "${trimmed}"`);
+}
+
 // ── Ledger normalization ─────────────────────────────────────────────────────
 
 /**
@@ -127,6 +209,32 @@ export function normalizeEvent<T extends Record<string, unknown>>(
   return result;
 }
 
+// ── Topic/value pairing ──────────────────────────────────────────────────────
+
+/** Event topics the indexer dispatches; each carries a non-empty value. */
+const KNOWN_TOPICS: ReadonlySet<string> = new Set([
+  "profile_set", "post_created", "post_deleted", "like", "follow", "unfollow",
+  "tip", "pool_created", "pool_deposit", "pool_withdraw",
+]);
+
+/**
+ * Reject a known topic paired with an empty or malformed value before it
+ * reaches a handler. A value that looks like JSON must parse.
+ * Unknown topics are left alone (dispatch logs and skips them).
+ */
+export function validateTopicValue(topic: string, value: string): void {
+  if (!KNOWN_TOPICS.has(topic)) return;
+  const v = value.trim();
+  if (v === "") throw new Error(`invalid payload: topic "${topic}" has an empty value`);
+  if (v.startsWith("{") || v.startsWith("[")) {
+    try {
+      JSON.parse(v);
+    } catch {
+      throw new Error(`invalid payload: topic "${topic}" has a malformed JSON value`);
+    }
+  }
+}
+
 // ── RawEvent normalization ───────────────────────────────────────────────────
 
 /**
@@ -140,6 +248,12 @@ export function normalizeEvent<T extends Record<string, unknown>>(
  * Returns a new `RawEvent` with normalized fields.
  */
 export function normalizeRawEvent(event: RawEvent): RawEvent {
+  validateTopicValue(event.topic[0]?.trim() ?? "", event.value);
+  const ledgerClosedAt = event.ledgerClosedAt.trim();
+  // Validate through the shared timestamp parser so ambiguous close times are
+  // rejected here rather than being interpreted differently by each consumer.
+  normalizeTimestamp(ledgerClosedAt);
+
   return {
     ...event,
     type: event.type.trim(),
@@ -150,6 +264,6 @@ export function normalizeRawEvent(event: RawEvent): RawEvent {
     value: event.value,
     id: event.id.trim(),
     pagingToken: event.pagingToken.trim(),
-    ledgerClosedAt: event.ledgerClosedAt.trim(),
+    ledgerClosedAt,
   };
 }

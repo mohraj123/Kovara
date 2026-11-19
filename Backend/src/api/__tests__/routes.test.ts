@@ -111,6 +111,8 @@ describe("API Routes", () => {
         .set("x-correlation-id", "err-id-456");
       expect(res.status).toBe(500);
       expect(res.body).toMatchObject({ code: "INTERNAL_ERROR" });
+      expect(res.body.requestId).toBe("err-id-456");
+      expect(res.headers["x-correlation-id"]).toBe(res.body.requestId);
     });
   });
 

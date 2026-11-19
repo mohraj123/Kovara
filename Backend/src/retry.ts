@@ -38,6 +38,19 @@
 /** Upper bound on any single backoff delay, in ms. */
 export const MAX_BACKOFF_MS = 60_000;
 
+/**
+ * BE-004: Parse a Retry-After header (delta-seconds or HTTP-date) into ms,
+ * capped at MAX_BACKOFF_MS so polling can still shut down promptly. Returns
+ * undefined for a missing or invalid value.
+ */
+export function parseRetryAfterMs(value: string | null | undefined, now: number = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const v = value.trim();
+  const ms = /^\d+$/.test(v) ? Number(v) * 1000 : Date.parse(v) - now;
+  if (!Number.isFinite(ms)) return undefined;
+  return Math.min(Math.max(ms, 0), MAX_BACKOFF_MS);
+}
+
 /** Default total attempts (the first try plus two retries). */
 export const DEFAULT_MAX_ATTEMPTS = 3;
 
@@ -189,6 +202,13 @@ function errorCode(err: unknown): string | undefined {
   if (err && typeof err === "object") {
     const code = (err as { code?: unknown }).code;
     if (typeof code === "string") return code;
+    // Database drivers/ORMs often wrap the driver error (e.g. a pg
+    // ECONNRESET or 57P01) as `cause`; look one level down for its code.
+    const cause = (err as { cause?: unknown }).cause;
+    if (cause && typeof cause === "object") {
+      const causeCode = (cause as { code?: unknown }).code;
+      if (typeof causeCode === "string") return causeCode;
+    }
   }
   return undefined;
 }
@@ -442,12 +462,19 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
 
       if (isLastAttempt) break;
 
-      const delay = computeBackoffMs(attempt, {
+      // BE-004: honour a provider Retry-After hint (never below the computed
+      // backoff, never above the cap).
+      const hint = (err as { retryAfterMs?: unknown } | null)?.retryAfterMs;
+      const computed = computeBackoffMs(attempt, {
         baseDelayMs,
         backoffMultiplier,
         maxBackoffMs,
         jitter,
       });
+      const delay =
+        typeof hint === "number" && Number.isFinite(hint) && hint > 0
+          ? Math.min(Math.max(computed, hint), maxBackoffMs)
+          : computed;
 
       log.warn(`${operationLabel} failed transiently (attempt ${attempt}/${attempts}), retrying in ${delay}ms`, {
         operation: operationLabel,

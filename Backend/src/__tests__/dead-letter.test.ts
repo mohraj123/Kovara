@@ -22,7 +22,10 @@ class FakeDeadLetterStore implements DeadLetterStore {
     return { entries: all.slice(offset, offset + limit), total: all.length };
   }
 
-  async requeue(idempotencyKey: string): Promise<boolean> {
+  provenance: unknown[] = [];
+
+  async requeue(idempotencyKey: string, provenance?: unknown): Promise<boolean> {
+    this.provenance.push(provenance);
     const row = this.rows.get(idempotencyKey);
     if (!row || row.requeuedAt !== null) return false;
     row.requeuedAt = new Date("2026-01-02T00:00:00.000Z");
@@ -157,5 +160,35 @@ describe("DeadLetterQueue", () => {
     await queue.fail("key-1", CONTEXT, "permanent_failure");
     await expect(queue.requeue("key-1")).resolves.toBe(true);
     await expect(queue.requeue("key-1")).resolves.toBe(false);
+  });
+
+  it("records provenance for every requeue request, including repeats", async () => {
+    const store = new FakeDeadLetterStore();
+    const queue = new DeadLetterQueue(store, 1);
+    await queue.fail("key-1", CONTEXT, "permanent_failure");
+
+    await queue.requeue("key-1", { requestedBy: "op-1", reason: "fixed", source: "cli" });
+    await queue.requeue("key-1", { requestedBy: "op-2", reason: "again", source: "api" });
+
+    const history = queue.requeueHistory("key-1");
+    expect(history.map((h) => h.requestedBy)).toEqual(["op-1", "op-2"]);
+    expect(history[0].requestedAt).toBeInstanceOf(Date);
+    expect(store.provenance[0]).toMatchObject({ requestedBy: "op-1", reason: "fixed", source: "cli" });
+  });
+
+  it("pages dead letters with a bounded limit and cursor", async () => {
+    const store = new FakeDeadLetterStore();
+    const queue = new DeadLetterQueue(store, 1);
+    for (const k of ["a", "b", "c"]) await queue.fail(k, CONTEXT, "permanent_failure");
+
+    const first = await queue.listPage(2);
+    expect(first.entries).toHaveLength(2);
+    expect(first.nextCursor).toBe("2");
+    const second = await queue.listPage(2, first.nextCursor!);
+    expect(second.entries).toHaveLength(1);
+    expect(second.nextCursor).toBeNull();
+    await expect(queue.listPage(0)).rejects.toThrow(RangeError);
+    await expect(queue.listPage(201)).rejects.toThrow(RangeError);
+    await expect(queue.listPage(10, "-1")).rejects.toThrow(RangeError);
   });
 });

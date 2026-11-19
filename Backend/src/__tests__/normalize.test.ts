@@ -1,4 +1,12 @@
-import { normalizeAddress, normalizeAmount, normalizeLedger, normalizeEvent } from "../normalize";
+import { normalizeAddress, normalizeAmount, normalizeLedger, normalizeEvent, validateTopicValue } from "../normalize";
+import {
+  normalizeAddress,
+  normalizeAmount,
+  normalizeEvent,
+  normalizeLedger,
+  normalizeRawEvent,
+  normalizeTimestamp,
+} from "../normalize";
 
 const ADDRESS = `G${"A".repeat(55)}`;
 
@@ -44,9 +52,12 @@ describe("price and event normalization (#667)", () => {
 /**
  * Canonical address representation (BE-08).
  *
- * A Stellar strkey is base-32 over `A–Z` and `2–7`, so upper-case is the
- * canonical encoding. Folding case means a profile created from `gabc…` is
- * found again by a lookup for `GABC…` instead of silently producing a second
+ * A Stellar strkey is base-32 over `Aâ€“Z` and `2â€“7`, so upper-case is the
+ * canonical encoding. Folding case means a profile created from `gabcâ€¦` is
+ * found again by a lookup for `GABCâ€¦` instead of silently producing a second
+ * A Stellar strkey is base-32 over `Aï¿½Z` and `2ï¿½7`, so upper-case is the
+ * canonical encoding. Folding case means a profile created from `gabcï¿½` is
+ * found again by a lookup for `GABCï¿½` instead of silently producing a second
  * row for the same account.
  */
 describe("address casing normalization (BE-08)", () => {
@@ -85,5 +96,72 @@ describe("address casing normalization (BE-08)", () => {
     const event = { user: ADDRESS.toLowerCase(), untouched: ADDRESS.toLowerCase() };
     const normalized = normalizeEvent(event, { user: normalizeAddress });
     expect(normalized).toEqual({ user: ADDRESS, untouched: ADDRESS.toLowerCase() });
+  });
+});
+
+describe("topic/value pairing", () => {
+  it("accepts JSON or integer values for known topics and ignores unknown topics", () => {
+    expect(() => validateTopicValue("like", "42")).not.toThrow();
+    expect(() => validateTopicValue("tip", '{"amount":"5"}')).not.toThrow();
+    expect(() => validateTopicValue("mystery", "")).not.toThrow();
+  });
+
+  it("rejects empty and malformed JSON values for known topics", () => {
+    expect(() => validateTopicValue("like", "  ")).toThrow(/empty value/);
+    expect(() => validateTopicValue("tip", "{bad")).toThrow(/malformed JSON/);
+  });
+});
+describe("timestamp normalization (#1030)", () => {
+  const expectedMs = Date.parse("2026-01-02T03:04:05.000Z");
+
+  it("converts every supported representation to the same millisecond value", () => {
+    expect(normalizeTimestamp(new Date(expectedMs))).toBe(expectedMs);
+    expect(normalizeTimestamp(expectedMs)).toBe(expectedMs);
+    expect(normalizeTimestamp(String(expectedMs))).toBe(expectedMs);
+    expect(normalizeTimestamp(String(Math.floor(expectedMs / 1000)))).toBe(expectedMs);
+    expect(normalizeTimestamp("2026-01-02T03:04:05Z")).toBe(expectedMs);
+    expect(normalizeTimestamp(" 2026-01-02T03:04:05.000Z ")).toBe(expectedMs);
+  });
+
+  it("keeps sub-second precision from ISO strings", () => {
+    expect(normalizeTimestamp("2026-01-02T03:04:05.123Z")).toBe(
+      Date.parse("2026-01-02T03:04:05.123Z")
+    );
+  });
+
+  it("rejects ambiguous or unsupported timestamp formats", () => {
+    for (const invalid of [
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      "123",
+      "12345678901234",
+      "1.2",
+      "2026-01-02T03:04:05",
+      "yesterday",
+      "2026-13-40T03:04:05Z",
+    ]) {
+      expect(() => normalizeTimestamp(invalid as never)).toThrow();
+    }
+    expect(() => normalizeTimestamp({} as never)).toThrow(/number, string, or Date/);
+  });
+
+  it("validates ledger close times through the shared parser", () => {
+    const event = {
+      type: "post_created",
+      ledger: 7,
+      ledgerClosedAt: "2026-01-01T00:00:07Z",
+      contractId: ADDRESS,
+      id: "e1",
+      pagingToken: "7-0",
+      topic: ["post_created"],
+      value: "",
+      txHash: "tx-7",
+    };
+
+    expect(normalizeRawEvent(event).ledgerClosedAt).toBe(event.ledgerClosedAt);
+    expect(() =>
+      normalizeRawEvent({ ...event, ledgerClosedAt: "2026-01-01 00:00:07" })
+    ).toThrow(/unsupported timestamp format/);
   });
 });

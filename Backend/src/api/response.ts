@@ -1,4 +1,5 @@
 import { Response } from "express";
+import { getRequestId } from "../request-context";
 
 export interface ApiSuccess<T = unknown> {
   success: true;
@@ -9,6 +10,8 @@ export interface ApiSuccess<T = unknown> {
 export interface ApiError {
   error: string;
   code: string;
+  /** Matches the `X-Request-Id` / `X-Correlation-Id` headers (BE-017). */
+  requestId?: string;
 }
 
 export interface ApiPaginated<T = unknown> extends ApiSuccess<T> {
@@ -76,9 +79,13 @@ export function sendError(
   code: string,
   _details?: unknown
 ): void {
+  const requestId = getRequestId();
   const body: ApiError = {
     error,
     code,
+    // Serialized here as well as by the request-id middleware so direct
+    // callers of sendError get the same traceable shape.
+    ...(requestId ? { requestId } : {}),
   };
   res.status(status).json(body);
 }
