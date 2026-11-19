@@ -37,6 +37,18 @@ export function isSelfFollow(follower: string, followee: string): boolean {
   }
 }
 
+/**
+ * What a follow/unfollow delivery did. Redeliveries report `"noop"` instead of
+ * returning nothing, so callers and tests can tell a real state change from a
+ * replay without inspecting the database.
+ */
+export type FollowOutcome = "applied" | "noop";
+
+/** Postgres unique-violation: a racing duplicate insert lost to the constraint. */
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "23505";
+}
+
 export interface TrendEvent {
   eventTime: string;
   events: string;
@@ -65,7 +77,7 @@ export interface TrendEvent {
  * the read path already refuses it means the rule holds only as long as every
  * caller happens to remember to apply it.
  */
-export async function handleFollow(db: Database, event: FollowEvent): Promise<void> {
+export async function handleFollow(db: Database, event: FollowEvent): Promise<FollowOutcome> {
   if (!event.follower) {
     throw new Error("Follow event missing required field: follower");
   }
@@ -80,14 +92,25 @@ export async function handleFollow(db: Database, event: FollowEvent): Promise<vo
   const existing = await db.getFollow(event.follower, event.followee);
   if (existing) {
     logger.info(`Follow replay for ${event.follower}→${event.followee} is a no-op`);
-    return;
+    return "noop";
   }
 
-  await db.insertFollow({
-    follower: event.follower,
-    followee: event.followee,
-    ledger: event.ledger,
-  });
+  try {
+    await db.insertFollow({
+      follower: event.follower,
+      followee: event.followee,
+      ledger: event.ledger,
+    });
+  } catch (err) {
+    // A concurrent delivery inserted the edge between our check and write; the
+    // unique constraint kept the graph correct, so this delivery is a replay.
+    if (isUniqueViolation(err)) {
+      logger.info(`Follow race for ${event.follower}→${event.followee} resolved as a no-op`);
+      return "noop";
+    }
+    throw err;
+  }
+  return "applied";
 }
 /**
  * Handle an Unfollow event.
@@ -108,7 +131,7 @@ export async function handleFollow(db: Database, event: FollowEvent): Promise<vo
  * Neither delivery order nor repetition changes the final state, so N replays
  * of the same Unfollow leave the same relationship count as the first one did.
  */
-export async function handleUnfollow(db: Database, event: UnfollowEvent): Promise<void> {
+export async function handleUnfollow(db: Database, event: UnfollowEvent): Promise<FollowOutcome> {
   if (!event.follower) {
     throw new Error("Unfollow event missing required field: follower");
   }
@@ -120,8 +143,9 @@ export async function handleUnfollow(db: Database, event: UnfollowEvent): Promis
   if (!existing) {
     // Replay of an already-applied Unfollow: harmless no-op (issue #931).
     logger.info(`Unfollow replay for ${event.follower}→${event.followee} is a no-op`);
-    return;
+    return "noop";
   }
 
   await db.deleteFollow(event.follower, event.followee);
+  return "applied";
 }

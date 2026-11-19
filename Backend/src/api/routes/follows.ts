@@ -13,7 +13,12 @@ import {
   validate,
 } from "../validation";
 
-const MAX_LIMIT = 50;
+/**
+ * Largest page a follow listing may request. A larger `limit` is rejected with
+ * `LIMIT_EXCEEDED` and a message naming the `limit` field, not silently capped.
+ */
+export const MAX_FOLLOWS_LIMIT = 50;
+const MAX_LIMIT = MAX_FOLLOWS_LIMIT;
 const parseFollowsLimit = parseLimit(MAX_LIMIT, DEFAULT_LIMIT);
 
 interface FollowsQuery {
