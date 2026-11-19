@@ -25,6 +25,11 @@ import {
   isStellarAddress,
   ValidationIssue,
 } from "../validation";
+import {
+  decodeCursor,
+  encodeCursor,
+  isValidCursor,
+} from "../../utils/cursor-pagination.utils";
 import { MAX_QUERY_LENGTH, validateQuery, normalizeQuery } from "../../search/store";
 
 const VALID = "GAZJ2EQV2ES6R5BLUNXMNFR5VN3HQF4KXJ2GM5Q7GQHT5XBC2CRX3GK3";
@@ -188,6 +193,36 @@ describe("validation / cursor", () => {
     const parsed = parseCursor("x".repeat(MAX_CURSOR_LENGTH + 1));
     expect(parsed.ok).toBe(false);
     if (!parsed.ok) expect(parsed.issue.code).toBe("INVALID_CURSOR");
+  });
+});
+
+describe("validated pagination cursors (#1042)", () => {
+  it("round-trips a payload into the canonical checked form", () => {
+    const cursor = encodeCursor("offset:20");
+
+    expect(cursor).toMatch(/^v1\.[A-Za-z0-9_-]+\.[a-f0-9]{8}$/);
+    expect(decodeCursor(cursor)).toBe("offset:20");
+    expect(isValidCursor(cursor)).toBe(true);
+  });
+
+  it("rejects malformed and truncated values", () => {
+    const valid = encodeCursor("offset:20");
+
+    for (const bad of ["", "abc123", "v1.", `${valid}.extra`, "v1.###.deadbeef", valid.slice(0, -1)]) {
+      expect(() => decodeCursor(bad)).toThrow();
+      expect(isValidCursor(bad)).toBe(false);
+    }
+  });
+
+  it("rejects a tampered payload even when the shape is intact", () => {
+    const valid = encodeCursor("offset:20");
+    const [, , checksum] = valid.split(".");
+    const tamperedPayload = Buffer.from("offset:999").toString("base64url");
+    const tampered = `v1.${tamperedPayload}.${checksum}`;
+
+    expect(tamperedPayload).not.toBe(valid.split(".")[1]);
+    expect(() => decodeCursor(tampered)).toThrow(/checksum/);
+    expect(isValidCursor(tampered)).toBe(false);
   });
 });
 
