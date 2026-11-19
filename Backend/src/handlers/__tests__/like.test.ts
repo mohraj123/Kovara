@@ -3,7 +3,7 @@
  */
 
 import { Pool } from "pg";
-import { handleLike, createMockLikeEvent } from "../like";
+import { handleLike, handleUnlike, createMockLikeEvent } from "../like";
 
 // Mock pg Pool and Client
 const mockQuery = jest.fn();
@@ -274,5 +274,98 @@ describe("Like Event Handler", () => {
     await handleLike(mockPool, event, context);
 
     expect(mockConnect).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * A small in-memory stand-in for the posts and likes tables. Every query yields
+ * to the event loop first, so handlers started together genuinely interleave.
+ */
+function fakeLikesPool(postId = "1") {
+  const likes = new Set<string>(); // `${post}:${user}`
+  const post = { like_count: 0, deleted_at: null as Date | null };
+  const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+  const count = () => [...likes].filter((k) => k.startsWith(`${postId}:`)).length;
+
+  const client = {
+    release: jest.fn(),
+    query: jest.fn(async (sql: string, params: unknown[] = []) => {
+      await tick();
+      const text = sql.trim();
+      if (/^(BEGIN|COMMIT|ROLLBACK|SET TRANSACTION)/.test(text)) return { rowCount: 0, rows: [] };
+      if (text.startsWith("SELECT id, deleted_at FROM posts")) {
+        return { rowCount: 1, rows: [{ id: postId, deleted_at: post.deleted_at }] };
+      }
+      if (text.startsWith("INSERT INTO likes")) {
+        const key = `${params[0]}:${params[1]}`;
+        if (likes.has(key)) return { rowCount: 0, rows: [] };
+        likes.add(key);
+        return { rowCount: 1, rows: [{ id: likes.size }] };
+      }
+      if (text.startsWith("DELETE FROM likes")) {
+        const key = `${params[0]}:${params[1]}`;
+        return likes.delete(key) ? { rowCount: 1, rows: [{ id: 1 }] } : { rowCount: 0, rows: [] };
+      }
+      if (text.startsWith("UPDATE posts")) {
+        post.like_count = count();
+        return { rowCount: 1, rows: [] };
+      }
+      throw new Error(`unexpected query: ${text}`);
+    }),
+  };
+  const pool = { connect: jest.fn(async () => client) } as unknown as Pool;
+  return { pool, post, likes, count };
+}
+
+describe("like count consistency under concurrency (BE-027)", () => {
+  it("duplicate concurrent like events leave one row and a count of 1", async () => {
+    const { pool, post, count } = fakeLikesPool();
+    const { event, context } = createMockLikeEvent("GUSER1", 1n);
+    await Promise.all([handleLike(pool, event, context), handleLike(pool, event, context), handleLike(pool, event, context)]);
+    expect(count()).toBe(1);
+    expect(post.like_count).toBe(1);
+  });
+
+  it("concurrent likes from different users are all counted", async () => {
+    const { pool, post, count } = fakeLikesPool();
+    await Promise.all(
+      ["GA", "GB", "GC", "GD"].map((u) => {
+        const { event, context } = createMockLikeEvent(u, 1n);
+        return handleLike(pool, event, context);
+      })
+    );
+    expect(count()).toBe(4);
+    expect(post.like_count).toBe(4);
+  });
+
+  it("an unlike after a like returns the count to zero, and a repeat unlike is a no-op", async () => {
+    const { pool, post, count } = fakeLikesPool();
+    const { event, context } = createMockLikeEvent("GUSER1", 1n);
+    await handleLike(pool, event, context);
+    await handleUnlike(pool, { user: "GUSER1", post_id: 1n });
+    await handleUnlike(pool, { user: "GUSER1", post_id: 1n });
+    expect(count()).toBe(0);
+    expect(post.like_count).toBe(0);
+  });
+
+  it("opposing like/unlike events converge on the like rows, whatever the interleaving", async () => {
+    const { pool, post, count } = fakeLikesPool();
+    const a = createMockLikeEvent("GA", 1n);
+    const b = createMockLikeEvent("GB", 1n);
+    await handleLike(pool, a.event, a.context);
+    await Promise.all([
+      handleUnlike(pool, { user: "GA", post_id: 1n }),
+      handleLike(pool, b.event, b.context),
+      handleLike(pool, a.event, a.context),
+      handleUnlike(pool, { user: "GB", post_id: 1n }),
+    ]);
+    expect(post.like_count).toBe(count());
+  });
+
+  it("an unlike with no like row issues no count update", async () => {
+    const { pool } = fakeLikesPool();
+    await handleUnlike(pool, { user: "GNOBODY", post_id: 1n });
+    const calls = (await pool.connect() as unknown as { query: jest.Mock }).query.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((q) => q.trim().startsWith("UPDATE posts"))).toBe(false);
   });
 });

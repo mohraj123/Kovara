@@ -8,6 +8,20 @@ export interface ProfileSetEvent {
   ledger: number;
 }
 
+/** Shared maximum lengths for profile fields, measured after trimming. */
+export const MAX_USERNAME_LENGTH = 32;
+export const MAX_CREATOR_TOKEN_LENGTH = 128;
+
+/**
+ * A profile update. `username` and `creator_token` may be omitted: an omitted
+ * field keeps its stored value, while an explicit empty `creator_token` clears
+ * it. (An empty `username` is always invalid.)
+ */
+export type ProfileSetInput = Omit<ProfileSetEvent, "username" | "creator_token"> & {
+  username?: string;
+  creator_token?: string;
+};
+
 export function validateProfileEvent(event: unknown): asserts event is ProfileSetEvent {
   if (!event || typeof event !== "object") {
     throw new Error("ProfileSet event must be a non-null object");
@@ -52,20 +66,34 @@ export function validateProfileEvent(event: unknown): asserts event is ProfileSe
  *
  * If no profile exists, the first event is applied unconditionally.
  */
-export async function handleProfileSet(db: Database, event: ProfileSetEvent): Promise<void> {
+export async function handleProfileSet(db: Database, event: ProfileSetInput): Promise<void> {
   if (!event.user) {
     throw new Error("ProfileSet event missing required field: user");
-  }
-  if (!event.username) {
-    throw new Error("ProfileSet event missing required field: username");
   }
 
   // One canonical key for both the read and the write below.
   const address = event.user.trim().toUpperCase();
 
-  const trimmedUsername = event.username.trim();
-  if (trimmedUsername === "") {
-    throw new Error("ProfileSet event username must be non-empty after trimming");
+  // Validate supplied fields before touching the database.
+  let username: string | undefined;
+  if (event.username !== undefined) {
+    if (!event.username) {
+      throw new Error("ProfileSet event missing required field: username");
+    }
+    username = event.username.trim();
+    if (username === "") {
+      throw new Error("ProfileSet event username must be non-empty after trimming");
+    }
+    if (username.length > MAX_USERNAME_LENGTH) {
+      throw new Error(`ProfileSet event username exceeds ${MAX_USERNAME_LENGTH} characters`);
+    }
+  }
+  let creatorToken: string | undefined;
+  if (event.creator_token !== undefined) {
+    creatorToken = event.creator_token.trim();
+    if (creatorToken.length > MAX_CREATOR_TOKEN_LENGTH) {
+      throw new Error(`ProfileSet event creator_token exceeds ${MAX_CREATOR_TOKEN_LENGTH} characters`);
+    }
   }
 
   const existing = await db.getProfile(address);
@@ -76,10 +104,17 @@ export async function handleProfileSet(db: Database, event: ProfileSetEvent): Pr
     return;
   }
 
+  // Partial update: an omitted field keeps the stored value. A brand-new
+  // profile has nothing to keep, so it needs a username.
+  const finalUsername = username ?? existing?.username;
+  if (finalUsername === undefined) {
+    throw new Error("ProfileSet event missing required field: username");
+  }
+
   await db.upsertProfile({
     address,
-    username: trimmedUsername,
-    creator_token: event.creator_token ?? "",
+    username: finalUsername,
+    creator_token: creatorToken ?? existing?.creator_token ?? "",
     updated_ledger: event.ledger,
   });
 }

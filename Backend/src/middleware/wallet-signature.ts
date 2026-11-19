@@ -410,7 +410,9 @@ export function walletSignatureMiddleware(
     }
 
     const issuedAt = Number(timestamp);
-    if (!Number.isFinite(issuedAt)) {
+    // A whole, non-negative millisecond count: fractions, negatives and
+    // non-finite values cannot be compared against the window reliably.
+    if (!Number.isSafeInteger(issuedAt) || issuedAt < 0) {
       reject(res, {
         status: 400,
         code: "WALLET_TIMESTAMP_INVALID",

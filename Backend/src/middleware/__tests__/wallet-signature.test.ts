@@ -306,5 +306,48 @@ describe("wallet signatures are bound to the request target (BE-037)", () => {
     const wallet = makeWallet();
     const res = await request(bindingApp()).get("/protected?b=2&a=1").set(proof(wallet, { __path: "/protected?a=1&b=2" }));
     expect(res.status).toBe(200);
+describe("wallet proof timestamp boundaries (#1057)", () => {
+  const NOW = 1_700_000_000_000;
+  const WINDOW = 60_000;
+  const SKEW = 5_000;
+  const app = () => makeApp({ now: () => NOW, windowMs: WINDOW, futureSkewMs: SKEW });
+  const at = (wallet: Wallet, ts: number) =>
+    request(app()).get("/protected").set(proof(wallet, { [DEFAULT_WALLET_HEADERS.timestamp]: String(ts) }));
+
+  it("accepts a proof exactly at the back-dated limit", async () => {
+    expect((await at(makeWallet(), NOW - WINDOW)).status).toBe(200);
+  });
+
+  it("rejects a proof one millisecond past the back-dated limit", async () => {
+    const res = await at(makeWallet(), NOW - WINDOW - 1);
+    expect(res.status).toBe(401);
+    expect(res.body).toMatchObject({ code: "WALLET_PROOF_EXPIRED" });
+  });
+
+  it("accepts a future timestamp exactly at the skew limit", async () => {
+    expect((await at(makeWallet(), NOW + SKEW)).status).toBe(200);
+  });
+
+  it("rejects a timestamp one millisecond beyond the future skew limit", async () => {
+    const res = await at(makeWallet(), NOW + SKEW + 1);
+    expect(res.status).toBe(401);
+    expect(res.body).toMatchObject({ code: "WALLET_PROOF_FUTURE" });
+  });
+
+  it("rejects a far-future timestamp the same way as an expired one", async () => {
+    const res = await at(makeWallet(), NOW + 24 * 60 * 60 * 1000);
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe("WALLET_PROOF_FUTURE");
+  });
+
+  it("rejects fractional, negative and non-numeric timestamps as invalid", async () => {
+    const wallet = makeWallet();
+    for (const bad of [String(NOW + 0.5), "-5", "abc"]) {
+      const res = await request(app())
+        .get("/protected")
+        .set(proof(wallet, { [DEFAULT_WALLET_HEADERS.timestamp]: bad }));
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe("WALLET_TIMESTAMP_INVALID");
+    }
   });
 });

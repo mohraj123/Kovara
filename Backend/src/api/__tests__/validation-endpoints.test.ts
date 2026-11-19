@@ -383,3 +383,49 @@ describe("optional address filter normalization (BE-32)", () => {
     }
   });
 });
+
+describe("follow listing page-size bounds (BE-025)", () => {
+  const db = makeMockDb();
+  const app = createApp(db);
+
+  beforeEach(() => jest.clearAllMocks());
+
+  for (const kind of ["followers", "following"] as const) {
+    const read = () => (kind === "followers" ? db.getFollowers : db.getFollowing);
+
+    it(`${kind}: accepts the minimum limit of 1`, async () => {
+      const res = await request(app).get(`/api/follows/${VALID}/${kind}?limit=1`);
+      expect(res.status).toBe(200);
+      expect(read()).toHaveBeenCalledWith(VALID, 1, 0);
+    });
+
+    it(`${kind}: accepts the maximum limit of 50`, async () => {
+      const res = await request(app).get(`/api/follows/${VALID}/${kind}?limit=50`);
+      expect(res.status).toBe(200);
+      expect(read()).toHaveBeenCalledWith(VALID, 50, 0);
+    });
+
+    it(`${kind}: rejects 51 with LIMIT_EXCEEDED naming the limit field`, async () => {
+      const res = await request(app).get(`/api/follows/${VALID}/${kind}?limit=51`);
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: "limit cannot exceed 50", code: "LIMIT_EXCEEDED" });
+      expect(read()).not.toHaveBeenCalled();
+    });
+
+    it(`${kind}: rejects 0, negative and non-integer limits as INVALID_QUERY`, async () => {
+      for (const bad of ["0", "-1", "2.5", "abc"]) {
+        const res = await request(app).get(`/api/follows/${VALID}/${kind}?limit=${bad}`);
+        expect(res.status).toBe(400);
+        expect(res.body).toMatchObject({ code: "INVALID_QUERY", error: "limit must be a positive integer" });
+      }
+      expect(read()).not.toHaveBeenCalled();
+    });
+  }
+
+  it("applies the same bound to cursor pagination", async () => {
+    const res = await request(app).get(`/api/follows/${VALID}/followers?limit=51&cursor=${VALID_2}`);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("LIMIT_EXCEEDED");
+    expect(db.getFollowersAfter).not.toHaveBeenCalled();
+  });
+});

@@ -18,7 +18,28 @@ export interface ApiPaginated<T = unknown> extends ApiSuccess<T> {
   has_more: boolean;
 }
 
-export function sendSuccess<T>(res: Response, data: T, status = 200): void {
+export interface SendOptions {
+  /**
+   * The body depends on the caller (a wallet or address). It must not be
+   * stored by shared/intermediary caches, so `private, no-store` is applied.
+   */
+  personalized?: boolean;
+}
+
+/**
+ * Cache headers for personalized responses. `Vary` keeps any cache that does
+ * store the response from serving it to a different caller.
+ */
+export function applyCacheHeaders(res: Response, options: SendOptions = {}): void {
+  if (options.personalized) {
+    res.set("Cache-Control", "private, no-store");
+    res.vary("Authorization");
+    res.vary("X-Wallet-Address");
+  }
+}
+
+export function sendSuccess<T>(res: Response, data: T, status = 200, options: SendOptions = {}): void {
+  applyCacheHeaders(res, options);
   const body: ApiSuccess<T> = {
     success: true,
     data,
@@ -32,8 +53,10 @@ export function sendPaginated<T>(
   data: T,
   total: number,
   limit: number,
-  offset: number
+  offset: number,
+  options: SendOptions = {}
 ): void {
+  applyCacheHeaders(res, options);
   const body: ApiPaginated<T> = {
     success: true,
     data,

@@ -142,6 +142,64 @@ export async function handleLike(
   }
 }
 
+export interface UnlikePostEvent {
+  user: string;
+  post_id: bigint;
+}
+
+/**
+ * Handle an unlike: remove the like row and recompute `like_count` from the
+ * likes table in the same SERIALIZABLE transaction, so a like and an unlike
+ * racing on one post cannot leave the stored count different from the number of
+ * like rows. Removing a like that does not exist is an idempotent no-op that
+ * leaves the count untouched.
+ */
+export async function handleUnlike(pool: Pool, event: UnlikePostEvent): Promise<void> {
+  const { user, post_id } = event;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+      await client.query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE");
+
+      const removed = await client.query(
+        "DELETE FROM likes WHERE post_id = $1 AND user_address = $2 RETURNING id",
+        [post_id.toString(), user]
+      );
+      if (removed.rowCount === 0) {
+        logger.info(`Unlike for ${user} on post ${post_id} is a no-op (no like row)`);
+        await client.query("COMMIT");
+        client.release();
+        return;
+      }
+
+      await client.query(
+        `UPDATE posts
+         SET like_count = (SELECT COUNT(*) FROM likes WHERE post_id = $1)
+         WHERE id = $1 AND deleted_at IS NULL`,
+        [post_id.toString()]
+      );
+
+      await client.query("COMMIT");
+      client.release();
+      return;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+
+      if (isSerializationError(error) && attempt < MAX_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS * attempt));
+        continue;
+      }
+
+      logger.error(`Error handling unlike for post ${post_id}: ${String(error)}`);
+      throw error;
+    }
+  }
+}
+
 export function createMockLikeEvent(
   user: string = "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
   post_id: bigint = 1n
