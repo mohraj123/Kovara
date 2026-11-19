@@ -25,6 +25,42 @@ export interface PostEventContext {
   content?: string;
 }
 
+/** Post ids are contract-assigned unsigned 64-bit integers, starting at 1. */
+export const MAX_POST_ID = 2n ** 64n - 1n;
+
+/**
+ * Validate a post identifier at the handler boundary and return it as a
+ * bigint. Accepts a bigint, a safe-integer number, or a base-10 digit string;
+ * rejects zero, negatives, fractions, NaN, non-digit strings and anything above
+ * the u64 range, so a malformed id can never become an unusable row.
+ */
+export function validatePostId(raw: unknown, field = "id"): bigint {
+  let value: bigint;
+  if (typeof raw === "bigint") {
+    value = raw;
+  } else if (typeof raw === "number") {
+    if (!Number.isSafeInteger(raw)) {
+      throw new Error(`Invalid post ${field}: must be a safe integer`);
+    }
+    value = BigInt(raw);
+  } else if (typeof raw === "string" && /^[0-9]+$/.test(raw)) {
+    value = BigInt(raw);
+  } else {
+    throw new Error(`Invalid post ${field}: must be a positive integer`);
+  }
+  if (value < 1n || value > MAX_POST_ID) {
+    throw new Error(`Invalid post ${field}: must be between 1 and ${MAX_POST_ID}`);
+  }
+  return value;
+}
+
+function requireAuthor(author: unknown): string {
+  if (typeof author !== "string" || author.trim() === "") {
+    throw new Error("Invalid post author: must be a non-empty string");
+  }
+  return author;
+}
+
 /**
  * Validate a raw event object has the shape expected for a PostCreated event.
  * Throws a descriptive error for any missing or incorrectly typed field.
@@ -65,7 +101,9 @@ export async function handlePostCreated(
   event: PostCreatedEvent,
   context: PostEventContext
 ): Promise<void> {
-  const { id, author } = event;
+  // Validated before any database work, so a malformed id cannot create a row.
+  const id = validatePostId(event.id);
+  const author = requireAuthor(event.author);
   const { timestamp, content } = context;
   const postContent = content || "";
 
@@ -115,7 +153,8 @@ export async function handlePostDeleted(
   event: PostDeletedEvent,
   context: PostEventContext
 ): Promise<void> {
-  const { post_id, author } = event;
+  const post_id = validatePostId(event.post_id, "post_id");
+  const author = requireAuthor(event.author);
   // Use the event's ledger timestamp, falling back to now only if unavailable.
   // This ensures replayed events preserve the original deletion time.
   const deletedAt: Date = context.timestamp instanceof Date && !isNaN(context.timestamp.getTime())
