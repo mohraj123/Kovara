@@ -28,6 +28,13 @@ describe("classifyFailure", () => {
     expect(classifyFailure({ code: "57P01" }).kind).toBe("transient");
   });
 
+  it("classifies a connection reset wrapped as a cause as transient", () => {
+    expect(classifyFailure({ message: "query failed", cause: { code: "ECONNRESET" } }).kind).toBe("transient");
+    expect(classifyFailure({ message: "query failed", cause: { code: "57P01" } }).kind).toBe("transient");
+    expect(classifyFailure({ message: "query failed", cause: { code: "23505" } }).kind).toBe("permanent");
+    expect(classifyFailure({ message: "syntax error", cause: { code: "42601" } }).kind).toBe("permanent");
+  });
+
   it("treats integrity violations as permanent", () => {
     // The point of the split: re-running a statement that violates a unique
     // constraint produces the same violation, so retrying only wastes budget.
