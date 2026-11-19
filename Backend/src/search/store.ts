@@ -177,6 +177,26 @@ interface SearchCapabilities {
 /** Re-probe after this long, so an indexer that adds a column is noticed. */
 const CAPABILITY_TTL_MS = 60_000;
 
+/**
+ * Total order for merged hits. After score and entity, the tie-break matches the
+ * per-entity SQL `ORDER BY` (posts: id DESC; profiles: username then address;
+ * categories: name), so the rows each entity query returns for the first
+ * `offset + limit` positions are exactly the rows this sort ranks first. A
+ * different tie-break here would make equally ranked rows skip or repeat across
+ * pages. Comparison is by code unit / numeric value, never locale-dependent.
+ */
+export function compareHits(a: SearchHit, b: SearchHit): number {
+  if (b.score !== a.score) return b.score - a.score;
+  if (a.entity !== b.entity) return a.entity < b.entity ? -1 : 1;
+  if (a.entity === "posts") {
+    const x = BigInt(a.id);
+    const y = BigInt(b.id);
+    return x === y ? 0 : x > y ? -1 : 1;
+  }
+  if (a.entity === "profiles" && a.title !== b.title) return a.title < b.title ? -1 : 1;
+  return a.id === b.id ? 0 : a.id < b.id ? -1 : 1;
+}
+
 export class PostgresSearchStore {
   private capabilities: SearchCapabilities | null = null;
   private capabilitiesPromise: Promise<SearchCapabilities> | null = null;
@@ -280,12 +300,7 @@ export class PostgresSearchStore {
     // Merge, then take a total order. `entity` then `id` are the trailing
     // columns, so the sort is total and the page is reproducible.
     const merged = perEntity.flatMap((r) => r.hits);
-    merged.sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      const byEntity = a.entity.localeCompare(b.entity);
-      if (byEntity !== 0) return byEntity;
-      return a.id.localeCompare(b.id);
-    });
+    merged.sort(compareHits);
 
     const page = merged.slice(options.offset, options.offset + options.limit);
 
@@ -337,7 +352,7 @@ export class PostgresSearchStore {
              ) AS relevance
       FROM profiles
       WHERE username ILIKE $3
-      ORDER BY relevance DESC, username ASC
+      ORDER BY relevance DESC, username ASC, address ASC
       LIMIT $4
       `,
       [query, query, `%${query}%`, limit]

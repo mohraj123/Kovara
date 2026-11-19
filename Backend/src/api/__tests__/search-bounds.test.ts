@@ -139,3 +139,47 @@ describe("search result payload size bounds (BE-29)", () => {
     expect(DOCUMENTED_DEFAULT_LIMIT).toBeLessThanOrEqual(DOCUMENTED_MAX_LIMIT);
   });
 });
+
+// ── BE-031: bounded phrase normalization at the API layer ─────────────────
+
+import { normalizeSearchPhrase, MAX_SEARCH_PHRASE_LENGTH, SearchPhraseError } from "../search";
+
+describe("normalizeSearchPhrase (BE-031)", () => {
+  it("trims and collapses whitespace", () => {
+    expect(normalizeSearchPhrase("  foo \t\n  bar   baz ")).toBe("foo bar baz");
+  });
+
+  it("accepts a phrase exactly at the maximum length", () => {
+    const phrase = "a".repeat(MAX_SEARCH_PHRASE_LENGTH);
+    expect(normalizeSearchPhrase(phrase)).toBe(phrase);
+  });
+
+  it("rejects a phrase one character over the maximum with QUERY_TOO_LONG", () => {
+    const run = () => normalizeSearchPhrase("a".repeat(MAX_SEARCH_PHRASE_LENGTH + 1));
+    expect(run).toThrow(SearchPhraseError);
+    try {
+      run();
+    } catch (err) {
+      expect((err as SearchPhraseError).code).toBe("QUERY_TOO_LONG");
+    }
+  });
+
+  it("measures length after normalization, so padding cannot cause a rejection", () => {
+    const padded = `   ${"a".repeat(MAX_SEARCH_PHRASE_LENGTH)}   `;
+    expect(normalizeSearchPhrase(padded)).toHaveLength(MAX_SEARCH_PHRASE_LENGTH);
+    const collapsed = `${"a ".repeat(MAX_SEARCH_PHRASE_LENGTH / 2)}`.replace(/ /g, "   ");
+    expect(() => normalizeSearchPhrase(collapsed)).not.toThrow();
+  });
+
+  it("rejects empty, whitespace-only and non-string input with INVALID_QUERY", () => {
+    for (const bad of ["", "   ", "\t\n", undefined, null, 42, ["a"]]) {
+      try {
+        normalizeSearchPhrase(bad);
+        throw new Error("expected rejection");
+      } catch (err) {
+        expect(err).toBeInstanceOf(SearchPhraseError);
+        expect((err as SearchPhraseError).code).toBe("INVALID_QUERY");
+      }
+    }
+  });
+});

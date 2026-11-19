@@ -122,3 +122,64 @@ describe("POST /api/search/posts", () => {
     }
   });
 });
+
+describe("stable search pagination ordering (BE-032)", () => {
+  /** Posts that all share one relevance, so only the tie-breaker orders them. */
+  function storeWithPosts(ids: number[]) {
+    const rows = ids.map((id) => ({
+      id: String(id),
+      author: "GAUTHOR",
+      content: "stellar",
+      like_count: 0,
+      tip_total: 0,
+      created_ledger: 1,
+      created_at: null,
+      relevance: 0.5,
+    }));
+    const pool = {
+      query: jest.fn(async (sql: string, params: unknown[] = []) => {
+        if (sql.includes("information_schema.columns")) return { rows: [] };
+        if (sql.includes("COUNT(*)")) return { rows: [{ total: rows.length }] };
+        // Emulate `ORDER BY relevance DESC, id DESC LIMIT $3`.
+        const sorted = [...rows].sort((a, b) => Number(b.id) - Number(a.id));
+        return { rows: sorted.slice(0, Number(params[2])) };
+      }),
+    };
+    return new PostgresSearchStore(pool as unknown as Pool);
+  }
+
+  async function pages(store: PostgresSearchStore, pageSize: number, count: number) {
+    const out: string[][] = [];
+    for (let offset = 0; offset < count; offset += pageSize) {
+      const result = await store.search("stellar", { entities: ["posts"], limit: pageSize, offset });
+      out.push(result.hits.map((h) => h.id));
+    }
+    return out;
+  }
+
+  it("pages equally ranked rows without skipping or repeating any", async () => {
+    const ids = [1, 2, 3, 4, 5, 9, 10, 11];
+    const result = await pages(storeWithPosts(ids), 3, ids.length);
+    const flat = result.flat();
+    expect(new Set(flat).size).toBe(ids.length); // no duplicates
+    expect([...flat].sort((a, b) => Number(a) - Number(b))).toEqual(ids.map(String)); // none skipped
+    expect(flat).toEqual(["11", "10", "9", "5", "4", "3", "2", "1"]); // numeric id DESC
+  });
+
+  it("returns the same page on repeated requests", async () => {
+    const store = storeWithPosts([1, 2, 3, 4, 5, 6]);
+    const first = await store.search("stellar", { entities: ["posts"], limit: 2, offset: 2 });
+    const again = await store.search("stellar", { entities: ["posts"], limit: 2, offset: 2 });
+    expect(again.hits.map((h) => h.id)).toEqual(first.hits.map((h) => h.id));
+  });
+
+  it("compareHits orders by score, then entity, then the per-entity tie-breaker", () => {
+    const hit = (entity: "posts" | "profiles" | "categories", id: string, title = id, score = 1) =>
+      ({ entity, id, title, snippet: null, score, attributes: {} }) as never;
+    expect(compareHits(hit("posts", "10"), hit("posts", "9"))).toBeLessThan(0); // numeric, DESC
+    expect(compareHits(hit("profiles", "G2", "alice"), hit("profiles", "G1", "bob"))).toBeLessThan(0);
+    expect(compareHits(hit("profiles", "G1", "same"), hit("profiles", "G2", "same"))).toBeLessThan(0);
+    expect(compareHits(hit("posts", "1", "x", 2), hit("profiles", "G1", "x", 1))).toBeLessThan(0); // score first
+    expect(compareHits(hit("categories", "a"), hit("posts", "1"))).toBeLessThan(0); // entity name order
+  });
+});
