@@ -132,6 +132,17 @@ export function sanitizeStoredValue(value: string): string {
   return out.length > MAX_STORED_VALUE_LENGTH ? out.slice(0, MAX_STORED_VALUE_LENGTH) : out;
 }
 
+/** Who/when/why/source of a requeue request, kept for audit. */
+export interface RequeueProvenance {
+  requestedBy: string;
+  reason: string;
+  source: string;
+  requestedAt: Date;
+}
+
+/** Largest page `listPage` will return. */
+export const MAX_LIST_PAGE_SIZE = 200;
+
 /** Outcome of {@link DeadLetterQueue.requeueBatch}. */
 export interface RedriveResult {
   /** Keys moved back into the live stream. */
@@ -151,7 +162,7 @@ export interface DeadLetterStore {
   /** List dead letters, newest first, for operator inspection. */
   list(limit: number, offset: number): Promise<{ entries: DeadLetterRecord[]; total: number }>;
   /** Move a dead letter back into the live stream. Returns false if unknown. */
-  requeue(idempotencyKey: string): Promise<boolean>;
+  requeue(idempotencyKey: string, provenance?: RequeueProvenance): Promise<boolean>;
   /** Count of dead letters that have not been requeued. */
   countPending(): Promise<number>;
 }
@@ -177,6 +188,8 @@ export interface FailureContext {
  */
 export class DeadLetterQueue {
   private readonly attemptsByKey = new Map<string, number>();
+  /** Append-only provenance of every requeue request, including repeats. */
+  private readonly requeueLog = new Map<string, RequeueProvenance[]>();
 
   constructor(
     private readonly store: DeadLetterStore,
@@ -251,12 +264,42 @@ export class DeadLetterQueue {
     return this.store.list(limit, offset);
   }
 
+  /**
+   * Read-only, bounded page of dead letters. `cursor` is the opaque value
+   * returned as `nextCursor` by the previous page (absent for the first page).
+   */
+  async listPage(
+    limit = 50,
+    cursor?: string
+  ): Promise<{ entries: DeadLetterRecord[]; total: number; nextCursor: string | null }> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIST_PAGE_SIZE) {
+      throw new RangeError(`limit must be an integer between 1 and ${MAX_LIST_PAGE_SIZE}`);
+    }
+    const offset = cursor === undefined ? 0 : Number(cursor);
+    if (!Number.isInteger(offset) || offset < 0) {
+      throw new RangeError("cursor is invalid");
+    }
+    const { entries, total } = await this.store.list(limit, offset);
+    const next = offset + entries.length;
+    return { entries, total, nextCursor: next < total ? String(next) : null };
+  }
+
+  /** Every requeue request recorded for a key, oldest first (copy). */
+  requeueHistory(idempotencyKey: string): RequeueProvenance[] {
+    return [...(this.requeueLog.get(idempotencyKey) ?? [])];
+  }
+
   /** Requeue a dead letter so it is processed again. */
-  requeue(idempotencyKey: string): Promise<boolean> {
+  requeue(
+    idempotencyKey: string,
+    provenance: Omit<RequeueProvenance, "requestedAt"> = { requestedBy: "unknown", reason: "unspecified", source: "unknown" }
+  ): Promise<boolean> {
+    const stamped: RequeueProvenance = { ...provenance, requestedAt: new Date() };
+    this.requeueLog.set(idempotencyKey, [...(this.requeueLog.get(idempotencyKey) ?? []), stamped]);
     // Clear the in-process budget: the operator is explicitly asking for a
     // fresh set of attempts, not a continuation of the exhausted one.
     this.attemptsByKey.delete(idempotencyKey);
-    return this.store.requeue(idempotencyKey);
+    return this.store.requeue(idempotencyKey, stamped);
   }
 
   /**
