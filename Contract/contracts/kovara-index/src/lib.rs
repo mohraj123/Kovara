@@ -46,6 +46,11 @@
 
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Symbol};
 
+/// Maximum allowed KVI value (fixed-point, 8 decimal places).
+/// Represents 1 000 000.00000000 — one million units.
+/// Values above this ceiling are rejected as out-of-range.
+pub const KVI_MAX: i128 = 100_000_000_000_000; // 1 000 000 × 10^8
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -54,6 +59,8 @@ pub enum Error {
     InvalidDate = 1,
     /// A daily index value must be strictly positive.
     NonPositiveValue = 20,
+    /// A daily index value exceeds the documented fixed-point ceiling [`KVI_MAX`].
+    IndexValueTooHigh = 22,
     /// The supplied window is empty or non-increasing: `valid_until <= valid_from`.
     /// Without a window there is nothing to compare `query_ts` against.
     InvalidWindow = 2,
@@ -139,6 +146,9 @@ impl KovaraIndex {
         }
         if value <= 0 {
             return Err(Error::NonPositiveValue);
+        }
+        if value > KVI_MAX {
+            return Err(Error::IndexValueTooHigh);
         }
         let key = DataKey::DailyIndex(country, date);
         if env.storage().persistent().has(&key) {
@@ -230,6 +240,9 @@ impl KovaraIndex {
         }
         if value <= 0 {
             return Err(Error::NonPositiveValue);
+        }
+        if value > KVI_MAX {
+            return Err(Error::IndexValueTooHigh);
         }
         let key = DataKey::DailyIndex(country.clone(), date);
         if env.storage().persistent().has(&key) {
