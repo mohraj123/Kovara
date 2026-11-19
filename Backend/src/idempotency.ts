@@ -34,6 +34,8 @@
  * any database work happens.
  */
 
+import { createHash } from "crypto";
+
 /** Namespace version. Bump when the components of a key change. */
 export const IDEMPOTENCY_KEY_VERSION = "v1";
 
@@ -72,6 +74,37 @@ export function buildIdempotencyKey(
   eventId: string
 ): string {
   return `${IDEMPOTENCY_KEY_PREFIX}:${IDEMPOTENCY_KEY_VERSION}:${contractId}:${ledger}:${eventId}`;
+}
+
+/** Canonical fields an event identity is derived from when the RPC omits `id`. */
+export interface EventIdentityFields {
+  ledger: number;
+  txHash: string;
+  topic: string[];
+  value: string;
+  /** Provider paging token, when present; distinguishes identical events in one tx. */
+  pagingToken?: string;
+}
+
+/**
+ * BE-002: Derive a stable fallback event id (sha256 hex) from canonical fields
+ * when the RPC response has no event id. Throws on incomplete identity data
+ * rather than producing a key that could collide across distinct events.
+ */
+export function deriveEventId(fields: EventIdentityFields): string {
+  const { ledger, txHash, topic, value, pagingToken } = fields;
+  if (!Number.isInteger(ledger) || ledger < 0 || ledger > MAX_LEDGER) {
+    throw new Error("Cannot derive event id: invalid ledger");
+  }
+  if (typeof txHash !== "string" || txHash.trim() === "") {
+    throw new Error("Cannot derive event id: missing txHash");
+  }
+  if (!Array.isArray(topic) || topic.some((t) => typeof t !== "string") || typeof value !== "string") {
+    throw new Error("Cannot derive event id: invalid topic or value");
+  }
+  return createHash("sha256")
+    .update(JSON.stringify([IDEMPOTENCY_KEY_VERSION, ledger, txHash.trim(), topic, value, pagingToken ?? ""]))
+    .digest("hex");
 }
 
 /**
