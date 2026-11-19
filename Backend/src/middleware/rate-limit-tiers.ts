@@ -83,6 +83,24 @@ export function tierForRequest(req: Request): keyof TierConfig | null {
   return tierFor(req.method, effectivePath(req));
 }
 
+/**
+ * Attach the tier's capacity headers: `X-RateLimit-Tier`, `-Limit`, `-Remaining`
+ * and `-Reset` (epoch seconds). They are set on allowed and throttled responses
+ * alike, from the limiter's own counters, so every tier reports the same shape.
+ */
+export function applyTierHeaders(req: Request, res: Response, tier: keyof TierConfig): void {
+  const info = (req as Request & { rateLimit?: { limit?: number; remaining?: number; resetTime?: Date } })
+    .rateLimit;
+  const config = tierConfig[tier];
+  const limit = info?.limit ?? config.max;
+  const remaining = Math.max(0, info?.remaining ?? 0);
+  const resetMs = info?.resetTime instanceof Date ? info.resetTime.getTime() : Date.now() + config.windowMs;
+  res.setHeader("X-RateLimit-Tier", tier);
+  res.setHeader("X-RateLimit-Limit", String(limit));
+  res.setHeader("X-RateLimit-Remaining", String(remaining));
+  res.setHeader("X-RateLimit-Reset", String(Math.ceil(resetMs / 1000)));
+}
+
 function build(tier: keyof TierConfig): RateLimitRequestHandler {
   const { windowMs, max } = tierConfig[tier];
   // The options object is built untyped and cast at the call site. `Options` is
@@ -101,12 +119,15 @@ function build(tier: keyof TierConfig): RateLimitRequestHandler {
     // documented on effectivePath().
     skip: (req: Request): boolean => tierForRequest(req) !== tier,
     handler: (req: Request, res: Response): void => {
-      res.setHeader("X-RateLimit-Tier", tier);
+      applyTierHeaders(req, res, tier);
+      const resetSeconds = Number(res.getHeader("X-RateLimit-Reset"));
+      const retryAfter = Math.max(1, resetSeconds - Math.floor(Date.now() / 1000));
+      res.setHeader("Retry-After", String(retryAfter));
       res.status(429).json({
         error: `Too many ${tier} requests. This endpoint has a tighter budget than the general API limit.`,
         code: "RATE_LIMIT_TIER_EXCEEDED",
         tier,
-        retry_after: Math.max(1, Math.ceil(tierConfig[tier].windowMs / 1000)),
+        retry_after: retryAfter,
       });
     },
   };
@@ -160,7 +181,11 @@ export function tieredRateLimits(options: TieredRateLimitOptions = {}): TieredRa
         });
       }
     });
-    (tier === "search" ? search : write)(req, res, next);
+    (tier === "search" ? search : write)(req, res, (err?: unknown) => {
+      // Allowed requests get the same headers a throttled one does.
+      if (!err) applyTierHeaders(req, res, tier);
+      next(err);
+    });
   };
 
   // Object.assign rather than a variable declared with the compound type: a

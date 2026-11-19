@@ -1,4 +1,6 @@
+import express from "express";
 import request from "supertest";
+import { tieredRateLimits, setTierConfig, DEFAULT_TIER_CONFIG } from "../../middleware/rate-limit-tiers";
 import { createApp, setRateLimit } from "../index";
 import { Database } from "../../db";
 
@@ -118,5 +120,84 @@ describe("Rate Limiting", () => {
       res2.headers["ratelimit-remaining"];
     expect(remaining2).toBeDefined();
     expect(Number(remaining2)).toBe(3);
+  });
+});
+
+describe("per-tier rate-limit headers (BE-038)", () => {
+  afterAll(() => setTierConfig(DEFAULT_TIER_CONFIG));
+
+  function tieredApp() {
+    const app = express();
+    app.use(
+      tieredRateLimits({
+        config: { search: { windowMs: 60_000, max: 2 }, write: { windowMs: 60_000, max: 1 } },
+      })
+    );
+    app.get("/api/v1/search", (_req, res) => void res.json({ ok: true }));
+    app.post("/api/v1/tips", (_req, res) => void res.json({ ok: true }));
+    app.get("/api/v1/health", (_req, res) => void res.json({ ok: true }));
+    return app;
+  }
+
+  const nowSeconds = () => Math.floor(Date.now() / 1000);
+
+  it("reports tier, limit, remaining and reset on allowed search requests", async () => {
+    const app = tieredApp();
+    const first = await request(app).get("/api/v1/search");
+    expect(first.status).toBe(200);
+    expect(first.headers["x-ratelimit-tier"]).toBe("search");
+    expect(first.headers["x-ratelimit-limit"]).toBe("2");
+    expect(first.headers["x-ratelimit-remaining"]).toBe("1");
+    const reset = Number(first.headers["x-ratelimit-reset"]);
+    expect(reset).toBeGreaterThan(nowSeconds());
+    expect(reset).toBeLessThanOrEqual(nowSeconds() + 61);
+
+    const second = await request(app).get("/api/v1/search");
+    expect(second.headers["x-ratelimit-remaining"]).toBe("0");
+  });
+
+  it("reports the same headers plus Retry-After when the search tier throttles", async () => {
+    const app = tieredApp();
+    await request(app).get("/api/v1/search");
+    await request(app).get("/api/v1/search");
+    const throttled = await request(app).get("/api/v1/search");
+    expect(throttled.status).toBe(429);
+    expect(throttled.headers["x-ratelimit-tier"]).toBe("search");
+    expect(throttled.headers["x-ratelimit-limit"]).toBe("2");
+    expect(throttled.headers["x-ratelimit-remaining"]).toBe("0");
+    expect(Number(throttled.headers["x-ratelimit-reset"])).toBeGreaterThan(nowSeconds());
+    const retryAfter = Number(throttled.headers["retry-after"]);
+    expect(retryAfter).toBeGreaterThanOrEqual(1);
+    expect(throttled.body).toMatchObject({ code: "RATE_LIMIT_TIER_EXCEEDED", tier: "search", retry_after: retryAfter });
+  });
+
+  it("reports headers for the write tier, allowed then throttled", async () => {
+    const app = tieredApp();
+    const allowed = await request(app).post("/api/v1/tips");
+    expect(allowed.status).toBe(200);
+    expect(allowed.headers["x-ratelimit-tier"]).toBe("write");
+    expect(allowed.headers["x-ratelimit-limit"]).toBe("1");
+    expect(allowed.headers["x-ratelimit-remaining"]).toBe("0");
+
+    const throttled = await request(app).post("/api/v1/tips");
+    expect(throttled.status).toBe(429);
+    expect(throttled.headers["x-ratelimit-tier"]).toBe("write");
+    expect(throttled.headers["x-ratelimit-remaining"]).toBe("0");
+    expect(throttled.headers["retry-after"]).toBeDefined();
+  });
+
+  it("keeps the tiers' budgets separate", async () => {
+    const app = tieredApp();
+    await request(app).post("/api/v1/tips");
+    const search = await request(app).get("/api/v1/search");
+    expect(search.status).toBe(200);
+    expect(search.headers["x-ratelimit-remaining"]).toBe("1");
+  });
+
+  it("adds no tier headers to requests outside every tier", async () => {
+    const res = await request(tieredApp()).get("/api/v1/health");
+    expect(res.status).toBe(200);
+    expect(res.headers["x-ratelimit-tier"]).toBeUndefined();
+    expect(res.headers["x-ratelimit-remaining"]).toBeUndefined();
   });
 });

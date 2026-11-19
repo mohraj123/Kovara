@@ -247,3 +247,53 @@ describe("hasQuorum", () => {
     expect(hasQuorum(votes(["a", "approve"], ["b", "approve"], ["c", "approve"]))).toBe(true);
   });
 });
+
+describe("typed quorum outcome (BE-040)", () => {
+  it("reports insufficient with the number of votes still needed", () => {
+    expect(evaluateQuorum([]).outcome).toEqual({ status: "insufficient", votesNeeded: 3 });
+    expect(evaluateQuorum(votes(["a", "approve"])).outcome).toEqual({ status: "insufficient", votesNeeded: 2 });
+    expect(evaluateQuorum(votes(["a", "approve"], ["b", "approve"])).outcome).toEqual({
+      status: "insufficient",
+      votesNeeded: 1,
+    });
+  });
+
+  it("does not report a flattering ratio on too few votes as anything but insufficient", () => {
+    const result = evaluateQuorum(votes(["a", "approve"]));
+    expect(result.outcome.status).toBe("insufficient");
+    expect(result.passed).toBe(false);
+  });
+
+  it("reports satisfied exactly at the default threshold", () => {
+    const result = evaluateQuorum(votes(["a", "approve"], ["b", "approve"], ["c", "reject"]));
+    // 2 of 3 approve is exactly the threshold; 1 of 3 reject is exactly the ceiling.
+    expect(result.outcome).toEqual({ status: "satisfied" });
+    expect(result.passed).toBe(true);
+  });
+
+  it("reports conflicting when approvals and rejections both exist and the split fails", () => {
+    const result = evaluateQuorum(votes(["a", "approve"], ["b", "reject"], ["c", "reject"]));
+    expect(result.outcome).toEqual({ status: "conflicting", approvals: 1, rejections: 2, approvalsShort: 1 });
+    expect(result.decided).toBe(true);
+  });
+
+  it("reports rejected, not conflicting, when nobody approves", () => {
+    const result = evaluateQuorum(votes(["a", "reject"], ["b", "reject"], ["c", "reject"]));
+    expect(result.outcome).toEqual({ status: "rejected", rejections: 3 });
+  });
+
+  it("is conflicting for a rejection ceiling breach even when approval threshold is met", () => {
+    const result = evaluateQuorum(votes(["a", "approve"], ["b", "reject"], ["c", "reject"]), {
+      approvalRatio: { numerator: 1, denominator: 3 },
+    });
+    expect(result.reason).toBe("rejection_above_ceiling");
+    expect(result.outcome.status).toBe("conflicting");
+  });
+
+  it("leaves the existing pass/fail policy untouched", () => {
+    const passing = evaluateQuorum(votes(["a", "approve"], ["b", "approve"], ["c", "approve"]));
+    expect(passing).toMatchObject({ passed: true, decided: true, reason: "approved" });
+    const short = evaluateQuorum(votes(["a", "approve"], ["b", "reject"], ["c", "reject"]));
+    expect(short).toMatchObject({ passed: false, decided: true, reason: "approval_below_threshold" });
+  });
+});
