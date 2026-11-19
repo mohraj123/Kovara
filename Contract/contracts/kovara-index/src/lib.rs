@@ -91,6 +91,10 @@ pub struct Revision {
     pub timestamp: u64,
     /// `false` for the first publication, `true` for a correction.
     pub correction: bool,
+    /// The value that was replaced; `0` for a first publication.
+    pub old_value: i128,
+    /// Human-readable reason for a correction; empty for a first publication.
+    pub reason: soroban_sdk::String,
 }
 
 #[contracttype]
@@ -322,6 +326,7 @@ impl KovaraIndex {
         country: Symbol,
         date: u64,
         value: i128,
+        reason: soroban_sdk::String,
     ) -> Result<(), Error> {
         // 1. Pure checks, before auth and before any write.
         if date == 0 {
@@ -342,8 +347,9 @@ impl KovaraIndex {
 
         // 2. Auth only after every check.
         authority.require_auth();
+        let old_value: i128 = env.storage().persistent().get(&key).unwrap_or(0);
         env.storage().persistent().set(&key, &value);
-        Self::push_revision(&env, &key, value, &authority, true);
+        Self::push_revision(&env, &key, value, old_value, &reason, &authority, true);
         Ok(())
     }
 }
