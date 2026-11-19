@@ -73,6 +73,22 @@ pub enum Error {
     AuthorityAlreadyConfigured = 8,
     /// No daily value exists for `(country, date)` to correct.
     NotFound = 9,
+    /// No admin has been configured, so updater management is unavailable.
+    AdminNotConfigured = 20,
+    /// An admin has already been configured; the role is one-shot.
+    AdminAlreadyConfigured = 21,
+}
+
+/// One entry in the append-only revision log of a `(country, date)` value.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Revision {
+    pub value: i128,
+    pub updater: Address,
+    pub ledger: u32,
+    pub timestamp: u64,
+    /// `false` for the first publication, `true` for a correction.
+    pub correction: bool,
 }
 
 #[contracttype]
@@ -84,6 +100,14 @@ pub enum DataKey {
     DailyWindow(Symbol, u64),
     /// The single address allowed to correct published daily values.
     CorrectionAuthority,
+    /// The admin who manages the updater.
+    Admin,
+    /// The single address allowed to publish daily values, once configured.
+    Updater,
+    /// `(country, date)` → number of revisions recorded.
+    RevisionCount(Symbol, u64),
+    /// `(country, date, index)` → revision entry.
+    Revision(Symbol, u64, u32),
 }
 
 #[contract]
@@ -117,8 +141,10 @@ impl KovaraIndex {
         }
 
         // 2. Auth only after every check.
+        Self::check_updater(&env, &updater)?;
         updater.require_auth();
         env.storage().persistent().set(&key, &value);
+        Self::push_revision(&env, &key, value, &updater, false);
         Ok(())
     }
 
@@ -203,6 +229,7 @@ impl KovaraIndex {
         }
 
         // 2. Auth only after every pure check.
+        Self::check_updater(&env, &updater)?;
         updater.require_auth();
 
         // 3. Value and window land together, so an entry can never carry a
@@ -212,6 +239,7 @@ impl KovaraIndex {
             &DataKey::DailyWindow(country, date),
             &(valid_from, valid_until),
         );
+        Self::push_revision(&env, &key, value, &updater, false);
 
         Ok(())
     }
@@ -307,9 +335,147 @@ impl KovaraIndex {
         // 2. Auth only after every check.
         authority.require_auth();
         env.storage().persistent().set(&key, &value);
+        Self::push_revision(&env, &key, value, &authority, true);
         Ok(())
     }
 }
+// ── Updater authorization, rotation, revisions, admin correction ────────────
+
+impl KovaraIndex {
+    /// With no updater configured, publication stays open (legacy behaviour);
+    /// once configured, only that address may publish.
+    fn check_updater(env: &Env, updater: &Address) -> Result<(), Error> {
+        match env.storage().instance().get::<_, Address>(&DataKey::Updater) {
+            Some(configured) if configured != *updater => Err(Error::Unauthorized),
+            _ => Ok(()),
+        }
+    }
+
+    fn require_admin(env: &Env, admin: &Address) -> Result<(), Error> {
+        let configured: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::AdminNotConfigured)?;
+        if configured != *admin {
+            return Err(Error::Unauthorized);
+        }
+        admin.require_auth();
+        Ok(())
+    }
+
+    fn push_revision(env: &Env, key: &DataKey, value: i128, who: &Address, correction: bool) {
+        if let DataKey::DailyIndex(country, date) = key {
+            let count_key = DataKey::RevisionCount(country.clone(), *date);
+            let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+            env.storage().persistent().set(
+                &DataKey::Revision(country.clone(), *date, count),
+                &Revision {
+                    value,
+                    updater: who.clone(),
+                    ledger: env.ledger().sequence(),
+                    timestamp: env.ledger().timestamp(),
+                    correction,
+                },
+            );
+            env.storage().persistent().set(&count_key, &(count + 1));
+        }
+    }
+}
+
+#[contractimpl]
+impl KovaraIndex {
+    /// Configure the admin. One-shot, like [`Self::set_correction_authority`].
+    ///
+    /// # Errors
+    /// * [`Error::AdminAlreadyConfigured`] — an admin already exists.
+    pub fn set_admin(env: Env, admin: Address) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::AdminAlreadyConfigured);
+        }
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        Ok(())
+    }
+
+    /// The configured admin, if any.
+    pub fn get_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Admin)
+    }
+
+    /// Admin sets the updater allowed to publish daily values. Emits `upd_set`.
+    ///
+    /// # Errors
+    /// * [`Error::AdminNotConfigured`] / [`Error::Unauthorized`].
+    pub fn set_updater(env: Env, admin: Address, updater: Address) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        env.storage().instance().set(&DataKey::Updater, &updater);
+        env.events()
+            .publish((soroban_sdk::symbol_short!("upd_set"),), updater);
+        Ok(())
+    }
+
+    /// The configured updater, or `None` while publication is still open.
+    pub fn get_updater(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Updater)
+    }
+
+    /// Admin rotates the updater. The old updater immediately loses access.
+    /// Emits `upd_rot` with `(old, new)`.
+    ///
+    /// # Errors
+    /// * [`Error::AdminNotConfigured`] / [`Error::Unauthorized`].
+    pub fn rotate_updater(env: Env, admin: Address, new_updater: Address) -> Result<(), Error> {
+        Self::require_admin(&env, &admin)?;
+        let old: Option<Address> = env.storage().instance().get(&DataKey::Updater);
+        env.storage().instance().set(&DataKey::Updater, &new_updater);
+        env.events()
+            .publish((soroban_sdk::symbol_short!("upd_rot"),), (old, new_updater));
+        Ok(())
+    }
+
+    /// Admin correction path: distinct from the updater (who can only publish)
+    /// and from the one-shot correction authority. Records a correction revision.
+    ///
+    /// # Errors
+    /// * [`Error::InvalidDate`], [`Error::AdminNotConfigured`],
+    ///   [`Error::Unauthorized`], [`Error::NotFound`].
+    pub fn admin_correct_daily_index(
+        env: Env,
+        admin: Address,
+        country: Symbol,
+        date: u64,
+        value: i128,
+    ) -> Result<(), Error> {
+        if date == 0 {
+            return Err(Error::InvalidDate);
+        }
+        let key = DataKey::DailyIndex(country, date);
+        if !env.storage().persistent().has(&key) {
+            return Err(Error::NotFound);
+        }
+        Self::require_admin(&env, &admin)?;
+        env.storage().persistent().set(&key, &value);
+        Self::push_revision(&env, &key, value, &admin, true);
+        Ok(())
+    }
+
+    /// Number of revisions recorded for `(country, date)`.
+    pub fn get_revision_count(env: Env, country: Symbol, date: u64) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RevisionCount(country, date))
+            .unwrap_or(0)
+    }
+
+    /// Revision `index` (0 = first publication); `None` when out of bounds.
+    pub fn get_revision(env: Env, country: Symbol, date: u64, index: u32) -> Option<Revision> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Revision(country, date, index))
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
