@@ -265,6 +265,12 @@ pub enum Error {
     StaleProposal = 16,
     /// More sentinels were supplied than the caller's cap allows (#1096).
     TooManySentinels = 17,
+    /// A withdrawal was below the configured minimum withdrawal amount (CT-016).
+    BelowMinimumWithdrawal = 18,
+    /// The minimum withdrawal amount is negative (CT-016).
+    InvalidMinWithdrawal = 19,
+    /// A history page request had a zero or oversized `limit` (CT-015).
+    InvalidPage = 20,
 }
 
 #[contracttype]
@@ -303,6 +309,10 @@ pub enum DataKey {
     PendingProposal,
     /// Proof references in the order their slashes were resolved (#1093).
     ResolvedSlashes,
+    /// The configured minimum withdrawal amount (CT-016).
+    MinWithdrawal,
+    /// `sentinel` -> append-only stake/withdrawal history entries (CT-015).
+    StakeHistory,
 }
 
 /// Largest page [`SentinelPool::resolved_slashes`] returns (#1093).
@@ -1155,6 +1165,8 @@ impl SentinelPool {
         }
         .publish(&env);
 
+        Self::record_history(&env, sentinel, HistoryKind::Stake, amount, new_total);
+
         Ok(())
     }
 
@@ -1474,6 +1486,14 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
             return Err(Error::InsufficientBalance);
         }
 
+        // Dust guard (CT-016): a partial withdrawal must clear the configured
+        // minimum. A full exit (`amount == current`) bypasses it — the floor is
+        // against uneconomical partial withdrawals, not against leaving.
+        let min_withdrawal = Self::min_withdrawal(env.clone());
+        if amount != current && amount < min_withdrawal {
+            return Err(Error::BelowMinimumWithdrawal);
+        }
+
         let lock_period: u64 = env
             .storage()
             .instance()
@@ -1569,6 +1589,8 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
             remaining,
         }
         .publish(&env);
+
+        Self::record_history(&env, sentinel, HistoryKind::Withdraw, amount, remaining);
 
         Ok(())
     }
@@ -2344,6 +2366,195 @@ impl SentinelPool {
         .publish(&env);
 
         Ok(())
+    }
+}
+
+/// What a stake-history entry records (CT-015).
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum HistoryKind {
+    Stake = 0,
+    Withdraw = 1,
+}
+
+/// One lifecycle entry in a sentinel's stake/withdrawal history (CT-015).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StakeHistoryEntry {
+    /// Ledger sequence number the entry was recorded on.
+    pub ledger: u64,
+    /// Whether this entry is a deposit or a withdrawal.
+    pub kind: HistoryKind,
+    /// The amount moved by this entry.
+    pub amount: i128,
+    /// The sentinel's balance immediately after this entry.
+    pub balance_after: i128,
+}
+
+/// Largest page [`SentinelPool::stake_history`] returns (CT-015).
+pub const MAX_HISTORY_PAGE: u32 = 50;
+
+/// Why a sentinel is ineligible, mirroring the checks in
+/// [`SentinelPool::is_eligible`] (CT-014).
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum IneligibleReason {
+    /// The balance is under the configured `min_stake`.
+    BelowMinStake = 0,
+    /// The withdrawal lock has not elapsed at the queried ledger.
+    LockPeriodActive = 1,
+    /// The address has deregistered.
+    Deregistered = 2,
+}
+
+/// The typed result of [`SentinelPool::eligibility_reason`] (CT-014).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EligibilityStatus {
+    Eligible,
+    Ineligible(IneligibleReason),
+}
+
+#[contractimpl]
+impl SentinelPool {
+    /// # Minimum withdrawal amount (CT-016)
+    ///
+    /// Admin-only. Guards against uneconomical dust withdrawals without
+    /// touching the `min_stake` floor already enforced by [`Self::withdraw`]:
+    /// a partial withdrawal must now also clear `min_withdrawal`, but a full
+    /// exit (withdrawing the entire balance, including the end of the
+    /// deregistration lifecycle) is exempt — it is leaving, not a dust
+    /// withdrawal.
+    ///
+    /// # Errors
+    /// * [`Error::InvalidMinWithdrawal`] — `min_withdrawal < 0`.
+    /// * [`Error::Unauthorized`] — `admin` is not the configured admin.
+    pub fn set_min_withdrawal(env: Env, admin: Address, min_withdrawal: i128) -> Result<(), Error> {
+        if min_withdrawal < 0 {
+            return Err(Error::InvalidMinWithdrawal);
+        }
+
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MinWithdrawal, &min_withdrawal);
+
+        Ok(())
+    }
+
+    /// The minimum withdrawal amount in force. `0` (no floor) until configured.
+    pub fn min_withdrawal(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinWithdrawal)
+            .unwrap_or(0)
+    }
+
+    /// Append one history entry for `sentinel` (CT-015). Called by `stake` and
+    /// `withdraw`; not an entry point itself.
+    fn record_history(
+        env: &Env,
+        sentinel: Address,
+        kind: HistoryKind,
+        amount: i128,
+        balance_after: i128,
+    ) {
+        let mut history: Map<Address, soroban_sdk::Vec<StakeHistoryEntry>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::StakeHistory)
+            .unwrap_or_else(|| Map::new(env));
+        let mut entries = history
+            .get(sentinel.clone())
+            .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+
+        entries.push_back(StakeHistoryEntry {
+            ledger: u64::from(env.ledger().sequence()),
+            kind,
+            amount,
+            balance_after,
+        });
+
+        history.set(sentinel, entries);
+        env.storage().instance().set(&DataKey::StakeHistory, &history);
+    }
+
+    /// # Paginated stake/withdrawal history (CT-015)
+    ///
+    /// Returns up to `limit` entries for `sentinel` starting at `cursor`, in
+    /// the order they were recorded. `limit` is capped at
+    /// [`MAX_HISTORY_PAGE`] so a reader cannot force an unbounded storage
+    /// read; pass `cursor + returned_len` to fetch the next page.
+    ///
+    /// # Errors
+    /// * [`Error::InvalidPage`] — `limit == 0` or `limit > MAX_HISTORY_PAGE`.
+    pub fn stake_history(
+        env: Env,
+        sentinel: Address,
+        cursor: u32,
+        limit: u32,
+    ) -> Result<soroban_sdk::Vec<StakeHistoryEntry>, Error> {
+        if limit == 0 || limit > MAX_HISTORY_PAGE {
+            return Err(Error::InvalidPage);
+        }
+
+        let history: Map<Address, soroban_sdk::Vec<StakeHistoryEntry>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::StakeHistory)
+            .unwrap_or_else(|| Map::new(&env));
+        let entries = history
+            .get(sentinel)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+
+        let end = cursor.saturating_add(limit).min(entries.len());
+        let mut page = soroban_sdk::Vec::new(&env);
+        let mut i = cursor;
+        while i < end {
+            if let Some(entry) = entries.get(i) {
+                page.push_back(entry);
+            }
+            i += 1;
+        }
+        Ok(page)
+    }
+
+    /// # Why a sentinel is, or is not, eligible (CT-014)
+    ///
+    /// Same three checks as [`Self::is_eligible`], in the same order, but
+    /// reports which one failed instead of collapsing the answer to a bool.
+    /// [`Self::is_eligible`] is unchanged and keeps returning the boolean
+    /// view for callers that only need a yes/no answer.
+    pub fn eligibility_reason(env: Env, sentinel: Address, at_ledger: u32) -> EligibilityStatus {
+        if Self::deregistered_at(env.clone(), sentinel.clone()).is_some() {
+            return EligibilityStatus::Ineligible(IneligibleReason::Deregistered);
+        }
+
+        let balance = Self::balance(env.clone(), sentinel.clone());
+        if balance < Self::min_stake(env.clone()) {
+            return EligibilityStatus::Ineligible(IneligibleReason::BelowMinStake);
+        }
+
+        let lock_period: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LockPeriod)
+            .unwrap_or(0);
+        let staked_at: Map<Address, u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::StakedAt)
+            .unwrap_or_else(|| Map::new(&env));
+        let last_staked = staked_at.get(sentinel).unwrap_or(0);
+        let elapsed = u64::from(at_ledger).saturating_sub(last_staked);
+
+        if elapsed < lock_period {
+            return EligibilityStatus::Ineligible(IneligibleReason::LockPeriodActive);
+        }
+
+        EligibilityStatus::Eligible
     }
 }
 
