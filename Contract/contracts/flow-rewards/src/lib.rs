@@ -7,12 +7,15 @@
 //! treasury, and earned and claimed totals are stored independently.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Map, Symbol,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Map, Symbol, Vec,
 };
 
 /// Supported reward roles.
 pub const ROLE_SUBMITTER: Symbol = symbol_short!("submitter");
 pub const ROLE_VERIFIER: Symbol = symbol_short!("verifier");
+
+/// Maximum number of grants accepted by one `grant_batch` call.
+pub const MAX_BATCH: u32 = 20;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -30,6 +33,8 @@ pub enum Error {
     InsufficientTreasury = 2,
     /// The claim exceeds the recipient's claimable balance.
     InsufficientClaimable = 3,
+    /// A grant batch is empty or larger than `MAX_BATCH`.
+    InvalidBatchSize = 6,
 }
 
 #[contracttype]
@@ -45,6 +50,8 @@ pub enum DataKey {
     Claimed,
     /// `asset` → treasury funds available for new grants.
     Treasury,
+    /// The current rewards admin.
+    Admin,
 }
 
 #[contract]
@@ -104,33 +111,57 @@ impl FlowRewards {
         }
         admin.require_auth();
 
-        let grant_key = DataKey::GrantId(grant_id);
-        if env.storage().persistent().has(&grant_key) {
-            return Err(Error::DuplicateGrant);
-        }
+        Self::apply_grant(&env, recipient, asset, amount, grant_id)
+    }
 
-        let mut granted: Map<Address, i128> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Granted)
-            .unwrap_or_else(|| Map::new(&env));
-        let current = granted.get(recipient.clone()).unwrap_or(0);
-        granted.set(recipient.clone(), current + amount);
-        let mut funds = treasury(&env);
-        let available = funds.get(asset.clone()).unwrap_or(0);
-        if amount > available {
-            return Err(Error::InsufficientTreasury);
+    /// Record up to `MAX_BATCH` grants in one call. Each entry is
+    /// `(recipient, role, asset, amount, grant_id)` and goes through the same
+    /// checks as `grant`. Any failing entry aborts the whole call, so no
+    /// partial batch is ever recorded.
+    pub fn grant_batch(
+        env: Env,
+        admin: Address,
+        entries: Vec<(Address, Symbol, Address, i128, u64)>,
+    ) -> Result<(), Error> {
+        if entries.is_empty() || entries.len() > MAX_BATCH {
+            return Err(Error::InvalidBatchSize);
         }
-        funds.set(asset.clone(), available - amount);
-        env.storage().instance().set(&DataKey::Treasury, &funds);
+        admin.require_auth();
 
-        let mut granted = balances(&env, &DataKey::Granted);
-        let key = (recipient, asset);
-        let current = granted.get(key.clone()).unwrap_or(0);
-        granted.set(key, current + amount);
-        env.storage().instance().set(&DataKey::Granted, &granted);
-        env.storage().persistent().set(&grant_key, &true);
+        for (recipient, role, asset, amount, grant_id) in entries.iter() {
+            if amount <= 0 {
+                return Err(Error::InvalidAmount);
+            }
+            if !Self::is_supported_role(&role) {
+                return Err(Error::UnsupportedRole);
+            }
+            if env.storage().persistent().has(&DataKey::GrantId(grant_id)) {
+                return Err(Error::DuplicateGrant);
+            }
+            Self::apply_grant(&env, recipient, asset, amount, grant_id)?;
+        }
         Ok(())
+    }
+
+    /// Set the rewards admin and emit an `("admin", "changed")` event carrying
+    /// the old admin (`None` on first set) and the new one. The current admin
+    /// must authorize a change; the first set is authorized by the new admin.
+    pub fn set_admin(env: Env, new_admin: Address) {
+        let old: Option<Address> = env.storage().instance().get(&DataKey::Admin);
+        match &old {
+            Some(current) => current.require_auth(),
+            None => new_admin.require_auth(),
+        }
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            (symbol_short!("admin"), symbol_short!("changed")),
+            (old, new_admin),
+        );
+    }
+
+    /// The current rewards admin, if one has been set.
+    pub fn admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Admin)
     }
 
     /// Claim all unclaimed rewards. Only the recipient can authorize this,
@@ -214,6 +245,42 @@ impl FlowRewards {
 }
 
 impl FlowRewards {
+    fn apply_grant(
+        env: &Env,
+        recipient: Address,
+        asset: Address,
+        amount: i128,
+        grant_id: u64,
+    ) -> Result<(), Error> {
+        let grant_key = DataKey::GrantId(grant_id);
+        if env.storage().persistent().has(&grant_key) {
+            return Err(Error::DuplicateGrant);
+        }
+
+        let mut granted: Map<Address, i128> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Granted)
+            .unwrap_or_else(|| Map::new(env));
+        let current = granted.get(recipient.clone()).unwrap_or(0);
+        granted.set(recipient.clone(), current + amount);
+        let mut funds = treasury(env);
+        let available = funds.get(asset.clone()).unwrap_or(0);
+        if amount > available {
+            return Err(Error::InsufficientTreasury);
+        }
+        funds.set(asset.clone(), available - amount);
+        env.storage().instance().set(&DataKey::Treasury, &funds);
+
+        let mut granted = balances(env, &DataKey::Granted);
+        let key = (recipient, asset);
+        let current = granted.get(key.clone()).unwrap_or(0);
+        granted.set(key, current + amount);
+        env.storage().instance().set(&DataKey::Granted, &granted);
+        env.storage().persistent().set(&grant_key, &true);
+        Ok(())
+    }
+
     fn is_supported_role(role: &Symbol) -> bool {
         *role == ROLE_SUBMITTER || *role == ROLE_VERIFIER
     }

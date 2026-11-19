@@ -52,6 +52,8 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, 
 pub enum Error {
     /// A zero date is reserved and never valid for a daily record.
     InvalidDate = 1,
+    /// A daily index value must be strictly positive.
+    NonPositiveValue = 20,
     /// The supplied window is empty or non-increasing: `valid_until <= valid_from`.
     /// Without a window there is nothing to compare `query_ts` against.
     InvalidWindow = 2,
@@ -134,6 +136,9 @@ impl KovaraIndex {
         // 1. Pure checks, before auth and before any write.
         if date == 0 {
             return Err(Error::InvalidDate);
+        }
+        if value <= 0 {
+            return Err(Error::NonPositiveValue);
         }
         let key = DataKey::DailyIndex(country, date);
         if env.storage().persistent().has(&key) {
@@ -222,6 +227,9 @@ impl KovaraIndex {
         }
         if query_ts >= valid_until {
             return Err(Error::StaleSubmission);
+        }
+        if value <= 0 {
+            return Err(Error::NonPositiveValue);
         }
         let key = DataKey::DailyIndex(country.clone(), date);
         if env.storage().persistent().has(&key) {
@@ -492,6 +500,28 @@ mod tests {
             KovaraIndexClient::new(env, &contract_id),
             Address::generate(env),
         )
+    }
+
+    #[test]
+    fn non_positive_values_are_rejected_before_persistence() {
+        let env = Env::default();
+        let (client, updater) = deploy(&env);
+        let country = Symbol::new(&env, "NG");
+        env.mock_all_auths();
+
+        assert_eq!(
+            client.try_set_daily_index(&updater, &country, &1, &0),
+            Err(Ok(Error::NonPositiveValue))
+        );
+        assert_eq!(
+            client.try_set_daily_index(&updater, &country, &1, &-5),
+            Err(Ok(Error::NonPositiveValue))
+        );
+        assert_eq!(
+            client.try_set_daily_index_windowed(&updater, &country, &1, &0, &1_000, &2_000, &1_500),
+            Err(Ok(Error::NonPositiveValue))
+        );
+        assert_eq!(client.get_daily_index(&country, &1), None);
     }
 
     #[test]
