@@ -12,7 +12,18 @@ export interface TipEventContext {
   txHash: string;
   ledgerSeq: number;
   timestamp: Date;
-}/**
+}
+
+/**
+ * Deleted-post rule: a tip that references a soft-deleted post is **rejected**.
+ * Nothing is inserted and no total changes, in one rolled-back transaction, so a
+ * deleted post's `tip_total` always equals the tips recorded while it was
+ * active. A missing post is rejected the same way.
+ */
+export const DELETED_POST_TIP_POLICY = "reject" as const;
+
+/** Result of handling a tip delivery. */
+export type TipOutcome = "recorded" | "duplicate" | "rejected_missing" | "rejected_deleted";/**
  * Handle a Follow event.
  *
  * Inserts a directed edge (follower → followee) into the follow graph.
@@ -71,7 +82,7 @@ export async function handleTip(
   pool: Pool,
   event: TipEvent,
   context: TipEventContext
-): Promise<void> {
+): Promise<TipOutcome> {
   const { tipper, post_id, amount, fee } = event;
   const { txHash, timestamp } = context;
 
@@ -82,16 +93,24 @@ export async function handleTip(
       await client.query("BEGIN");
       await client.query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE");
 
-      // Check that the post exists before attempting update
+      // Lock the row and read its deleted state, so a missing post and a
+      // soft-deleted one can be told apart and both are rejected atomically.
       const postCheck = await client.query(
-        "SELECT id FROM posts WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+        "SELECT id, deleted_at FROM posts WHERE id = $1 FOR UPDATE",
         [post_id.toString()]
       );
       if (postCheck.rowCount === 0) {
         await client.query("ROLLBACK");
-        console.warn(`Post ${post_id} not found or deleted, skipping tip`);
+        console.warn(`Post ${post_id} not found, skipping tip`);
         client.release();
-        return;
+        return "rejected_missing";
+      }
+      const postRow = (postCheck.rows?.[0] ?? {}) as { deleted_at?: Date | string | null };
+      if (postRow.deleted_at !== null && postRow.deleted_at !== undefined) {
+        await client.query("ROLLBACK");
+        console.warn(`Post ${post_id} is deleted, tip rejected (${DELETED_POST_TIP_POLICY})`);
+        client.release();
+        return "rejected_deleted";
       }
 
       // Insert tip record (idempotent via tx_hash unique constraint)
@@ -117,7 +136,7 @@ export async function handleTip(
         console.log(`Tip already processed for tx ${txHash} (idempotent skip)`);
         await client.query("COMMIT");
         client.release();
-        return;
+        return "duplicate";
       }
 
       // Increment tip_total on post
@@ -138,7 +157,7 @@ export async function handleTip(
 
       await client.query("COMMIT");
       client.release();
-      return;
+      return "recorded";
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});
       client.release();
@@ -155,6 +174,7 @@ export async function handleTip(
       throw error;
     }
   }
+  throw new Error(`Tip handling for post ${post_id} exhausted ${MAX_RETRIES} attempts`);
 }
 
 export function createMockTipEvent(

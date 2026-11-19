@@ -1,4 +1,10 @@
 import http from "http";
+import express from "express";
+import request from "supertest";
+import type { Pool } from "pg";
+import { createSearchRouter, readCategory } from "../search-router";
+import { ResponseCache } from "../../cache/response-cache";
+import type { PostgresSearchStore } from "../../search/store";
 import { AddressInfo } from "net";
 import { createApp } from "../index";
 import { Database } from "../../db";
@@ -181,5 +187,67 @@ describe("stable search pagination ordering (BE-032)", () => {
     expect(compareHits(hit("profiles", "G1", "same"), hit("profiles", "G2", "same"))).toBeLessThan(0);
     expect(compareHits(hit("posts", "1", "x", 2), hit("profiles", "G1", "x", 1))).toBeLessThan(0); // score first
     expect(compareHits(hit("categories", "a"), hit("posts", "1"))).toBeLessThan(0); // entity name order
+describe("GET /api/v1/search category filter", () => {
+  function makeApp() {
+    const search = jest.fn().mockResolvedValue({
+      hits: [
+        { entity: "categories", id: "news", title: "news", snippet: "", score: 1, attributes: { category: "news" } },
+        { entity: "categories", id: "tips", title: "tips", snippet: "", score: 0.9, attributes: { category: "tips" } },
+        { entity: "posts", id: "1", title: "Post", snippet: "", score: 0.8, attributes: { id: "1" } },
+      ],
+      total: 3,
+      limit: 20,
+      offset: 0,
+      hasMore: false,
+      normalizedQuery: "stellar",
+    });
+    const router = createSearchRouter({
+      pool: {} as Pool,
+      store: { search } as unknown as PostgresSearchStore,
+      cache: new ResponseCache({ ttlMs: 1_000, readEpoch: async () => 0 }),
+    });
+    const app = express();
+    app.use("/api/v1/search", router);
+    return { app, search };
+  }
+
+  it("keeps the unfiltered behaviour when category is omitted", async () => {
+    const { app, search } = makeApp();
+    const res = await request(app).get("/api/v1/search?q=stellar");
+    expect(res.status).toBe(200);
+    expect(res.body.hits).toHaveLength(3);
+    expect(search.mock.calls[0][1].category).toBeUndefined();
+  });
+
+  it("passes a supported category to the store and narrows category hits", async () => {
+    const { app, search } = makeApp();
+    const res = await request(app).get("/api/v1/search?q=stellar&category=News");
+    expect(res.status).toBe(200);
+    expect(search.mock.calls[0][1].category).toBe("news");
+    const ids = res.body.hits.map((h: { id: string }) => h.id);
+    expect(ids).toEqual(["news", "1"]);
+  });
+
+  it("rejects an unsupported category with INVALID_CATEGORY", async () => {
+    const { app, search } = makeApp();
+    for (const bad of ["bad%20category!", "a".repeat(33), "-leading"]) {
+      const res = await request(app).get(`/api/v1/search?q=stellar&category=${bad}`);
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe("INVALID_CATEGORY");
+    }
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it("does not share cache entries between different categories", async () => {
+    const { app, search } = makeApp();
+    await request(app).get("/api/v1/search?q=stellar&category=news");
+    await request(app).get("/api/v1/search?q=stellar&category=tips");
+    expect(search).toHaveBeenCalledTimes(2);
+  });
+
+  it("readCategory treats blank as no filter and arrays as invalid", () => {
+    expect(readCategory(undefined)).toBeUndefined();
+    expect(readCategory("  ")).toBeUndefined();
+    expect(() => readCategory(["a", "b"])).toThrow();
   });
 });
