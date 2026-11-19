@@ -176,12 +176,25 @@ describe("parseStartLedger", () => {
 describe("parseStellarRpcUrl", () => {
   it("accepts an http(s) endpoint and defaults to testnet", () => {
     expect(parseStellarRpcUrl("https://rpc.example.org")).toBe("https://rpc.example.org");
+    expect(parseStellarRpcUrl("http://localhost:8000")).toBe("http://localhost:8000");
     expect(parseStellarRpcUrl(undefined)).toBe(DEFAULT_STELLAR_RPC_URL);
+    expect(parseStellarRpcUrl("  ")).toBe(DEFAULT_STELLAR_RPC_URL);
   });
 
-  it("rejects a non-http endpoint", () => {
+  it("normalizes a trailing slash and surrounding whitespace", () => {
+    expect(parseStellarRpcUrl(" https://rpc.example.org/ ")).toBe("https://rpc.example.org");
+    expect(parseStellarRpcUrl("https://rpc.example.org///")).toBe("https://rpc.example.org");
+  });
+
+  it("rejects a non-http endpoint or an unparseable URL", () => {
     expect(() => parseStellarRpcUrl("ftp://rpc.example.org")).toThrow(/http or https/);
-    expect(() => parseStellarRpcUrl("not a url")).toThrow(/not a valid URL/);
+    for (const invalid of ["not a url", "https://", "http://bad host", "https://rpc example.org"]) {
+      expect(() => parseStellarRpcUrl(invalid)).toThrow(/not a valid URL/);
+    }
+  });
+
+  it("rejects malformed hosts with an actionable message", () => {
+    expect(() => parseStellarRpcUrl("https:///path")).toThrow(/STELLAR_RPC_URL.*malformed host/);
   });
 });
 

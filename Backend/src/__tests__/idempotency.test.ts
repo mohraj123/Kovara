@@ -1,5 +1,6 @@
 import {
   buildIdempotencyKey,
+  deriveEventId,
   IDEMPOTENCY_KEY_PREFIX,
   IDEMPOTENCY_KEY_VERSION,
   isSameEvent,
@@ -195,5 +196,20 @@ describe("runOnce", () => {
     await expect(runOnce(store, "", work)).rejects.toThrow(/Invalid idempotency key/);
     expect(store.claimCalls).toBe(0);
     expect(work).not.toHaveBeenCalled();
+  });
+});
+
+describe("deriveEventId", () => {
+  const fields = { ledger: 100, txHash: "abc123", topic: ["tip"], value: "AAAA" };
+
+  it("is stable and distinguishes differing fields", () => {
+    expect(deriveEventId(fields)).toBe(deriveEventId({ ...fields }));
+    expect(deriveEventId({ ...fields, value: "BBBB" })).not.toBe(deriveEventId(fields));
+    expect(deriveEventId({ ...fields, ledger: 101 })).not.toBe(deriveEventId(fields));
+  });
+
+  it("rejects incomplete identity data", () => {
+    expect(() => deriveEventId({ ...fields, txHash: "" })).toThrow(/txHash/);
+    expect(() => deriveEventId({ ...fields, ledger: -1 })).toThrow(/ledger/);
   });
 });

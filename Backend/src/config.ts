@@ -247,20 +247,30 @@ export function parseStellarRpcUrl(raw: string | undefined): string {
   const value = raw?.trim() ?? "";
   if (value === "") return DEFAULT_STELLAR_RPC_URL;
 
-  let scheme: string;
+  let parsed: URL;
   try {
-    scheme = new URL(value).protocol.toLowerCase();
+    parsed = new URL(value);
   } catch {
     throw new ConfigError([`STELLAR_RPC_URL is not a valid URL: "${value}"`]);
   }
 
+  const scheme = parsed.protocol.toLowerCase();
   if (scheme !== "http:" && scheme !== "https:") {
     throw new ConfigError([
       `STELLAR_RPC_URL must be an http or https endpoint, but was "${value}"`,
     ]);
   }
 
-  return value;
+  // `new URL("https:///path")` does not throw: it treats `path` as the host.
+  // Such a value would fail on the first RPC call with an opaque driver error,
+  // so reject it at startup with the variable name and the offending value.
+  if (/^[a-z][a-z0-9+.-]*:\/\/\//i.test(value) || parsed.hostname === "") {
+    throw new ConfigError([`STELLAR_RPC_URL has a malformed host: "${value}"`]);
+  }
+
+  // Normalize a bare trailing slash so downstream clients do not produce
+  // double-slash request paths when they append an endpoint.
+  return value.replace(/\/+$/, "");
 }
 
 // ── Database pool ────────────────────────────────────────────────────────────
