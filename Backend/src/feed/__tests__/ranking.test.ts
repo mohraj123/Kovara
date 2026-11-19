@@ -5,6 +5,7 @@ import {
   engagementScore,
   parseFeedLimit,
   parseFeedOffset,
+  parseTrendingWindowDays,
   rankFeed,
   validateFeedMode,
 } from "../ranking";
@@ -244,5 +245,12 @@ describe("feed input validation", () => {
     expect(() => parseFeedLimit(101)).toThrow(FeedValidationError);
     expect(parseFeedOffset(undefined)).toBe(0);
     expect(() => parseFeedOffset(-1)).toThrow(FeedValidationError);
+  });
+
+  it("validates the trending window and exposes it in the ruleset", () => {
+    expect(parseTrendingWindowDays(undefined)).toBe(7);
+    expect(parseTrendingWindowDays("14")).toBe(14);
+    expect(() => parseTrendingWindowDays("0")).toThrow(FeedValidationError);
+    expect(() => parseTrendingWindowDays("366")).toThrow(FeedValidationError);
   });
 });

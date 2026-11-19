@@ -257,4 +257,13 @@ describe("AuditStore.listEntries (#658)", () => {
     expect(page.total).toBe(0);
     expect(page.hasMore).toBe(false);
   });
+
+  it("clamps stable pagination bounds and preserves the total-order query", async () => {
+    const pool = stubPool([], 0);
+    const store = new AuditStore(asPool(pool));
+    const page = await store.listEntries({ limit: 999, offset: -5 });
+    expect(page.limit).toBe(500);
+    expect(page.offset).toBe(0);
+    expect(pool.queries[1].text).toMatch(/ORDER BY occurred_at DESC, id DESC/i);
+  });
 });

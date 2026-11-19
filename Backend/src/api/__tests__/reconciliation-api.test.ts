@@ -106,4 +106,32 @@ describe("reconciliation reporting API (#669)", () => {
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({ code: "LIMIT_EXCEEDED" });
   });
+
+  it("paginates discrepancies on a run", async () => {
+    const store = makeStore({
+      getRun: jest.fn(async () => ({
+        run: {
+          runDate: "2026-09-25",
+          status: "discrepancies" as const,
+          sourceGroups: 3,
+          aggregateGroups: 3,
+          matchedGroups: 2,
+          discrepancyCount: 3,
+          error: null,
+          startedAt: new Date(),
+          completedAt: new Date(),
+        },
+        discrepancies: [],
+        total: 3,
+        limit: 2,
+        offset: 2,
+        has_more: false,
+      })),
+    });
+
+    const res = await request(makeApp(store)).get("/reconciliation/runs/2026-09-25?limit=2&offset=2");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ total: 3, limit: 2, offset: 2, has_more: false });
+    expect(store.getRun).toHaveBeenCalledWith("2026-09-25", 2, 2);
+  });
 });

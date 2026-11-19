@@ -62,13 +62,35 @@ export function createReconciliationRouter(store: ReconciliationQueryStore): Rou
       return;
     }
 
-    const result = await store.getRun(runDate);
+    const rawLimit = req.query.limit !== undefined ? Number(req.query.limit) : 20;
+    const rawOffset = req.query.offset !== undefined ? Number(req.query.offset) : 0;
+    if (!Number.isInteger(rawLimit) || rawLimit < 1) {
+      res.status(400).json({ error: "limit must be a positive integer", code: "INVALID_QUERY" });
+      return;
+    }
+    if (rawLimit > MAX_LIMIT) {
+      res.status(400).json({ error: `limit cannot exceed ${MAX_LIMIT}`, code: "LIMIT_EXCEEDED" });
+      return;
+    }
+    if (!Number.isInteger(rawOffset) || rawOffset < 0) {
+      res.status(400).json({ error: "offset must be a non-negative integer", code: "INVALID_QUERY" });
+      return;
+    }
+
+    const result = await store.getRun(runDate, rawLimit, rawOffset);
     if (!result) {
       res.status(404).json({ error: "Reconciliation run not found", code: "NOT_FOUND" });
       return;
     }
 
-    res.json({ ...result.run, discrepancies: result.discrepancies });
+    res.json({
+      ...result.run,
+      discrepancies: result.discrepancies,
+      total: result.total ?? result.discrepancies.length,
+      limit: result.limit ?? rawLimit,
+      offset: result.offset ?? rawOffset,
+      has_more: result.has_more ?? rawOffset + result.discrepancies.length < (result.total ?? result.discrepancies.length),
+    });
   });
 
   return router;

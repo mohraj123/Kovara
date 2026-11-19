@@ -71,6 +71,20 @@ describe("GET /feed (#676)", () => {
     expect(res.body).toMatchObject({ code: "LIMIT_EXCEEDED" });
   });
 
+  it("validates the trending window and passes a valid override", async () => {
+    const invalid = await request(makeApp([])).get("/feed?mode=trending&trending_window_days=0");
+    expect(invalid.status).toBe(400);
+    expect(invalid.body).toMatchObject({ code: "INVALID_QUERY" });
+
+    const excessive = await request(makeApp([])).get("/feed?mode=trending&trending_window_days=366");
+    expect(excessive.status).toBe(400);
+    expect(excessive.body).toMatchObject({ code: "LIMIT_EXCEEDED" });
+
+    const valid = await request(makeApp([])).get("/feed?mode=trending&trending_window_days=14");
+    expect(valid.status).toBe(200);
+    expect(valid.body.ranking.trending_window_days).toBe(14);
+  });
+
   it("returns an empty page rather than a 404 for a feed with no posts", async () => {
     const res = await request(makeApp([])).get("/feed");
     expect(res.status).toBe(200);

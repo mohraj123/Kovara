@@ -77,6 +77,16 @@ describe("poolLiquidity (#677)", () => {
     expect(poolLiquidity(pool({ balance: 0n })).active).toBe(false);
   });
 
+  it("treats missing or malformed balances as zero rather than failing", () => {
+    const missing = poolLiquidity(pool({ balance: null as unknown as bigint }));
+    expect(missing.balance).toBe("0");
+    expect(missing.active).toBe(false);
+
+    const malformed = poolLiquidity(pool({ balance: "not-an-amount" as unknown as bigint }));
+    expect(malformed.balance).toBe("0");
+    expect(malformed.active).toBe(false);
+  });
+
   it("marks a pool operational only when its threshold can be met", () => {
     expect(poolLiquidity(pool({ admins: [ADMIN_A], threshold: 1 })).operational).toBe(true);
     expect(poolLiquidity(pool({ admins: [], threshold: 1 })).operational).toBe(false);

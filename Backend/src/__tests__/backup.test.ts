@@ -177,4 +177,27 @@ describe("parseManifest", () => {
       parseManifest(JSON.stringify({ ...manifest(), tables: [{ table: "posts", rows: 1.5 }] }))
     ).toThrow(/rows/);
   });
+
+  it("rejects unsupported manifest versions", () => {
+    expect(() =>
+      parseManifest(JSON.stringify(manifest({ manifestVersion: 999 })))
+    ).toThrow(/not supported/);
+  });
+
+  it("rejects duplicate table entries", () => {
+    expect(() =>
+      parseManifest(JSON.stringify(manifest({
+        tables: [{ table: "posts", rows: 3 }, { table: "posts", rows: 4 }],
+      })))
+    ).toThrow(/duplicate table/);
+  });
+
+  it("rejects invalid timestamps and empty database names", () => {
+    expect(() =>
+      parseManifest(JSON.stringify(manifest({ createdAt: "not-a-date" })))
+    ).toThrow(/createdAt/);
+    expect(() =>
+      parseManifest(JSON.stringify(manifest({ database: "" })))
+    ).toThrow(/database/);
+  });
 });

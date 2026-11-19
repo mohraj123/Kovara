@@ -7,6 +7,7 @@ import {
   FeedValidationError,
   parseFeedLimit,
   parseFeedOffset,
+  parseTrendingWindowDays,
   rankFeed,
   validateFeedMode,
 } from "./ranking";
@@ -46,6 +47,11 @@ export function createFeedRouter(db: Database): Router {
       const mode = validateFeedMode(req.query.mode);
       const limit = parseFeedLimit(req.query.limit);
       const offset = parseFeedOffset(req.query.offset);
+      const rawWindow =
+        req.query.trending_window_days !== undefined
+          ? req.query.trending_window_days
+          : req.query.window_days;
+      const trendingWindowDays = parseTrendingWindowDays(rawWindow);
 
       // `author` scopes the feed to one wallet, so it is validated as a Stellar
       // address rather than coerced with String() (issue #665).
@@ -68,7 +74,7 @@ export function createFeedRouter(db: Database): Router {
         limit,
         offset,
         weights: DEFAULT_FEED_WEIGHTS,
-        trendingWindowDays: DEFAULT_TRENDING_WINDOW_DAYS,
+        trendingWindowDays,
       });
 
       res.json({
