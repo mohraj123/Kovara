@@ -27,6 +27,17 @@ export interface QuorumVote {
   active?: boolean;
 }
 
+/**
+ * Canonicalize formatting variants of a Stellar account address.
+ *
+ * Non-address voter identifiers are left untouched for compatibility with
+ * callers that use opaque test or migration identifiers.
+ */
+export function normalizeVoterIdentity(voter: string): string {
+  const trimmed = voter.trim();
+  return /^G[A-Z2-7]{55}$/i.test(trimmed) ? trimmed.toUpperCase() : voter;
+}
+
 /** Thresholds a submission must clear. */
 export interface QuorumConfig {
   /** Minimum number of distinct active voters before any ratio is consulted. */
@@ -177,21 +188,23 @@ export function resolveActiveVotes(votes: readonly QuorumVote[]): QuorumVote[] {
   for (const vote of votes) {
     if (vote.active === false) continue;
 
-    const existing = latest.get(vote.voter);
+    const voter = normalizeVoterIdentity(vote.voter);
+    const normalizedVote = voter === vote.voter ? vote : { ...vote, voter };
+    const existing = latest.get(voter);
     if (existing === undefined) {
-      latest.set(vote.voter, vote);
+      latest.set(voter, normalizedVote);
       continue;
     }
 
     const existingAt = existing.votedAt ?? "";
     const candidateAt = vote.votedAt ?? "";
     if (candidateAt > existingAt) {
-      latest.set(vote.voter, vote);
+      latest.set(voter, normalizedVote);
     } else if (candidateAt === existingAt && vote.choice > existing.choice) {
       // Deterministic tie-break. Without this, two entries with identical
       // timestamps resolve to whichever the caller's array happened to list
       // first, so the same votes could produce two different results.
-      latest.set(vote.voter, vote);
+      latest.set(voter, normalizedVote);
     }
   }
 
