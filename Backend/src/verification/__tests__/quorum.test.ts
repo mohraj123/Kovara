@@ -193,6 +193,18 @@ describe("determinism", () => {
 });
 
 describe("resolveActiveVotes", () => {
+  it("counts alternate Stellar address formatting as one voter", () => {
+    const address = "GAZJ2EQV2ES6R5BLUNXMNFR5VN3HQF4KXJ2GM5Q7GQHT5XBC2CRX3GK3";
+    const resolved = resolveActiveVotes([
+      { voter: address, choice: "approve" },
+      { voter: ` ${address.toLowerCase()} `, choice: "reject" },
+    ]);
+
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]).toMatchObject({ voter: address, choice: "reject" });
+    expect(evaluateQuorum(resolved).totalActive).toBe(1);
+  });
+
   it("counts a duplicated voter once", () => {
     const resolved = resolveActiveVotes([
       { voter: "alice", choice: "approve", votedAt: "2026-01-01T00:00:00Z" },

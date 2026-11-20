@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { ApiErrorResponse } from "../contracts";
-import { isValidStellarAddress } from "./profiles";
+import { normalizeVoterIdentity } from "../../verification/quorum";
+import { isStellarAddress } from "../validation";
 
 /** A single community verification vote on a pending price submission. */
 export interface VerificationVote {
@@ -46,7 +47,9 @@ export function createVerificationVotesRouter(): Router {
         return;
       }
 
-      if (typeof voter !== "string" || !isValidStellarAddress(voter)) {
+      const normalizedVoter =
+        typeof voter === "string" ? normalizeVoterIdentity(voter) : undefined;
+      if (!normalizedVoter || !isStellarAddress(normalizedVoter)) {
         res.status(400).json({
           error: "voter must be a valid Stellar address: starts with 'G', 56 alphanumeric characters",
           code: "INVALID_VOTER",
@@ -64,7 +67,7 @@ export function createVerificationVotesRouter(): Router {
 
       const vote: VerificationVote = {
         submissionId,
-        voter,
+        voter: normalizedVoter,
         choice: choice as "approve" | "reject",
         votedAt: new Date().toISOString(),
       };
@@ -74,7 +77,7 @@ export function createVerificationVotesRouter(): Router {
         votes = new Map();
         votesBySubmission.set(submissionId, votes);
       }
-      votes.set(voter, vote);
+      votes.set(normalizedVoter, vote);
 
       res.status(201).json({ vote });
     }

@@ -733,6 +733,17 @@ pub struct HistoryPage {
     pub has_more: bool,
 }
 
+/// Lifecycle and validity-window status for a stored submission at a query time.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubmissionExpiry {
+    pub status: SubmissionStatus,
+    pub valid_from: u64,
+    pub valid_until: u64,
+    pub is_fresh: bool,
+    pub is_expired: bool,
+}
+
 /// Result of a bounded submitter-index cleanup page.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -850,6 +861,21 @@ pub struct CategoryAllowlistRemoved {
     pub category: Symbol,
     pub admin: Address,
 }
+/// Emitted after the submitter attribution for a submission is corrected.
+#[contractevent]
+#[derive(Clone)]
+pub struct SubmissionMetadataUpdated {
+    #[topic]
+    pub country_iso: Symbol,
+    #[topic]
+    pub category: Symbol,
+    pub timestamp: u64,
+    pub actor: Address,
+    pub prior_submitter: Address,
+    pub new_submitter: Address,
+}
+
+// â”€â”€ Contract â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Emitted when the configured maximum validity window changes.
 #[contractevent]
@@ -1178,6 +1204,95 @@ impl PriceVault {
     }
 
     // ── Read entry points ────────────────────────────────────────────────
+    /// Correct the submitter attribution for a submission.
+    ///
+    /// The configured admin is the only actor permitted to make this audit
+    /// correction. The composite key and price are not modified, and both
+    /// submitter-history indexes are kept in sync with the corrected record.
+    pub fn update_submitter(
+        env: Env,
+        actor: Address,
+        country_iso: Symbol,
+        category: Symbol,
+        timestamp: u64,
+        new_submitter: Address,
+    ) -> Result<(), Error> {
+        actor.require_auth();
+        Self::require_admin(&env, &actor)?;
+
+        let key = DataKey::Price(country_iso.clone(), category.clone(), timestamp);
+        let mut submission: PriceSubmission = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotFound)?;
+        let prior_submitter = submission.submitter.clone();
+        if prior_submitter == new_submitter {
+            return Ok(());
+        }
+
+        submission.submitter = new_submitter.clone();
+        env.storage().persistent().set(&key, &submission);
+
+        let prior_key = DataKey::SubmitterIndex(prior_submitter.clone());
+        let prior_index: Vec<SubmitterEntry> = env
+            .storage()
+            .persistent()
+            .get(&prior_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut retained = Vec::new(&env);
+        for entry in prior_index.iter() {
+            if entry.country_iso != country_iso
+                || entry.category != category
+                || entry.timestamp != timestamp
+            {
+                retained.push_back(entry);
+            }
+        }
+        if retained.is_empty() {
+            env.storage().persistent().remove(&prior_key);
+        } else {
+            env.storage().persistent().set(&prior_key, &retained);
+        }
+
+        let new_key = DataKey::SubmitterIndex(new_submitter.clone());
+        let mut new_index: Vec<SubmitterEntry> = env
+            .storage()
+            .persistent()
+            .get(&new_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        if !new_index.iter().any(|entry| {
+            entry.country_iso == country_iso
+                && entry.category == category
+                && entry.timestamp == timestamp
+        }) {
+            new_index.push_back(SubmitterEntry {
+                country_iso: country_iso.clone(),
+                category: category.clone(),
+                timestamp,
+            });
+        }
+        env.storage().persistent().set(&new_key, &new_index);
+
+        SubmissionMetadataUpdated {
+            country_iso,
+            category,
+            timestamp,
+            actor,
+            prior_submitter,
+            new_submitter,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    // ── Read entry points ───────────────────────────────────────────────
+
+    /// Read a stored submission by its exact composite key.
+    ///
+    /// Returns the record regardless of whether it is currently fresh — use
+    // â”€â”€ Read entry points â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Read a stored submission by its exact composite key, fresh or not.
     pub fn get(
@@ -1268,6 +1383,32 @@ impl PriceVault {
         timestamp: u64,
     ) -> Option<SubmissionStatus> {
         Self::get(env, country_iso, category, timestamp).map(|s| s.status)
+    }
+
+    /// Read lifecycle and expiry information for a submission.
+    ///
+    /// Returns `None` only when the composite key is absent. Existing records
+    /// remain distinguishable after expiry, including their status and
+    /// exclusive `valid_until` timestamp.
+    pub fn get_expiry_status(
+        env: Env,
+        country_iso: Symbol,
+        category: Symbol,
+        valid_from: u64,
+        query_ts: u64,
+    ) -> Option<SubmissionExpiry> {
+        let submission: PriceSubmission = env.storage().persistent().get(&DataKey::Price(
+            country_iso,
+            category,
+            valid_from,
+        ))?;
+        Some(SubmissionExpiry {
+            status: submission.status,
+            valid_from: submission.valid_from,
+            valid_until: submission.valid_until,
+            is_fresh: submission.is_valid_at(query_ts),
+            is_expired: query_ts >= submission.valid_until,
+        })
     }
 
     /// All submissions for `(country_iso, category)`, in insertion order.
@@ -1623,6 +1764,116 @@ impl PriceVault {
             .instance()
             .get(&DataKey::SubmitterPolicy(submitter))
             .unwrap_or(true)
+    }
+
+    pub fn supported_countries(env: Env) -> Vec<Symbol> {
+        registry::countries(&env)
+    }
+
+    /// The supported cost-of-living basket categories.
+    pub fn supported_categories(env: Env) -> Vec<Symbol> {
+        registry::categories(&env)
+    }
+
+    /// The registry version this build was compiled against.
+    pub fn registry_version(_env: Env) -> u32 {
+        registry::VERSION
+    }
+
+    /// The payload schema version accepted by [`Self::submit`].
+    pub fn schema_version(_env: Env) -> u32 {
+        SCHEMA_VERSION
+    }
+
+    // â”€â”€ Pure helpers, callable off-chain â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    /// Add two `i128` values, failing safely on overflow.
+    ///
+    /// # Errors
+    /// * [`Error::ArithmeticOverflow`] â€” result would overflow `i128`.
+    pub fn safe_add(_env: Env, a: i128, b: i128) -> Result<i128, Error> {
+        guards::checked_add_i128(a, b)
+    }
+
+    /// Multiply two `i128` values, failing safely on overflow.
+    ///
+    /// # Errors
+    /// * [`Error::ArithmeticOverflowMul`] â€” result would overflow `i128`.
+    pub fn safe_mul(_env: Env, a: i128, b: i128) -> Result<i128, Error> {
+        guards::checked_mul_i128(a, b)
+    }
+
+    /// Validate a submit payload without committing any state.
+    ///
+    /// Lets SDK clients and cross-contract callers confirm a payload is
+    /// structurally sound before building or forwarding a transaction.
+    pub fn validate_submit_payload(
+        _env: Env,
+        country_iso: Symbol,
+        category: Symbol,
+        value: i128,
+        timestamp: u64,
+    ) -> Result<(), Error> {
+        payload::validate(
+            SUBMIT_SCHEMA,
+            &payload::SubmitPayload {
+                country_iso: &country_iso,
+                category: &category,
+                value,
+                timestamp,
+                schema_version: SCHEMA_VERSION,
+            },
+        )
+    }
+
+    // â”€â”€ Internal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    /// Load records for each timestamp in `timestamps`, skipping any that are
+    /// absent (defensive â€” under normal operation every indexed timestamp has
+    /// a record).
+    fn collect_submissions(
+        env: &Env,
+        country_iso: &Symbol,
+        category: &Symbol,
+        timestamps: &Vec<u64>,
+    ) -> Vec<PriceSubmission> {
+        let mut result = Vec::new(env);
+        for ts in timestamps.iter() {
+            let key = DataKey::Price(country_iso.clone(), category.clone(), ts);
+            if let Some(submission) = env.storage().persistent().get::<DataKey, PriceSubmission>(&key)
+            {
+                result.push_back(submission);
+            }
+        }
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        Ok(())
+    }
+}
+
+// â”€â”€ Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    /// The configured admin, or `None` when the contract is unconfigured.
+    pub fn admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Admin)
+    }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{
+        testutils::{Address as _, Events as _},
+        Env,
+    };
+
+    /// Hand the admin role to a new address.
+    ///
+    /// # Errors
+    /// * [`Error::Unauthorized`] — caller is not the current admin.
+    pub fn set_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        require_admin(&env, &admin)?;
+        new_admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        Ok(())
     }
 
     /// # Restrict which countries may receive submissions
