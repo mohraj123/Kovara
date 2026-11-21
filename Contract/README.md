@@ -9,6 +9,40 @@ The four Kovara Soroban contracts, as a reproducible Rust Cargo workspace:
 | FlowRewards  | `kovara-flow-rewards`  | Releases XLM / Stellar USDC to verified submitters and verifiers           |
 | KovaraIndex  | `kovara-index`         | Aggregates verified prices into the daily `KVI` per country                |
 
+## FlowRewards reward-history retention
+
+FlowRewards keeps detailed `GrantRecord` entries and their `GrantIds` index
+only up to `MAX_GRANT_HISTORY` (100) grants. A record is settled when its
+entire amount is either claimed or revoked. `archive_history(limit)` can
+permissionlessly archive up to 20 settled records per call; when the history
+is full, a new grant automatically archives one settled record to make room.
+Archival removes the detailed record and its index entry. If the history is
+full of unsettled grants, a new grant fails with `HistoryFull` rather than
+discarding claimable rewards or revocation state.
+
+Archival accumulates grant count, original granted amount, claimed amount, and
+revoked amount by `(recipient, asset)` in `ArchivedTotals`. The aggregate
+`total_granted`, `total_claimed`, and `claimable` values are maintained
+independently of detailed records and remain unchanged by archival. Use
+`archived_totals(recipient, asset)` for sums specifically covering archived
+records. The original amount is recorded as granted and revocations are
+reported separately. Per-grant details, including `revoked_amount`, are no
+longer available after that grant is archived.
+
+To keep duplicate protection compact after archived IDs are removed, grant
+IDs may start at any value, but each subsequent grant must use the immediately
+following ID. This also applies to the order of entries in `grant_batch`.
+The ID watermark continues to recognize archived IDs as processed.
+
+Persistent grant records and ID markers have their TTL extended to 500,000
+ledgers on creation or update; the ID index and instance storage TTL are
+renewed on contract calls. A detail record that nevertheless expires or is
+missing is skipped by claims and does not invalidate aggregate balances;
+revocation of a missing detail returns `GrantNotFound`. Lifetime
+per-recipient balances and archived aggregates remain in instance storage.
+As with other Soroban instance state, totals still depend on the contract
+instance being kept alive. Storage is bounded for per-grant history, not for
+the number of distinct recipient/asset aggregate pairs.
 ## FlowRewards admin transfer
 
 `set_admin(new_admin)` configures the initial admin and cannot replace an
