@@ -14,9 +14,9 @@ fn balances_are_tracked_per_asset_and_recipient() {
 
     client.fund_treasury(&admin, &xlm, &1_000);
     client.fund_treasury(&admin, &usdc, &1_000);
-    client.grant(&admin, &alice, &xlm, &symbol_short!("submit"), &100);
-    client.grant(&admin, &alice, &usdc, &symbol_short!("submit"), &40);
-    client.grant(&admin, &bob, &xlm, &symbol_short!("verify"), &7);
+    client.grant(&admin, &alice, &xlm, &symbol_short!("submit"), &100, &1);
+    client.grant(&admin, &alice, &usdc, &symbol_short!("submit"), &40, &2);
+    client.grant(&admin, &bob, &xlm, &symbol_short!("verify"), &7, &3);
 
     assert_eq!(client.total_granted(&alice, &xlm), 100);
     assert_eq!(client.total_granted(&alice, &usdc), 40);

@@ -213,7 +213,7 @@ export function normalizeEvent<T extends Record<string, unknown>>(
 
 /** Event topics the indexer dispatches; each carries a non-empty value. */
 const KNOWN_TOPICS: ReadonlySet<string> = new Set([
-  "profile_set", "post_created", "post_deleted", "like", "follow", "unfollow",
+  "profile_set", "like", "follow", "unfollow",
   "tip", "pool_created", "pool_deposit", "pool_withdraw",
 ]);
 

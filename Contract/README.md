@@ -9,6 +9,65 @@ The four Kovara Soroban contracts, as a reproducible Rust Cargo workspace:
 | FlowRewards  | `kovara-flow-rewards`  | Releases XLM / Stellar USDC to verified submitters and verifiers           |
 | KovaraIndex  | `kovara-index`         | Aggregates verified prices into the daily `KVI` per country                |
 
+## FlowRewards — paginated reward history (CT-10)
+
+`FlowRewards` releases rewards to verified submitters and verifiers. Every call
+to `grant` or `grant_batch` both updates the aggregate balance **and** appends
+the grant ID to a per-recipient index stored under
+`DataKey::RecipientIndex(recipient)`. The index is a `Vec<u64>` that grows by
+one entry per grant and is never modified in-place, so offset-based pagination
+is deterministic: a new grant appended after a page was handed to a caller
+never shifts earlier entries, and the same offset always addresses the same
+record.
+
+### `reward_history(recipient, offset, limit) → Vec<GrantRecord>`
+
+Returns a bounded page of `GrantRecord`s for `recipient`.
+
+| Parameter | Meaning |
+| --- | --- |
+| `offset` | Zero-based position in the per-recipient index to start from |
+| `limit` | Maximum entries to return; must be `1..=MAX_HISTORY_PAGE_SIZE` (50) |
+
+| Condition | Result |
+| --- | --- |
+| `limit == 0 \|\| limit > 50` | `Error::InvalidPageSize` |
+| `offset >= grant_count(recipient)` | empty `Vec` |
+| otherwise | at most `limit` `GrantRecord` entries starting at `offset` |
+
+`limit` is capped at 50 so a single call cannot force unbounded storage reads
+for a recipient with thousands of grants; exceeding it fails loudly rather than
+being silently truncated.
+
+Each `GrantRecord` holds the full state at read time:
+
+| Field | Meaning |
+| --- | --- |
+| `recipient` | Authorised recipient of the reward |
+| `asset` | The Stellar asset address |
+| `amount` | Total amount originally granted |
+| `claimed` | Amount claimed so far |
+| `revoked` | Amount revoked so far |
+
+### `grant_count(recipient) → u32`
+
+Returns the total number of grants recorded for `recipient`. Callers can use
+this to compute the number of available pages before iterating:
+
+```text
+pages = ceil(grant_count(recipient) / page_size)
+```
+
+### Storage layout
+
+| Key | Stored value | Purpose |
+| --- | --- | --- |
+| `DataKey::RecipientIndex(recipient)` | `Vec<u64>` of grant IDs | Append-only per-recipient index — stable offsets |
+| `DataKey::GrantRecord(grant_id)` | `GrantRecord` | Full record per grant — updated by `claim` and `revoke` |
+| `DataKey::GrantId(grant_id)` | `bool` | Deduplication sentinel |
+| `DataKey::Granted` | `Map<(Address, Address), i128>` | Running total granted per (recipient, asset) |
+| `DataKey::Claimed` | `Map<(Address, Address), i128>` | Running total claimed per (recipient, asset) |
+| `DataKey::Treasury` | `Map<Address, i128>` | Available treasury funds per asset |
 ## FlowRewards reward-history retention
 
 FlowRewards keeps detailed `GrantRecord` entries and their `GrantIds` index

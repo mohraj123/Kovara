@@ -6,9 +6,7 @@ import {
   parseStellarAddress,
   sendValidationError,
   parseOptionalStellarAddress,
-  parseStellarAddress,
   parseUsername,
-  sendValidationError,
   ValidationResult,
 } from "../validation";
 
@@ -44,6 +42,9 @@ function serializeProfile(profile: Profile): ProfileResponse {
     username: profile.username ?? "",
     creator_token: profile.creator_token ?? "",
     updated_ledger: profile.updated_ledger ?? 0,
+  };
+}
+
 /** The fields a profile update may set, and whether each one is required. */
 interface ProfileUpdateBody {
   username: string;
