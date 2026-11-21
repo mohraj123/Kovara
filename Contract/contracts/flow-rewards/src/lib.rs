@@ -4,7 +4,6 @@
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Map, Symbol,
     Vec,
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Map, Symbol, Vec,
 };
 
 /// Supported reward roles.
@@ -27,12 +26,10 @@ pub enum Error {
     GrantNotFound = 7,
     GrantAlreadyClaimed = 8,
     GrantAlreadyRevoked = 9,
-    /// The grant exceeds the treasury funds available for the asset.
-    InsufficientTreasury = 2,
-    /// The claim exceeds the recipient's claimable balance.
-    InsufficientClaimable = 3,
     /// A grant batch is empty or larger than `MAX_BATCH`.
-    InvalidBatchSize = 6,
+    InvalidBatchSize = 10,
+    /// The caller is not authorized to perform the admin operation.
+    Unauthorized = 11,
 }
 
 #[contracttype]
@@ -44,6 +41,10 @@ pub enum DataKey {
     GrantId(u64),
     GrantRecord(u64),
     GrantIds,
+    /// The current rewards admin.
+    Admin,
+    /// The proposed rewards admin awaiting acceptance.
+    PendingAdmin,
 }
 
 #[contracttype]
@@ -54,8 +55,6 @@ pub struct GrantRecord {
     pub amount: i128,
     pub claimed: i128,
     pub revoked: i128,
-    /// The current rewards admin.
-    Admin,
 }
 
 #[contract]
@@ -171,20 +170,62 @@ impl FlowRewards {
         Ok(())
     }
 
-    /// Set the rewards admin and emit an `("admin", "changed")` event carrying
-    /// the old admin (`None` on first set) and the new one. The current admin
-    /// must authorize a change; the first set is authorized by the new admin.
-    pub fn set_admin(env: Env, new_admin: Address) {
+    /// Set the initial rewards admin. Later changes must use the two-step
+    /// proposal and acceptance flow.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         let old: Option<Address> = env.storage().instance().get(&DataKey::Admin);
-        match &old {
-            Some(current) => current.require_auth(),
-            None => new_admin.require_auth(),
+        if old.is_some() {
+            return Err(Error::Unauthorized);
         }
+        new_admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.events().publish(
             (symbol_short!("admin"), symbol_short!("changed")),
             (old, new_admin),
         );
+        Ok(())
+    }
+
+    /// Propose `new_admin` as the next rewards admin. The active admin remains
+    /// unchanged until the proposed address accepts; a new proposal replaces
+    /// any earlier pending proposal.
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let current: Option<Address> = env.storage().instance().get(&DataKey::Admin);
+        match current {
+            Some(current) if current == admin => {
+                env.storage()
+                    .instance()
+                    .set(&DataKey::PendingAdmin, &new_admin);
+                Ok(())
+            }
+            _ => Err(Error::Unauthorized),
+        }
+    }
+
+    /// Accept the pending rewards admin proposal. Only the proposed address
+    /// can accept, and acceptance clears the pending proposal.
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        new_admin.require_auth();
+        let pending: Option<Address> = env.storage().instance().get(&DataKey::PendingAdmin);
+        match pending {
+            Some(pending) if pending == new_admin => {
+                let old: Option<Address> = env.storage().instance().get(&DataKey::Admin);
+                env.storage().instance().set(&DataKey::Admin, &new_admin);
+                env.storage().instance().remove(&DataKey::PendingAdmin);
+                env.events().publish(
+                    (symbol_short!("admin"), symbol_short!("changed")),
+                    (old, new_admin),
+                );
+                Ok(())
+            }
+            _ => Err(Error::Unauthorized),
+        }
+    }
+
+    /// The rewards admin awaiting acceptance, if one has been proposed.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     /// The current rewards admin, if one has been set.
