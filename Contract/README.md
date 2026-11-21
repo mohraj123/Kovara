@@ -43,6 +43,16 @@ per-recipient balances and archived aggregates remain in instance storage.
 As with other Soroban instance state, totals still depend on the contract
 instance being kept alive. Storage is bounded for per-grant history, not for
 the number of distinct recipient/asset aggregate pairs.
+## FlowRewards admin transfer
+
+`set_admin(new_admin)` configures the initial admin and cannot replace an
+existing one. To rotate the admin, the current admin calls
+`propose_admin(admin, new_admin)`. This records a pending proposal without
+changing the active admin; only `new_admin` can complete the transfer by
+calling `accept_admin(new_admin)`. Acceptance clears the pending proposal and
+emits the `admin/changed` event. A later proposal replaces an earlier pending
+one, and `admin()` / `pending_admin()` report the current and proposed
+addresses.
 
 ## PriceVault storage layout
 
