@@ -9,6 +9,17 @@ The four Kovara Soroban contracts, as a reproducible Rust Cargo workspace:
 | FlowRewards  | `kovara-flow-rewards`  | Releases XLM / Stellar USDC to verified submitters and verifiers           |
 | KovaraIndex  | `kovara-index`         | Aggregates verified prices into the daily `KVI` per country                |
 
+## FlowRewards admin transfer
+
+`set_admin(new_admin)` configures the initial admin and cannot replace an
+existing one. To rotate the admin, the current admin calls
+`propose_admin(admin, new_admin)`. This records a pending proposal without
+changing the active admin; only `new_admin` can complete the transfer by
+calling `accept_admin(new_admin)`. Acceptance clears the pending proposal and
+emits the `admin/changed` event. A later proposal replaces an earlier pending
+one, and `admin()` / `pending_admin()` report the current and proposed
+addresses.
+
 ## PriceVault storage layout
 
 `PriceVault` uses typed Soroban keys rather than concatenated strings:
