@@ -15,7 +15,7 @@ fn setup(env: &Env) -> (FlowRewardsClient<'_>, Address, Address, Address) {
 fn funded_grant_reduces_treasury() {
     let env = Env::default();
     let (client, admin, recipient, asset) = setup(&env);
-    client.grant(&admin, &recipient, &asset, &symbol_short!("submit"), &30);
+    client.grant(&admin, &recipient, &asset, &symbol_short!("submit"), &30, &1);
     assert_eq!(client.treasury_balance(&asset), 70);
     assert_eq!(client.total_granted(&recipient, &asset), 30);
 }
@@ -24,7 +24,8 @@ fn funded_grant_reduces_treasury() {
 fn insufficient_treasury_is_rejected_without_state_change() {
     let env = Env::default();
     let (client, admin, recipient, asset) = setup(&env);
-    let result = client.try_grant(&admin, &recipient, &asset, &symbol_short!("submit"), &101);
+    let result =
+        client.try_grant(&admin, &recipient, &asset, &symbol_short!("submit"), &101, &1);
     assert_eq!(result, Err(Ok(Error::InsufficientTreasury)));
     assert_eq!(client.treasury_balance(&asset), 100);
     assert_eq!(client.total_granted(&recipient, &asset), 0);
@@ -34,6 +35,6 @@ fn insufficient_treasury_is_rejected_without_state_change() {
 fn exact_balance_grant_succeeds() {
     let env = Env::default();
     let (client, admin, recipient, asset) = setup(&env);
-    client.grant(&admin, &recipient, &asset, &symbol_short!("submit"), &100);
+    client.grant(&admin, &recipient, &asset, &symbol_short!("submit"), &100, &1);
     assert_eq!(client.treasury_balance(&asset), 0);
 }
