@@ -1,9 +1,9 @@
-import { normalizeAddress, normalizeAmount, normalizeLedger, normalizeEvent, validateTopicValue } from "../normalize";
 import {
   normalizeAddress,
   normalizeAmount,
-  normalizeEvent,
   normalizeLedger,
+  normalizeEvent,
+  validateTopicValue,
   normalizeRawEvent,
   normalizeTimestamp,
 } from "../normalize";
@@ -94,7 +94,7 @@ describe("address casing normalization (BE-08)", () => {
 
   it("normalizes the address inside a normalized event", () => {
     const event = { user: ADDRESS.toLowerCase(), untouched: ADDRESS.toLowerCase() };
-    const normalized = normalizeEvent(event, { user: normalizeAddress });
+    const normalized = normalizeEvent(event, { user: (value: unknown) => normalizeAddress(value as string) });
     expect(normalized).toEqual({ user: ADDRESS, untouched: ADDRESS.toLowerCase() });
   });
 });
