@@ -68,6 +68,16 @@ pages = ceil(grant_count(recipient) / page_size)
 | `DataKey::Granted` | `Map<(Address, Address), i128>` | Running total granted per (recipient, asset) |
 | `DataKey::Claimed` | `Map<(Address, Address), i128>` | Running total claimed per (recipient, asset) |
 | `DataKey::Treasury` | `Map<Address, i128>` | Available treasury funds per asset |
+## FlowRewards admin transfer
+
+`set_admin(new_admin)` configures the initial admin and cannot replace an
+existing one. To rotate the admin, the current admin calls
+`propose_admin(admin, new_admin)`. This records a pending proposal without
+changing the active admin; only `new_admin` can complete the transfer by
+calling `accept_admin(new_admin)`. Acceptance clears the pending proposal and
+emits the `admin/changed` event. A later proposal replaces an earlier pending
+one, and `admin()` / `pending_admin()` report the current and proposed
+addresses.
 
 ## PriceVault storage layout
 
