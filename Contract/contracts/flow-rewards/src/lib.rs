@@ -1,5 +1,8 @@
 #![no_std]
 //! FlowRewards: grant, claim, revoke, archive, administer, and pause reward grants.
+// shortcut: legacy Events::publish emits a deprecation warning; migrate to
+// #[contractevent] when the event schemas are revised.
+#![allow(deprecated)]
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Map,
@@ -68,6 +71,8 @@ pub struct GrantRecord {
     pub amount: i128,
     pub claimed: i128,
     pub revoked: i128,
+    /// Ledger timestamp at the moment the grant was recorded.
+    pub granted_at: u64,
 }
 
 #[contracttype]
@@ -292,7 +297,7 @@ impl FlowRewards {
     pub fn archive_history(env: Env, limit: u32) -> Result<u32, Error> {
         if limit == 0 || limit > MAX_ARCHIVE_BATCH { return Err(Error::InvalidArchiveLimit); }
         extend_instance_ttl(&env);
-        let mut ids = grant_ids(&env);
+        let ids = grant_ids(&env);
         let mut retained = Vec::new(&env);
         let mut archived = 0u32;
 
@@ -433,6 +438,13 @@ impl FlowRewards {
         record.map(|r| r.revoked).unwrap_or(0)
     }
 
+    /// Ledger timestamp recorded when `grant_id` was created, or `None` if the
+    /// record does not exist (never granted or archived).
+    pub fn grant_timestamp(env: Env, grant_id: u64) -> Option<u64> {
+        let record: Option<GrantRecord> = env.storage().persistent().get(&DataKey::GrantRecord(grant_id));
+        record.map(|r| r.granted_at)
+    }
+
     pub fn reward_history(env: Env, recipient: Address, offset: u32, limit: u32) -> Result<Vec<GrantRecord>, Error> {
         if limit == 0 || limit > MAX_HISTORY_PAGE_SIZE { return Err(Error::InvalidPageSize); }
         let key = DataKey::RecipientIndex(recipient);
@@ -516,6 +528,7 @@ impl FlowRewards {
         let record_key = DataKey::GrantRecord(grant_id);
         env.storage().persistent().set(&record_key, &GrantRecord {
             recipient: recipient.clone(), asset, amount, claimed: 0, revoked: 0,
+            granted_at: env.ledger().timestamp(),
         });
         env.storage().persistent().set(&DataKey::GrantId(grant_id), &true);
         extend_history_ttl(env, &record_key);
@@ -2038,3 +2051,5 @@ impl FlowRewards {
         Ok(())
     }
 }
+*/
+*/

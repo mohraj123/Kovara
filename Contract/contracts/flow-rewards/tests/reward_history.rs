@@ -4,8 +4,10 @@
 //! grant records stored per recipient, and that `grant_count` reflects the
 //! number of grants recorded.
 
-use kovara_flow_rewards::{Error, FlowRewards, FlowRewardsClient, MAX_HISTORY_PAGE_SIZE};
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, Vec};
+use kovara_flow_rewards::{
+    Error, FlowRewards, FlowRewardsClient, MAX_HISTORY_PAGE_SIZE, ROLE_SUBMITTER,
+};
+use soroban_sdk::{testutils::Address as _, Address, Env};
 
 fn setup() -> (Env, FlowRewardsClient<'static>, Address, Address, Address) {
     let env = Env::default();
@@ -37,7 +39,7 @@ fn single_grant_appears_on_first_page() {
         &admin,
         &recipient,
         &asset,
-        &symbol_short!("submit"),
+        &ROLE_SUBMITTER,
         &100,
         &1,
     );
@@ -58,7 +60,7 @@ fn multiple_grants_stored_in_insertion_order() {
         &admin,
         &recipient,
         &asset,
-        &symbol_short!("submit"),
+        &ROLE_SUBMITTER,
         &10,
         &1,
     );
@@ -66,7 +68,7 @@ fn multiple_grants_stored_in_insertion_order() {
         &admin,
         &recipient,
         &asset,
-        &symbol_short!("submit"),
+        &ROLE_SUBMITTER,
         &20,
         &2,
     );
@@ -74,7 +76,7 @@ fn multiple_grants_stored_in_insertion_order() {
         &admin,
         &recipient,
         &asset,
-        &symbol_short!("submit"),
+        &ROLE_SUBMITTER,
         &30,
         &3,
     );
@@ -97,7 +99,7 @@ fn offset_zero_limit_one_returns_first_record() {
             &admin,
             &recipient,
             &asset,
-            &symbol_short!("submit"),
+            &ROLE_SUBMITTER,
             &(id as i128 * 10),
             &id,
         );
@@ -117,7 +119,7 @@ fn paging_through_all_records_covers_every_entry() {
             &admin,
             &recipient,
             &asset,
-            &symbol_short!("submit"),
+            &ROLE_SUBMITTER,
             &(id as i128 * 5),
             &id,
         );
@@ -147,7 +149,7 @@ fn offset_beyond_end_returns_empty_page() {
         &admin,
         &recipient,
         &asset,
-        &symbol_short!("submit"),
+        &ROLE_SUBMITTER,
         &50,
         &1,
     );
@@ -164,7 +166,7 @@ fn limit_clips_to_available_records() {
             &admin,
             &recipient,
             &asset,
-            &symbol_short!("submit"),
+            &ROLE_SUBMITTER,
             &10,
             &id,
         );
@@ -184,7 +186,7 @@ fn existing_offsets_stable_after_new_grant() {
         &admin,
         &recipient,
         &asset,
-        &symbol_short!("submit"),
+        &ROLE_SUBMITTER,
         &42,
         &1,
     );
@@ -196,7 +198,7 @@ fn existing_offsets_stable_after_new_grant() {
         &admin,
         &recipient,
         &asset,
-        &symbol_short!("submit"),
+        &ROLE_SUBMITTER,
         &99,
         &2,
     );
@@ -215,7 +217,7 @@ fn history_is_scoped_to_recipient() {
         &admin,
         &recipient,
         &asset,
-        &symbol_short!("submit"),
+        &ROLE_SUBMITTER,
         &10,
         &1,
     );
@@ -223,7 +225,7 @@ fn history_is_scoped_to_recipient() {
         &admin,
         &other,
         &asset,
-        &symbol_short!("submit"),
+        &ROLE_SUBMITTER,
         &20,
         &2,
     );
@@ -270,7 +272,7 @@ fn claimed_amount_reflected_in_history_record() {
         &admin,
         &recipient,
         &asset,
-        &symbol_short!("submit"),
+        &ROLE_SUBMITTER,
         &100,
         &1,
     );
@@ -290,7 +292,7 @@ fn revoked_amount_reflected_in_history_record() {
         &admin,
         &recipient,
         &asset,
-        &symbol_short!("submit"),
+        &ROLE_SUBMITTER,
         &80,
         &1,
     );
