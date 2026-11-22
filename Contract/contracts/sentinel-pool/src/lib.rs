@@ -487,6 +487,25 @@ pub struct ThresholdUpdatedEvent {
     pub threshold: u32,
 }
 
+/// Emitted when the current admin nominates a successor (SP-009).
+/// The nominated address has no admin powers until it accepts.
+#[contractevent]
+#[derive(Clone)]
+pub struct AdminTransferProposedEvent {
+    #[topic]
+    pub current_admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted only after the nominated admin accepts the transfer (SP-009).
+#[contractevent]
+#[derive(Clone)]
+pub struct AdminTransferredEvent {
+    #[topic]
+    pub previous_admin: Address,
+    pub new_admin: Address,
+}
+
 /// Emitted when a slash is applied.
 #[contractevent]
 #[derive(Clone)]
@@ -2224,25 +2243,53 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
         proofs.get(proof_id)
     }
 
-    /// Admin-only. Propose `new_admin` as the next admin. The active admin
-    /// does not change until `new_admin` calls [`Self::accept_admin`]. A new
-    /// proposal replaces any earlier one.
-    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+    /// Start a two-step admin rotation (SP-009). Only the currently stored
+    /// admin may nominate a successor, and their signature is required.
+    ///
+    /// This does not grant the nominee any permissions until the nominee
+    /// explicitly calls [`Self::accept_admin`]. A later nomination replaces
+    /// an earlier pending one. This method emits an audit event on success.
+    ///
+    /// Lost admin keys cannot initiate a transfer, so admins should rotate
+    /// keys *before* the old signer becomes unavailable.
+    pub fn transfer_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
+
         env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        AdminTransferProposedEvent {
+            current_admin: admin,
+            new_admin,
+        }
+        .publish(&env);
         Ok(())
     }
 
-    /// Accept a pending admin proposal. Only the proposed address may accept;
-    /// the pending proposal is cleared on acceptance.
+    /// Backwards-compatible name for the first stage of admin rotation.
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        Self::transfer_admin(env, admin, new_admin)
+    }
+
+    /// Finish a pending transfer. Only the nominated admin may accept, with
+    /// their own signature. Pending state is cleared and an event is emitted.
+    /// Once accepted, the former admin immediately loses admin permissions.
     pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         new_admin.require_auth();
         let pending: Option<Address> = env.storage().instance().get(&DataKey::PendingAdmin);
         match pending {
             Some(pending) if pending == new_admin => {
+                let previous_admin: Address = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::Admin)
+                    .ok_or(Error::Unauthorized)?;
                 env.storage().instance().set(&DataKey::Admin, &new_admin);
                 env.storage().instance().remove(&DataKey::PendingAdmin);
+                AdminTransferredEvent {
+                    previous_admin,
+                    new_admin,
+                }
+                .publish(&env);
                 Ok(())
             }
             _ => Err(Error::Unauthorized),
