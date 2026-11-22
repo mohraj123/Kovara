@@ -49,6 +49,24 @@ use soroban_sdk::{
 #[cfg(test)]
 mod test;
 
+#[cfg(test)]
+mod history;
+
+#[cfg(test)]
+mod storage_version;
+
+#[cfg(test)]
+mod publication_events;
+
+#[cfg(test)]
+mod previous_day;
+
+#[cfg(test)]
+mod authorization;
+
+#[cfg(test)]
+mod category_coverage;
+
 /// The storage schema this build of the contract understands.
 ///
 /// Bump this in the same commit as any change to the shape of a stored value
@@ -126,6 +144,24 @@ pub enum Error {
 
     /// The proposed admin is already the current admin.
     AlreadyAdmin = 20,
+
+    // ── CT-042: category-level aggregation ───────────────────────────────
+    /// An empty category list was supplied.
+    EmptyCategoryList = 21,
+
+    /// The category list exceeds the maximum allowed length.
+    CategoryListTooLong = 22,
+
+    /// An empty category symbol (zero-length) was supplied.
+    InvalidCategory = 23,
+
+    // ── CT-047: previous-day lookup ──────────────────────────────────────
+    /// No prior daily index was found within the allowed look-back window.
+    NoPreviousDay = 24,
+
+    // ── CT-049: history pagination ───────────────────────────────────────
+    /// The page cursor is out of range for this country's history.
+    InvalidCursor = 25,
 }
 
 #[contracttype]
@@ -154,6 +190,23 @@ pub enum DataKey {
 
     /// Instance: an in-flight sentinel-initiated admin recovery.
     PendingRecovery,
+
+    // ── CT-049: history pagination ───────────────────────────────────────
+    /// Persistent: `(schema_version, country)` → ordered `Vec<u64>` of dates.
+    ///
+    /// Acts as an index so `get_history` can return stable cursor-based pages
+    /// without scanning all persistent storage.
+    DateIndex(u32, Symbol),
+
+    // ── CT-050: versioned storage key variants ───────────────────────────
+    /// Persistent: versioned daily index keyed as `(schema_version, country, date)`.
+    ///
+    /// Identical semantics to [`DataKey::DailyIndex`] but uses an explicit
+    /// enum variant name so future schemas can be distinguished without
+    /// relying on the leading `u32` alone.  Both variants coexist: existing
+    /// `DailyIndex` reads continue to work; new code may use
+    /// `DailyIndexV` with the same `(SCHEMA_VERSION, country, date)` tuple.
+    DailyIndexV(u32, Symbol, u64),
 }
 
 /// One country's index value for one day.
@@ -189,9 +242,25 @@ pub struct DailyIndex {
 
     /// The schema version in force when the record was written.
     pub schema_version: u32,
+
+    /// Categories that contributed to this daily value (CT-042).
+    ///
+    /// Each entry is a short symbol identifying an aggregation category
+    /// (e.g. `"food"`, `"fuel"`, `"housing"`). The list is bounded by
+    /// [`MAX_CATEGORIES`] and must be non-empty. Storing the category
+    /// coverage lets consumers inspect aggregation breadth without
+    /// re-deriving it from raw observations.
+    pub categories: Vec<Symbol>,
 }
 
-/// Emitted whenever a daily index record is written (CT-035).
+/// Maximum number of categories that may be attached to a daily index record
+/// (CT-042).
+///
+/// Chosen to stay comfortably within Soroban's per-entry storage limits while
+/// allowing enough coverage signals for practical aggregation auditing.
+pub const MAX_CATEGORIES: u32 = 32;
+
+/// Emitted whenever a daily index record is written (CT-035 / CT-048).
 ///
 /// Carries every field CT-035 requires — country, date, value, basket,
 /// source period, updater — so a consumer can act on the event alone without
@@ -201,6 +270,9 @@ pub struct DailyIndex {
 /// `schema_version` rides along so a consumer can tell which storage schema
 /// produced the record, which matters the moment a migration is in progress
 /// and both schemas are briefly live.
+///
+/// `categories` (CT-042) lists which aggregation categories contributed to
+/// the value, enabling coverage inspection without re-reading raw state.
 #[contractevent]
 #[derive(Clone)]
 pub struct DailyIndexUpdated {
@@ -216,6 +288,7 @@ pub struct DailyIndexUpdated {
     pub source_period_end: u64,
     pub updater: Address,
     pub schema_version: u32,
+    pub categories: Vec<Symbol>,
 }
 
 /// How long a sentinel-initiated admin recovery waits before it can be
@@ -327,6 +400,24 @@ pub struct AdminRecoveryCancelled {
     pub cancelled_new_admin: Address,
 }
 
+/// Maximum number of dates returned in a single history page (CT-049).
+pub const MAX_PAGE_SIZE: u32 = 30;
+
+/// Maximum number of days to look back when searching for a previous-day
+/// record (CT-047).
+pub const MAX_LOOKBACK_DAYS: u64 = 90;
+
+/// A single page of history results returned by [`KovaraIndex::get_history`].
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoryPage {
+    /// Dates in ascending order for this page.
+    pub dates: Vec<u64>,
+    /// Cursor to pass to the next `get_history` call, or `None` if this is
+    /// the last page.
+    pub next_cursor: Option<u32>,
+}
+
 #[contract]
 pub struct KovaraIndex;
 
@@ -393,6 +484,10 @@ impl KovaraIndex {
     /// record's and the event's `updater` field, preserving CT-035's event
     /// shape.
     ///
+    /// **Category coverage (CT-042).** `categories` names which aggregation
+    /// categories contributed to `value`. It must be non-empty and at most
+    /// [`MAX_CATEGORIES`] long; each entry must be a non-empty symbol.
+    ///
     /// # Errors
     /// * `NotInitialized` — the contract has no schema version yet
     /// * `IncompatibleSchema` — stored schema differs from [`SCHEMA_VERSION`]
@@ -402,6 +497,8 @@ impl KovaraIndex {
     /// * `InsufficientSignatures` — fewer signers than the threshold
     /// * `InvalidBasketVersion` — `basket_version` is zero
     /// * `InvalidSourcePeriod` — the period ends before it starts
+    /// * `EmptyCategoryList` — `categories` is empty
+    /// * `CategoryListTooLong` — `categories` exceeds [`MAX_CATEGORIES`]
     #[allow(clippy::too_many_arguments)]
     pub fn set_daily_index(
         env: Env,
@@ -412,6 +509,7 @@ impl KovaraIndex {
         basket_version: u32,
         source_period_start: u64,
         source_period_end: u64,
+        categories: Vec<Symbol>,
     ) -> Result<(), Error> {
         let schema_version = Self::require_compatible_schema(&env)?;
 
@@ -427,6 +525,14 @@ impl KovaraIndex {
             return Err(Error::InvalidSourcePeriod);
         }
 
+        // CT-042: validate category list.
+        if categories.is_empty() {
+            return Err(Error::EmptyCategoryList);
+        }
+        if categories.len() > MAX_CATEGORIES {
+            return Err(Error::CategoryListTooLong);
+        }
+
         let record = DailyIndex {
             country: country.clone(),
             date,
@@ -436,12 +542,40 @@ impl KovaraIndex {
             source_period_end,
             updater: updater.clone(),
             schema_version,
+            categories: categories.clone(),
         };
 
         env.storage().persistent().set(
             &DataKey::DailyIndex(schema_version, country.clone(), date),
             &record,
         );
+
+        // CT-049: maintain a date index for history pagination.
+        let date_key = DataKey::DateIndex(schema_version, country.clone());
+        let mut dates: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&date_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        if !dates.contains(&date) {
+            dates.push_back(date);
+            // Keep dates in ascending order for stable cursor semantics.
+            // Simple insertion sort is fine: the list is short and appends are
+            // the common case (dates arrive in order).
+            let len = dates.len();
+            if len > 1 {
+                let mut i = len - 1;
+                while i > 0 && dates.get(i - 1).unwrap() > dates.get(i).unwrap() {
+                    let a = dates.get(i - 1).unwrap();
+                    let b = dates.get(i).unwrap();
+                    dates.set(i - 1, b);
+                    dates.set(i, a);
+                    i -= 1;
+                }
+            }
+            env.storage().persistent().set(&date_key, &dates);
+        }
 
         DailyIndexUpdated {
             country,
@@ -452,6 +586,7 @@ impl KovaraIndex {
             source_period_end,
             updater,
             schema_version,
+            categories,
         }
         .publish(&env);
 
@@ -475,6 +610,139 @@ impl KovaraIndex {
             .storage()
             .persistent()
             .get(&DataKey::DailyIndex(schema_version, country, date)))
+    }
+
+    /// Read a daily index record via the versioned key variant (CT-050).
+    ///
+    /// Identical to [`get_daily_index`] but uses [`DataKey::DailyIndexV`],
+    /// the explicitly named versioned variant introduced by CT-050.  Both
+    /// variants share the same `(schema_version, country, date)` tuple, so a
+    /// record written via `set_daily_index` (which uses `DailyIndex`) is
+    /// readable here through `DailyIndexV` only after it has been written
+    /// under that variant.  This method exists so callers can opt into the
+    /// explicit variant name and tests can verify the two keyspaces are truly
+    /// disjoint.
+    ///
+    /// # Errors
+    /// * `NotInitialized` / `IncompatibleSchema`
+    pub fn get_daily_index_v(
+        env: Env,
+        country: Symbol,
+        date: u64,
+    ) -> Result<Option<DailyIndex>, Error> {
+        let schema_version = Self::require_compatible_schema(&env)?;
+
+        Ok(env
+            .storage()
+            .persistent()
+            .get(&DataKey::DailyIndexV(schema_version, country, date)))
+    }
+
+    /// Return a capped, cursor-based page of daily dates for a country
+    /// (CT-049).
+    ///
+    /// Dates are returned in ascending order. `cursor` is the zero-based
+    /// position in the full ordered date list from which to start; passing
+    /// `None` starts from the beginning. At most [`MAX_PAGE_SIZE`] dates are
+    /// returned per call.
+    ///
+    /// A cursor points *into* the date list, not at a specific date value.
+    /// This makes it stable: inserting a date before the cursor shifts the
+    /// slice content but the cursor itself still identifies a deterministic
+    /// position.
+    ///
+    /// Returns a [`HistoryPage`] with dates and an optional `next_cursor`;
+    /// `next_cursor` is `None` when the end of the list has been reached.
+    ///
+    /// # Errors
+    /// * `NotInitialized` / `IncompatibleSchema`
+    /// * `InvalidCursor` — `cursor` is beyond the end of the date list
+    pub fn get_history(
+        env: Env,
+        country: Symbol,
+        cursor: Option<u32>,
+    ) -> Result<HistoryPage, Error> {
+        let schema_version = Self::require_compatible_schema(&env)?;
+
+        let dates: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DateIndex(schema_version, country))
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let start = cursor.unwrap_or(0);
+
+        if start > 0 && start as u64 >= dates.len() as u64 {
+            return Err(Error::InvalidCursor);
+        }
+
+        let page_size = MAX_PAGE_SIZE;
+        let mut page = Vec::new(&env);
+
+        for i in start..start.saturating_add(page_size) {
+            match dates.get(i) {
+                Some(d) => page.push_back(d),
+                None => break,
+            }
+        }
+
+        let next = if start.saturating_add(page_size) < dates.len() {
+            Some(start + page_size)
+        } else {
+            None
+        };
+
+        Ok(HistoryPage {
+            dates: page,
+            next_cursor: next,
+        })
+    }
+
+    /// Look up the most recent prior daily index for `country` before `date`
+    /// (CT-047).
+    ///
+    /// Scans backward from `date - 1` for up to [`MAX_LOOKBACK_DAYS`] days.
+    /// Returns the first record found, or `Err(Error::NoPreviousDay)` if
+    /// no record exists within the search window.
+    ///
+    /// The bounded window prevents the scan from becoming arbitrarily
+    /// expensive when a country has sparse data.
+    ///
+    /// # Errors
+    /// * `NotInitialized` / `IncompatibleSchema`
+    /// * `NoPreviousDay` — no record found within the look-back window
+    pub fn get_previous_day(
+        env: Env,
+        country: Symbol,
+        date: u64,
+    ) -> Result<DailyIndex, Error> {
+        let schema_version = Self::require_compatible_schema(&env)?;
+
+        let limit = MAX_LOOKBACK_DAYS;
+        let floor = date.saturating_sub(limit);
+
+        // date == 0 means there cannot be a prior day at all.
+        if date == 0 {
+            return Err(Error::NoPreviousDay);
+        }
+
+        let mut probe = date - 1;
+
+        loop {
+            if let Some(record) = env.storage().persistent().get::<DataKey, DailyIndex>(
+                &DataKey::DailyIndex(schema_version, country.clone(), probe),
+            ) {
+                return Ok(record);
+            }
+
+            if probe == floor {
+                break;
+            }
+
+            probe -= 1;
+        }
+
+        Err(Error::NoPreviousDay)
     }
 
     // ── CT-034: sentinel roster and threshold ────────────────────────────

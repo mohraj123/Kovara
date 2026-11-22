@@ -61,6 +61,10 @@ const BASKET: u32 = 7;
 const PERIOD_START: u64 = 1_700_000_000;
 const PERIOD_END: u64 = 1_700_086_400;
 
+fn cats(f: &Fixture) -> soroban_sdk::Vec<Symbol> {
+    vec![&f.env, symbol_short!("food"), symbol_short!("fuel")]
+}
+
 fn set_index(f: &Fixture) {
     f.client.set_daily_index(
         &solo(f),
@@ -70,6 +74,7 @@ fn set_index(f: &Fixture) {
         &BASKET,
         &PERIOD_START,
         &PERIOD_END,
+        &cats(f),
     );
 }
 
@@ -117,7 +122,8 @@ fn operations_are_rejected_before_initialization() {
             &VALUE,
             &BASKET,
             &PERIOD_START,
-            &PERIOD_END
+            &PERIOD_END,
+            &cats(&f)
         ),
         Err(Ok(Error::NotInitialized))
     );
@@ -151,7 +157,8 @@ fn an_incompatible_schema_is_rejected_for_writes() {
             &VALUE,
             &BASKET,
             &PERIOD_START,
-            &PERIOD_END
+            &PERIOD_END,
+            &cats(&f)
         ),
         Err(Ok(Error::IncompatibleSchema))
     );
@@ -215,6 +222,7 @@ fn records_under_different_schemas_do_not_collide() {
             source_period_end: PERIOD_END,
             updater: f.updater.clone(),
             schema_version: other_schema,
+            categories: vec![&f.env, symbol_short!("food")],
         };
 
         f.env
@@ -295,6 +303,7 @@ fn the_event_carries_every_required_field() {
         source_period_end: PERIOD_END,
         updater: f.updater.clone(),
         schema_version: SCHEMA_VERSION,
+        categories: cats(&f),
     };
 
     assert_eq!(f.env.events().all(), expected_event(&f, &expected));
@@ -316,6 +325,7 @@ fn country_and_date_are_indexable_topics() {
         source_period_end: PERIOD_END,
         updater: f.updater.clone(),
         schema_version: SCHEMA_VERSION,
+        categories: cats(&f),
     };
 
     let topics = event.topics(&f.env);
@@ -359,6 +369,7 @@ fn the_event_matches_the_stored_record() {
         source_period_end: stored.source_period_end,
         updater: stored.updater.clone(),
         schema_version: stored.schema_version,
+        categories: stored.categories.clone(),
     };
 
     assert_eq!(emitted, expected_event(&f, &from_storage));
@@ -381,6 +392,7 @@ fn each_update_emits_exactly_one_event() {
         &BASKET,
         &PERIOD_START,
         &PERIOD_END,
+        &cats(&f),
     );
     assert_eq!(emitted_count(&f), 1);
 }
@@ -399,7 +411,8 @@ fn a_rejected_update_emits_no_event() {
             &VALUE,
             &0u32, // invalid basket
             &PERIOD_START,
-            &PERIOD_END
+            &PERIOD_END,
+            &cats(&f)
         ),
         Err(Ok(Error::InvalidBasketVersion))
     );
@@ -423,7 +436,8 @@ fn a_zero_basket_version_is_rejected() {
             &VALUE,
             &0u32,
             &PERIOD_START,
-            &PERIOD_END
+            &PERIOD_END,
+            &cats(&f)
         ),
         Err(Ok(Error::InvalidBasketVersion))
     );
@@ -441,7 +455,8 @@ fn a_backwards_source_period_is_rejected() {
             &VALUE,
             &BASKET,
             &PERIOD_END,
-            &PERIOD_START
+            &PERIOD_START,
+            &cats(&f)
         ),
         Err(Ok(Error::InvalidSourcePeriod))
     );
@@ -460,6 +475,7 @@ fn an_instantaneous_source_period_is_accepted() {
         &BASKET,
         &PERIOD_START,
         &PERIOD_START,
+        &cats(&f),
     );
 
     let record = f.client.get_daily_index(&NG, &DATE).unwrap();
@@ -481,7 +497,8 @@ fn a_rejected_update_stores_nothing() {
             &VALUE,
             &0u32,
             &PERIOD_START,
-            &PERIOD_END
+            &PERIOD_END,
+            &cats(&f)
         )
         .is_err());
 
@@ -508,6 +525,7 @@ fn a_record_round_trips() {
             source_period_end: PERIOD_END,
             updater: f.updater.clone(),
             schema_version: SCHEMA_VERSION,
+            categories: cats(&f),
         }
     );
 }
@@ -533,6 +551,7 @@ fn records_are_kept_per_country_and_per_date() {
         &BASKET,
         &PERIOD_START,
         &PERIOD_END,
+        &cats(&f),
     );
     f.client.set_daily_index(
         &solo(&f),
@@ -542,6 +561,7 @@ fn records_are_kept_per_country_and_per_date() {
         &BASKET,
         &PERIOD_START,
         &PERIOD_END,
+        &cats(&f),
     );
     f.client.set_daily_index(
         &solo(&f),
@@ -551,6 +571,7 @@ fn records_are_kept_per_country_and_per_date() {
         &BASKET,
         &PERIOD_START,
         &PERIOD_END,
+        &cats(&f),
     );
 
     assert_eq!(f.client.get_daily_index(&NG, &DATE).unwrap().value, 100);
@@ -581,6 +602,7 @@ fn a_negative_value_is_stored_as_given() {
         &BASKET,
         &PERIOD_START,
         &PERIOD_END,
+        &cats(&f),
     );
 
     assert_eq!(f.client.get_daily_index(&NG, &DATE).unwrap().value, -42);
@@ -630,6 +652,7 @@ macro_rules! update_with {
             &BASKET,
             &PERIOD_START,
             &PERIOD_END,
+            &cats($f),
         )
     };
 }
@@ -791,6 +814,7 @@ fn an_unsigned_update_is_rejected_by_the_host_even_with_valid_sentinels() {
         &BASKET,
         &PERIOD_START,
         &PERIOD_END,
+        &cats(&f),
     );
 }
 
