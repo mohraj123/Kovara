@@ -896,3 +896,15 @@ change treasury, granted, claimed, claimable, revoked, or archived totals.
 Pause and resume operations require the active configured admin; read APIs and
 existing claims/revocations continue to operate independently. If no admin is yet
 configured, the existing initial `set_admin(new_admin)` setup flow applies.
+
+### FlowRewards grant event
+
+A successful `grant` or `grant_batch` entry publishes exactly one event after
+all storage updates complete:
+
+- topics: `(Symbol("grants"), Symbol("granted"))`
+- data: `(recipient: Address, role: Symbol, amount: i128, grant_id: u64)`
+
+The event is therefore sufficient to associate a reward with both its
+recipient and supported role, while `grant_id` provides the grant identity.
+Failed grants do not emit this event.
