@@ -883,3 +883,16 @@ soroban contract deploy \
 
 Use the `kovara-index` contract address reported by the command as the
 `CONTRACT_ID` for the indexer backend.
+
+## FlowRewards grant pause and resume
+
+The active rewards admin can pause all new grants with `pause_grants(admin)` and
+resume them with `resume_grants(admin)`. `grants_paused()` and `is_paused()` report
+the pause state. While paused, `grant` and `grant_batch` return `Error::GrantsPaused`
+before any treasury or aggregate-balance mutation. Pausing or resuming does not
+change treasury, granted, claimed, claimable, revoked, or archived totals.
+
+`pause`, `resume`, and `unpause` are compatibility aliases for the grant controls.
+Pause and resume operations require the active configured admin; read APIs and
+existing claims/revocations continue to operate independently. If no admin is yet
+configured, the existing initial `set_admin(new_admin)` setup flow applies.
