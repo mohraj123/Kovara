@@ -1,5 +1,5 @@
 use kovara_flow_rewards::{Error, FlowRewards, FlowRewardsClient, ROLE_SUBMITTER, ROLE_VERIFIER};
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
+use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, IntoVal, Symbol, Val, Vec};
 
 fn setup() -> (Env, FlowRewardsClient<'static>, Address, Address, Address) {
     let env = Env::default();
@@ -159,4 +159,29 @@ fn claiming_does_not_change_granted_role_totals() {
     assert_eq!(client.total_granted(&recipient, &asset), 35);
     assert_eq!(client.total_claimed(&recipient, &asset), 20);
     assert_eq!(client.claimable(&recipient, &asset), 15);
+}
+
+#[test]
+fn successful_grant_emits_recipient_role_amount_and_identity() {
+    let (env, client, admin, recipient, asset) = setup();
+
+    client.grant(&admin, &recipient, &asset, &ROLE_SUBMITTER, &10, &1);
+
+    let events = env.events().all();
+    assert_eq!(events.len(), 1);
+
+    let (topics, data) = &events[0];
+    assert_eq!(
+        topics,
+        &Vec::from_array::<_, 2>(
+            &env,
+            [
+                symbol_short!("grants").into_val(&env),
+                symbol_short!("granted").into_val(&env),
+            ],
+        )
+    );
+
+    let payload: (Address, Symbol, i128, u64) = data.clone().into_val(&env);
+    assert_eq!(payload, (recipient, ROLE_SUBMITTER, 10, 1));
 }

@@ -528,6 +528,7 @@ impl FlowRewards {
         *role == ROLE_SUBMITTER || *role == ROLE_VERIFIER
     }
 
+    fn apply_grant(env: &Env, recipient: Address, asset: Address, role: Symbol, amount: i128, grant_id: u64) -> Result<(), Error> {
     fn apply_grant(
         env: &Env,
         recipient: Address,
@@ -599,6 +600,10 @@ impl FlowRewards {
         ids.push_back(grant_id);
         env.storage().persistent().set(&DataKey::GrantIds, &ids);
         extend_history_ttl(env, &DataKey::GrantIds);
+        env.events().publish(
+            (symbol_short!("grants"), symbol_short!("granted")),
+            (recipient, role, amount, grant_id),
+        );
         Ok(())
     }
 
@@ -635,3 +640,5 @@ impl FlowRewards {
         Ok(())
     }
 }
+// COMMENT_BLOCK_END
+*/
