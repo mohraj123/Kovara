@@ -1363,11 +1363,12 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
             .unwrap_or(0)
     }
 
-    pub fn quorum_threshold(env: Env, required: u32) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::Threshold)
-            .unwrap_or(required)
+    /// Return the configured quorum threshold, if one has been stored.
+    ///
+    /// `None` means no threshold is configured. Callers that need a fallback
+    /// must choose it explicitly rather than relying on a default hidden here.
+    pub fn quorum_threshold(env: Env) -> Option<u32> {
+        env.storage().instance().get(&DataKey::Threshold)
     }
 
     /// # Update the governance quorum threshold
@@ -2702,6 +2703,24 @@ mod tests {
         client.set_threshold(&admin, &4);
 
         assert_eq!(client.threshold(), 4);
+    }
+
+    #[test]
+    fn quorum_threshold_reports_only_an_explicitly_stored_value() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, SentinelPool);
+        let client = SentinelPoolClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let governance = Address::generate(&env);
+
+        assert_eq!(client.quorum_threshold(), None);
+
+        env.mock_all_auths();
+        client.initialize(&admin, &governance, &100, &10, &2);
+        assert_eq!(client.quorum_threshold(), Some(2));
+
+        client.set_threshold(&admin, &4);
+        assert_eq!(client.quorum_threshold(), Some(4));
     }
 
     #[test]
