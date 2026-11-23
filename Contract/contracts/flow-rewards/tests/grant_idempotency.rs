@@ -28,6 +28,29 @@ fn replayed_grant_id_is_rejected() {
     let result = client.try_grant(&admin, &recipient, &asset, &ROLE_SUBMITTER, &10, &1);
     assert_eq!(result, Err(Ok(Error::DuplicateGrant)));
     assert_eq!(client.total_granted(&recipient, &asset), 10);
+    assert_eq!(
+        client.total_granted_by_role(&recipient, &asset, &ROLE_SUBMITTER),
+        10
+    );
+    assert_eq!(client.treasury_balance(&asset), 990);
+}
+
+#[test]
+fn archived_grant_id_cannot_be_replayed() {
+    let (_env, client, admin, recipient, asset) = setup();
+    client.grant(&admin, &recipient, &asset, &ROLE_SUBMITTER, &10, &1);
+    client.claim(&recipient, &asset, &10);
+    assert_eq!(client.archive_history(&1), 1);
+    assert!(client.is_grant_processed(&1));
+
+    let result = client.try_grant(&admin, &recipient, &asset, &ROLE_SUBMITTER, &10, &1);
+    assert_eq!(result, Err(Ok(Error::DuplicateGrant)));
+    assert_eq!(client.total_granted(&recipient, &asset), 10);
+    assert_eq!(
+        client.total_granted_by_role(&recipient, &asset, &ROLE_SUBMITTER),
+        10
+    );
+    assert_eq!(client.treasury_balance(&asset), 990);
 }
 
 #[test]

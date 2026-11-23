@@ -126,7 +126,9 @@ longer available after that grant is archived.
 To keep duplicate protection compact after archived IDs are removed, grant
 IDs may start at any value, but each subsequent grant must use the immediately
 following ID. This also applies to the order of entries in `grant_batch`.
-The ID watermark continues to recognize archived IDs as processed.
+The ID watermark continues to recognize archived IDs as processed, so replaying
+an ID returns `DuplicateGrant` without changing treasury or granted balances,
+even after its detailed history record has been archived.
 
 Persistent grant records and ID markers have their TTL extended to 500,000
 ledgers on creation or update; the ID index and instance storage TTL are
