@@ -190,19 +190,34 @@ pub const DEFAULT_CHALLENGE_PERIOD_LEDGERS: u64 = 2_592_000;
 /// `u64`. Bounding the period keeps the deadline representable for every
 /// reachable `deregistered_at`; the arithmetic is still checked at use.
 pub const MAX_CHALLENGE_PERIOD_LEDGERS: u64 = 20_000_000;
-/// Upper bound on the withdrawal lock period, in ledger sequence numbers.
+/// Upper bound on the withdrawal lock period, in ledger sequence numbers
+/// (~69 days at 6-second close time).
 ///
-/// The lock is `unlock_at = staked_at + lock_period`, and `staked_at` is a
-/// ledger sequence number. A lock period large enough to overflow that addition
-/// would never elapse, which is a permanent freeze rather than a slow
-/// withdrawal. Bounding the parameter keeps every reachable unlock ledger
-/// representable, and the arithmetic is still checked at runtime.
-/// The lock is expressed as `ledger.sequence()`, which is a `u32`. A lock that
-/// cannot elapse is worse than a short one: it would permanently freeze every
-/// sentinel's stake with no recovery path. Bounding the parameter at
-/// initialization keeps `staked_at + lock_period` inside the `u32` ledger
-/// sequence space for every reachable `staked_at`.
+/// `unlock_at = staked_at + lock_period`. Because `staked_at` is a `u32`
+/// ledger sequence number stored as `u64`, a `lock_period` large enough to
+/// overflow that addition would produce an `unlock_at` that can never be
+/// reached — a permanent, irrecoverable freeze of every sentinel's stake.
+/// Setting this bound at initialization keeps `unlock_at` representable for
+/// every reachable `staked_at`, and the arithmetic is still checked at
+/// runtime with `checked_add`.
+///
+/// A value of `1_000_000` ledgers ≈ 69 days gives operators ample flexibility
+/// while staying well within the `u32` ceiling (~136 years of ledgers).
 pub const MAX_LOCK_PERIOD: u64 = 1_000_000;
+
+/// Upper bound on the governance-quorum threshold at initialization.
+///
+/// `threshold` is the number of sentinel signatures required for a governance
+/// action to pass. A threshold larger than the realistic sentinel-set size
+/// makes every governance action permanently unachievable — the pool can be
+/// configured but never governed. This constant caps the value at
+/// initialization so that a misconfigured threshold does not silently brick
+/// governance. Operators that grow the sentinel set beyond this limit should
+/// call `set_threshold` to raise the quorum in step with set size.
+///
+/// `65_535` (u16::MAX) is generous: a live sentinel set of that size is
+/// extremely large, and anything above it is almost certainly a misconfiguration.
+pub const MAX_THRESHOLD: u32 = 65_535;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -271,6 +286,19 @@ pub enum Error {
     InvalidMinWithdrawal = 19,
     /// A history page request had a zero or oversized `limit` (CT-015).
     InvalidPage = 20,
+    /// `threshold` exceeds [`MAX_THRESHOLD`] at initialization.
+    ///
+    /// A threshold larger than the realistic sentinel-set size makes every
+    /// governance action permanently unachievable. Reject it at initialization
+    /// rather than silently bricking governance.
+    ThresholdTooHigh = 21,
+    /// `lock_period` exceeds [`MAX_LOCK_PERIOD`] at initialization.
+    ///
+    /// An oversize lock period can produce an `unlock_at` that overflows or
+    /// can never be reached, permanently freezing all withdrawals. Distinct
+    /// from the runtime [`Error::InvalidLockPeriod`] overflow so callers can
+    /// tell a configuration error from an arithmetic one.
+    LockPeriodTooHigh = 22,
 }
 
 #[contracttype]
@@ -660,17 +688,22 @@ impl SentinelPool {
     /// 1. `min_stake > 0` — a non-positive minimum makes every stake
     ///    trivially valid and every sentinel worthless.
     /// 2. `1 <= lock_period <= MAX_LOCK_PERIOD` — a zero lock removes the
-    ///    withdrawal delay entirely, and an unbounded lock could exceed the
-    ///    `u32` ledger sequence space and freeze stake permanently.
-    /// 3. `threshold > 0` — a zero quorum means any single signature governs.
+    ///    withdrawal delay entirely, and a lock period above [`MAX_LOCK_PERIOD`]
+    ///    produces an `unlock_at` that can never be reached, permanently
+    ///    freezing all withdrawals with no recovery path.
+    /// 3. `1 <= threshold <= MAX_THRESHOLD` — a zero quorum means any single
+    ///    signature governs; a threshold above [`MAX_THRESHOLD`] makes every
+    ///    governance action permanently unachievable.
     ///
     /// Only then is `admin.require_auth()` collected, the re-initialization
     /// guard consulted, and storage written.
     ///
     /// # Errors
     /// * [`Error::InvalidStake`] — `min_stake <= 0`.
-    /// * [`Error::InvalidLockPeriod`] — `lock_period` is zero or too large.
+    /// * [`Error::InvalidLockPeriod`] — `lock_period` is zero.
+    /// * [`Error::LockPeriodTooHigh`] — `lock_period` exceeds [`MAX_LOCK_PERIOD`].
     /// * [`Error::InvalidThreshold`] — `threshold == 0`.
+    /// * [`Error::ThresholdTooHigh`] — `threshold` exceeds [`MAX_THRESHOLD`].
     /// * [`Error::Unauthorized`] — the pool is already initialized.
     pub fn initialize(
         env: Env,
@@ -684,11 +717,17 @@ impl SentinelPool {
         if min_stake <= 0 {
             return Err(Error::InvalidStake);
         }
-        if lock_period == 0 || lock_period > MAX_LOCK_PERIOD {
+        if lock_period == 0 {
             return Err(Error::InvalidLockPeriod);
+        }
+        if lock_period > MAX_LOCK_PERIOD {
+            return Err(Error::LockPeriodTooHigh);
         }
         if threshold == 0 {
             return Err(Error::InvalidThreshold);
+        }
+        if threshold > MAX_THRESHOLD {
+            return Err(Error::ThresholdTooHigh);
         }
 
         // 2. Auth comes after every pure check.
