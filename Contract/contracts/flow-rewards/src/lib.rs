@@ -11,6 +11,7 @@ use soroban_sdk::{
 
 pub const ROLE_SUBMITTER: Symbol = symbol_short!("submitter");
 pub const ROLE_VERIFIER: Symbol = symbol_short!("verifier");
+pub const SUPPORTED_ROLES: [Symbol; 2] = [ROLE_SUBMITTER, ROLE_VERIFIER];
 pub const MAX_BATCH: u32 = 20;
 pub const MAX_GRANT_HISTORY: u32 = 100;
 pub const MAX_ARCHIVE_BATCH: u32 = 20;
@@ -198,14 +199,16 @@ impl FlowRewards {
         if entries.is_empty() || entries.len() > MAX_BATCH {
             return Err(Error::InvalidBatchSize);
         }
+        for (_, role, _, amount, _) in entries.iter() {
+            if amount <= 0 { return Err(Error::InvalidAmount); }
+            if !Self::is_supported_role(&role) { return Err(Error::UnsupportedRole); }
+        }
         admin.require_auth();
         Self::require_admin_if_configured(&env, &admin)?;
         Self::require_grants_not_paused(&env)?;
         extend_instance_ttl(&env);
 
         for (recipient, role, asset, amount, grant_id) in entries.iter() {
-            if amount <= 0 { return Err(Error::InvalidAmount); }
-            if !Self::is_supported_role(&role) { return Err(Error::UnsupportedRole); }
             Self::apply_grant(&env, recipient, asset, role, amount, grant_id)?;
         }
         Ok(())
@@ -537,10 +540,9 @@ impl FlowRewards {
     }
 
     fn is_supported_role(role: &Symbol) -> bool {
-        *role == ROLE_SUBMITTER || *role == ROLE_VERIFIER
+        SUPPORTED_ROLES.contains(role)
     }
 
-    fn apply_grant(env: &Env, recipient: Address, asset: Address, role: Symbol, amount: i128, grant_id: u64) -> Result<(), Error> {
     fn apply_grant(
         env: &Env,
         recipient: Address,
