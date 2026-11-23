@@ -81,10 +81,19 @@ pages = ceil(grant_count(recipient) / page_size)
 
 ## FlowRewards role-specific totals (CT-04)
 
-Rewards are attributed to the role supplied when the grant is created
-(`ROLE_SUBMITTER` or `ROLE_VERIFIER`). `grant` and `grant_batch` update the
-existing aggregate `DataKey::Granted` map and the new `DataKey::GrantedByRole`
-map in the same call, so the two views cannot drift apart.
+Rewards are attributed to the role supplied when the grant is created. The
+supported symbols are exported as `ROLE_SUBMITTER` and `ROLE_VERIFIER`, and
+collected in `SUPPORTED_ROLES` as the single definition of the accepted set.
+`grant` and `grant_batch` update the existing aggregate `DataKey::Granted` map
+and the new `DataKey::GrantedByRole` map in the same call, so the two views
+cannot drift apart.
+
+An unknown symbol is rejected with `Error::UnsupportedRole` before
+authentication and before any storage change. `grant_batch` validates the
+amount and role of every entry up front, so an invalid entry cannot leave an
+earlier entry partially applied. A rejected role leaves treasury, aggregate
+and per-role totals, grant markers and recipient indexes unchanged, and the
+unused grant ID can be used by a later valid grant.
 
 | Call | Meaning |
 | --- | --- |
