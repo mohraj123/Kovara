@@ -126,6 +126,16 @@ fn grant_ids(env: &Env) -> Vec<u64> {
         .unwrap_or_else(|| Vec::new(env))
 }
 
+fn grant_id_processed(env: &Env, grant_id: u64) -> bool {
+    if env.storage().persistent().has(&DataKey::GrantId(grant_id)) {
+        return true;
+    }
+
+    let first: Option<u64> = env.storage().instance().get(&DataKey::FirstGrantId);
+    let last: Option<u64> = env.storage().instance().get(&DataKey::LastGrantId);
+    matches!((first, last), (Some(first), Some(last)) if grant_id >= first && grant_id <= last)
+}
+
 fn extend_instance_ttl(env: &Env) {
     env.storage()
         .instance()
@@ -474,10 +484,7 @@ impl FlowRewards {
 
     pub fn is_grant_processed(env: Env, grant_id: u64) -> bool {
         extend_instance_ttl(&env);
-        if env.storage().persistent().has(&DataKey::GrantId(grant_id)) { return true; }
-        let first: Option<u64> = env.storage().instance().get(&DataKey::FirstGrantId);
-        let last: Option<u64> = env.storage().instance().get(&DataKey::LastGrantId);
-        matches!((first, last), (Some(first), Some(last)) if grant_id >= first && grant_id <= last)
+        grant_id_processed(&env, grant_id)
     }
 
     pub fn archived_totals(env: Env, recipient: Address, asset: Address) -> ArchivedTotals {
@@ -551,7 +558,7 @@ impl FlowRewards {
         amount: i128,
         grant_id: u64,
     ) -> Result<(), Error> {
-        if Self::is_grant_processed(env.clone(), grant_id) { return Err(Error::DuplicateGrant); }
+        if grant_id_processed(env, grant_id) { return Err(Error::DuplicateGrant); }
 
         let last: Option<u64> = env.storage().instance().get(&DataKey::LastGrantId);
         let (first_id, last_id) = match last {
