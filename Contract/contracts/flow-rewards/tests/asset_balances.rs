@@ -1,5 +1,5 @@
-use kovara_flow_rewards::{FlowRewards, FlowRewardsClient};
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
+use kovara_flow_rewards::{FlowRewards, FlowRewardsClient, ROLE_SUBMITTER, ROLE_VERIFIER};
+use soroban_sdk::{testutils::Address as _, Address, Env};
 
 #[test]
 fn balances_are_tracked_per_asset_and_recipient() {
@@ -14,9 +14,9 @@ fn balances_are_tracked_per_asset_and_recipient() {
 
     client.fund_treasury(&admin, &xlm, &1_000);
     client.fund_treasury(&admin, &usdc, &1_000);
-    client.grant(&admin, &alice, &xlm, &symbol_short!("submit"), &100, &1);
-    client.grant(&admin, &alice, &usdc, &symbol_short!("submit"), &40, &2);
-    client.grant(&admin, &bob, &xlm, &symbol_short!("verify"), &7, &3);
+    client.grant(&admin, &alice, &xlm, &ROLE_SUBMITTER, &100, &1);
+    client.grant(&admin, &alice, &usdc, &ROLE_SUBMITTER, &40, &2);
+    client.grant(&admin, &bob, &xlm, &ROLE_VERIFIER, &7, &3);
 
     assert_eq!(client.total_granted(&alice, &xlm), 100);
     assert_eq!(client.total_granted(&alice, &usdc), 40);

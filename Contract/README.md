@@ -48,6 +48,14 @@ Each `GrantRecord` holds the full state at read time:
 | `amount` | Total amount originally granted |
 | `claimed` | Amount claimed so far |
 | `revoked` | Amount revoked so far |
+| `granted_at` | Ledger timestamp when the grant was recorded |
+
+### `grant_timestamp(grant_id) → Option<u64>`
+
+Returns the ledger timestamp stored with `grant_id` when it was granted, or
+`None` if no detailed record exists for that ID (never granted, or already
+archived). The timestamp is captured from the ledger at grant time and is not
+changed by later claims or revocations.
 
 ### `grant_count(recipient) → u32`
 
