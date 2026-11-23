@@ -1,10 +1,13 @@
 import React from "react";
 import renderer from "react-test-renderer";
-import { fireEvent, render } from "@testing-library/react-native";
+import { act, fireEvent, render, renderHook } from "@testing-library/react-native";
 import { PostCard, Post } from "./PostCard";
 import { useRouter } from "expo-router";
+import { createPost as createPostOnChain } from "../utils/createPost";
+import { useCreatePost } from "../hooks/useCreatePost";
 
 jest.mock("expo-router", () => ({ useRouter: jest.fn(() => ({ push: jest.fn() })) }));
+jest.mock("../utils/createPost", () => ({ createPost: jest.fn() }));
 jest.mock("../hooks/useNetwork", () => ({
   useNetwork: () => ({
     rpcUrl: "https://test-rpc.example.com",
@@ -13,9 +16,9 @@ jest.mock("../hooks/useNetwork", () => ({
 }));
 jest.mock("../context/WalletContext", () => ({
   useWalletContext: () => ({
-    wallet: { address: null },
+    wallet: { address: "GABC1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ" },
     network: null,
-    state: "disconnected",
+    state: "connected",
     error: null,
     connect: jest.fn(),
     disconnect: jest.fn(),
@@ -30,6 +33,36 @@ jest.mock("../context/ToastContext", () => ({
 }));
 
 describe("PostCard", () => {
+  it("sends only one transaction for concurrent post submissions", async () => {
+    let resolveTransaction!: (txHash: string) => void;
+    const createPostMock = jest.mocked(createPostOnChain);
+    createPostMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveTransaction = resolve;
+      })
+    );
+
+    const { result } = renderHook(() => useCreatePost());
+    let firstSubmission!: ReturnType<typeof result.current.submit>;
+    let secondSubmission!: ReturnType<typeof result.current.submit>;
+
+    await act(async () => {
+      firstSubmission = result.current.submit({ content: "A post" });
+      secondSubmission = result.current.submit({ content: "A post" });
+    });
+
+    expect(createPostMock).toHaveBeenCalledTimes(1);
+    expect(result.current.submitting).toBe(true);
+
+    await act(async () => {
+      resolveTransaction("transaction-hash");
+      await firstSubmission;
+    });
+
+    await expect(firstSubmission).resolves.toEqual(await secondSubmission);
+    expect(createPostMock).toHaveBeenCalledTimes(1);
+  });
+
   const defaultPost: Post = {
     id: 1,
     author: "GABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",

@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS posts (
     content TEXT NOT NULL,
     tip_total BIGINT NOT NULL DEFAULT 0,
     like_count BIGINT NOT NULL DEFAULT 0,
+    created_ledger INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL,
     deleted_at TIMESTAMP DEFAULT NULL,
     

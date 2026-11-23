@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+  "contracts/*",
+]
+
+# CT-001: Pin the shared Soroban SDK version across all four contracts so the
+# workspace builds reproducibly with the same dependency tree.
+[workspace.dependencies]
+soroban-sdk = "25"
+
+# Release builds are optimized for on-chain deployment.
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+
+# Debuggable release used for local testing/logging.
+[profile.release-with-logs]
+inherits = "release"
+debug-assertions = true

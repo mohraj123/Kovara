@@ -12,74 +12,86 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 
-import { useToast } from "../../context/ToastContext";
-import { useNetwork } from "../../hooks/useNetwork";
-import { useWallet } from "../../hooks/useWallet";
-import { submitProfileTransaction } from "../../hooks/profileContract";
+import {
+  USERNAME_MAX_LENGTH,
+  USERNAME_MIN_LENGTH,
+  validateBannerUrl,
+  validateUsername,
+} from "../../components/ProfileHeader";
+import { useUpdateProfile } from "../../hooks/useProfile";
 
-const USERNAME_RE = /^[a-zA-Z0-9_]{3,32}$/;
+/** Stellar / Soroban address: G… or C… followed by 55 base-32 chars. */
+const STELLAR_ADDRESS_RE = /^[GC][A-Z2-7]{55}$/;
 
-function validateUsername(value: string): string | null {
-  if (!value.trim()) return "Username is required.";
-  if (!USERNAME_RE.test(value)) {
-    return "Username must be 3–32 characters: letters, numbers, or underscores only.";
+type Field = "username" | "bannerUrl" | "creatorToken";
+type FieldErrors = Partial<Record<Field, string>>;
+
+/** Creator token is optional; an empty value is valid. */
+function validateCreatorToken(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!STELLAR_ADDRESS_RE.test(trimmed)) {
+    return "Enter a valid Stellar address (starts with G or C, 56 characters).";
   }
   return null;
 }
 
+const VALIDATORS: Record<Field, (value: string) => string | null> = {
+  username: validateUsername,
+  bannerUrl: validateBannerUrl,
+  creatorToken: validateCreatorToken,
+};
+
+export function validateProfileForm(values: Record<Field, string>): FieldErrors {
+  const errors: FieldErrors = {};
+  (Object.keys(VALIDATORS) as Field[]).forEach((field) => {
+    const error = VALIDATORS[field](values[field]);
+    if (error) errors[field] = error;
+  });
+  return errors;
+}
+
 export default function EditProfileScreen() {
   const router = useRouter();
-  const { address, connected } = useWallet();
-  const { rpcUrl, contractId } = useNetwork();
-  const { showPending, showSuccess, showError } = useToast();
+  const { saving: submitting, saveError, saveProfile, clearSaveError } = useUpdateProfile();
 
-  const [username, setUsername] = useState("");
-  const [creatorToken, setCreatorToken] = useState("");
-  const [bannerUrl, setBannerUrl] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [usernameError, setUsernameError] = useState<string | null>(null);
+  const [values, setValues] = useState<Record<Field, string>>({
+    username: "",
+    bannerUrl: "",
+    creatorToken: "",
+  });
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  const { username, bannerUrl, creatorToken } = values;
 
-  const handleUsernameChange = (value: string) => {
-    setUsername(value);
-    if (usernameError) {
-      setUsernameError(validateUsername(value));
+  const handleChange = (field: Field) => (value: string) => {
+    setValues((prev) => ({ ...prev, [field]: value }));
+    // Only re-validate live once a field has been flagged, so users aren't
+    // nagged while typing for the first time.
+    if (fieldErrors[field]) {
+      setFieldErrors((prev) => ({ ...prev, [field]: VALIDATORS[field](value) ?? undefined }));
+    }
+    // A save failure caused by this field is resolved by editing it.
+    if (saveError?.field === field) {
+      clearSaveError();
     }
   };
 
   const handleSubmit = async () => {
-    if (!connected || !address) {
-      showError("Connect your wallet to edit your profile.");
-      return;
-    }
-      // onPress={() => router.push("/connect" as Parameters<typeof router.push>[0])}
+    const errors = validateProfileForm(values);
+    setFieldErrors(errors);
+    if (Object.keys(errors).length > 0) return;
 
-    const error = validateUsername(username);
-    if (error) {
-      setUsernameError(error);
-      return;
-    }
-
-    setSubmitting(true);
-    showPending();
-
-    try {
-      const txHash = await submitProfileTransaction(
-        address,
-        username.trim(),
-        creatorToken.trim(),
-        bannerUrl.trim(),
-        rpcUrl,
-        contractId
-      );
-      showSuccess(txHash);
-      router.back();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to update profile.";
-      showError(message);
-    } finally {
-      setSubmitting(false);
-    }
+    // On failure the hook keeps `saveError` and we stay on this screen with
+    // the user's edits intact so they can fix and retry.
+    const txHash = await saveProfile(values);
+    if (txHash) router.back();
   };
+
+  const usernameError =
+    fieldErrors.username ?? (saveError?.field === "username" ? saveError.message : undefined);
+  const creatorTokenError =
+    fieldErrors.creatorToken ?? (saveError?.field === "creatorToken" ? saveError.message : undefined);
+  const bannerUrlError = fieldErrors.bannerUrl;
 
   return (
     <KeyboardAvoidingView
@@ -91,6 +103,24 @@ export default function EditProfileScreen() {
           Edit Profile
         </Text>
 
+        {saveError ? (
+          <View
+            style={styles.saveErrorBanner}
+            testID="profile-save-error"
+            accessibilityRole="alert"
+            accessibilityLiveRegion="assertive"
+          >
+            <Text style={styles.saveErrorTitle}>Profile not saved</Text>
+            <Text style={styles.saveErrorMessage}>{saveError.message}</Text>
+            {saveError.detail && saveError.detail !== saveError.message ? (
+              <Text style={styles.saveErrorDetail} selectable testID="profile-save-error-detail">
+                {saveError.detail}
+              </Text>
+            ) : null}
+            <Text style={styles.saveErrorHint}>Your changes are still here. Fix any issues and try again.</Text>
+          </View>
+        ) : null}
+
         <View style={styles.fieldGroup}>
           <Text style={styles.label}>Username</Text>
           <TextInput
@@ -98,12 +128,13 @@ export default function EditProfileScreen() {
             placeholder="e.g. satoshi_nakamoto"
             placeholderTextColor="#64748b"
             value={username}
-            onChangeText={handleUsernameChange}
+            onChangeText={handleChange("username")}
+            maxLength={USERNAME_MAX_LENGTH}
             autoCapitalize="none"
             autoCorrect={false}
             editable={!submitting}
             accessibilityLabel="Username"
-            accessibilityHint="Choose a username with 3 to 32 letters, numbers, or underscores"
+            accessibilityHint={`Choose a username with ${USERNAME_MIN_LENGTH} to ${USERNAME_MAX_LENGTH} letters, numbers, or underscores`}
             accessibilityState={{ disabled: submitting }}
           />
           {usernameError ? (
@@ -111,21 +142,25 @@ export default function EditProfileScreen() {
               style={styles.errorText}
               accessibilityRole="alert"
               accessibilityLiveRegion="assertive"
+              testID="username-error"
             >
               {usernameError}
             </Text>
           ) : null}
-          <Text style={styles.hint}>3–32 characters: letters, numbers, or underscores.</Text>
+          <Text style={styles.hint}>
+            {USERNAME_MIN_LENGTH}–{USERNAME_MAX_LENGTH} characters: letters, numbers, or underscores.
+          </Text>
         </View>
 
         <View style={styles.fieldGroup}>
           <Text style={styles.label}>Banner URL</Text>
           <TextInput
-            style={styles.input}
+            style={[styles.input, bannerUrlError ? styles.inputError : null]}
             placeholder="https://example.com/banner.jpg"
             placeholderTextColor="#64748b"
             value={bannerUrl}
-            onChangeText={setBannerUrl}
+            onChangeText={handleChange("bannerUrl")}
+            keyboardType="url"
             autoCapitalize="none"
             autoCorrect={false}
             editable={!submitting}
@@ -133,17 +168,27 @@ export default function EditProfileScreen() {
             accessibilityHint="Enter a URL for your profile cover image"
             accessibilityState={{ disabled: submitting }}
           />
-          <Text style={styles.hint}>Optional cover image URL shown at the top of your profile.</Text>
+          {bannerUrlError ? (
+            <Text
+              style={styles.errorText}
+              accessibilityRole="alert"
+              accessibilityLiveRegion="assertive"
+              testID="banner-url-error"
+            >
+              {bannerUrlError}
+            </Text>
+          ) : null}
+          <Text style={styles.hint}>Optional http(s) image URL shown at the top of your profile.</Text>
         </View>
 
         <View style={styles.fieldGroup}>
           <Text style={styles.label}>Creator token address</Text>
           <TextInput
-            style={styles.input}
+            style={[styles.input, creatorTokenError ? styles.inputError : null]}
             placeholder="GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
             placeholderTextColor="#64748b"
             value={creatorToken}
-            onChangeText={setCreatorToken}
+            onChangeText={handleChange("creatorToken")}
             autoCapitalize="characters"
             autoCorrect={false}
             editable={!submitting}
@@ -151,6 +196,16 @@ export default function EditProfileScreen() {
             accessibilityHint="Paste the Stellar contract address of your creator token"
             accessibilityState={{ disabled: submitting }}
           />
+          {creatorTokenError ? (
+            <Text
+              style={styles.errorText}
+              accessibilityRole="alert"
+              accessibilityLiveRegion="assertive"
+              testID="creator-token-error"
+            >
+              {creatorTokenError}
+            </Text>
+          ) : null}
           <Text style={styles.hint}>Stellar contract address for your creator token.</Text>
         </View>
 
@@ -202,6 +257,35 @@ const styles = StyleSheet.create({
   },
   fieldGroup: {
     marginBottom: 24,
+  },
+  saveErrorBanner: {
+    backgroundColor: "#450a0a",
+    borderColor: "#f87171",
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 24,
+  },
+  saveErrorTitle: {
+    color: "#fecaca",
+    fontSize: 14,
+    fontWeight: "800",
+    marginBottom: 4,
+  },
+  saveErrorMessage: {
+    color: "#fee2e2",
+    fontSize: 14,
+  },
+  saveErrorDetail: {
+    color: "#fca5a5",
+    fontSize: 12,
+    fontFamily: "monospace",
+    marginTop: 8,
+  },
+  saveErrorHint: {
+    color: "#fca5a5",
+    fontSize: 12,
+    marginTop: 8,
   },
   label: {
     color: "#94a3b8",

@@ -116,17 +116,6 @@ export function usePools(): UsePoolsReturn {
     seenIdsRef.current = new Set();
     void load(0, true);
   }, [load]);
-    void loadPools();
-    return () => {
-      // MO-002: cancel on unmount so the artificial timeout cannot fire after unmount.
-      abortRef.current?.abort();
-      abortRef.current = null;
-    };
-  }, [loadPools]);
-
-  const refresh = useCallback(() => {
-    void loadPools();
-  }, [loadPools]);
 
   return { pools, loading, error, errorCode, hasMore, loadMore, refresh };
 }

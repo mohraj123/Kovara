@@ -134,6 +134,25 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /activity/{address}:
+    get:
+      summary: Get chronological contributor activity
+      operationId: getContributorActivity
+      tags: [Activity]
+      parameters:
+        - $ref: "#/components/parameters/address"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/offset"
+      responses:
+        "200":
+          description: Paginated activity timeline containing submissions and verification votes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActivityPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
 components:
   parameters:
     address:
@@ -272,6 +291,28 @@ components:
             type: string
         threshold:
           type: integer
+
+    ActivityPage:
+      type: object
+      required: [address, activities, limit, offset, total, hasMore]
+      properties:
+        address:
+          type: string
+        activities:
+          type: array
+          items:
+            type: object
+            required: [id, kind, occurredAt, submissionId, details]
+            properties:
+              id: { type: string }
+              kind: { type: string, enum: [submission, vote] }
+              occurredAt: { type: string, format: date-time }
+              submissionId: { type: string }
+              details: { type: object, additionalProperties: { type: string } }
+        limit: { type: integer }
+        offset: { type: integer }
+        total: { type: integer }
+        hasMore: { type: boolean }
           description: Minimum number of admin signatures required for withdrawal.
         created_ledger:
           type: integer

@@ -720,6 +720,105 @@ describe("Freighter Connection Tests", () => {
 
       const storedAddress = await secureStorage.getWalletAddress();
       expect(storedAddress).toBeNull();
+
+/**
+ * Connection failure recovery (FE-29).
+ *
+ * A rejected connection must leave the app in a state the user can get out of:
+ * no stale account on screen, no stuck spinner, and a retry that works.
+ */
+describe("Wallet Connect — failure recovery (FE-29)", () => {
+  const mockAddress = "GCKFBEIYTKP6RCZNVPH73XL7XFWTEOAO4MKONX7HOILHDVBMW5EVPOPZ";
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const mockSecureStore = require("expo-secure-store");
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSecureStore.__resetStore();
+    globalThis.__Kovara_WALLET_KIT__ = mockWalletKit;
+    mockWalletKit.getPublicKey.mockResolvedValue(mockAddress);
+    mockWalletKit.isConnected.mockResolvedValue(true);
+    mockWalletKit.disconnect.mockResolvedValue(undefined);
+    mockWalletKit.connect.mockResolvedValue({ publicKey: mockAddress });
+    mockFreighterApi.isConnected.mockResolvedValue(true);
+    mockFreighterApi.requestAccess.mockResolvedValue(mockAddress);
+  });
+
+  it("recovers by retrying after a failure, clearing the previous error", async () => {
+    const { getByTestId } = render(<TestApp />);
+    await waitFor(() =>
+      expect(getByTestId("wallet-state").children[0]).toBe("disconnected")
+    );
+
+    // First attempt fails.
+    mockFreighterApi.requestAccess.mockRejectedValueOnce(new Error("User rejected"));
+    await act(async () => {
+      fireEvent.press(getByTestId("connect-btn"));
     });
+
+    await waitFor(() => expect(getByTestId("wallet-state").children[0]).toBe("error"));
+    expect(getByTestId("wallet-error").children[0]).toContain("User rejected");
+
+    // Retry succeeds.
+    await act(async () => {
+      fireEvent.press(getByTestId("connect-btn"));
+    });
+
+    await waitFor(() =>
+      expect(getByTestId("wallet-state").children[0]).toBe("connected")
+    );
+    expect(getByTestId("wallet-error").children[0]).toBe("null");
+    expect(getByTestId("wallet-address").children[0]).toBe(mockAddress);
+  });
+
+  it("never leaves a stale address on screen while the state says error", async () => {
+    const { getByTestId } = render(<TestApp />);
+    await waitFor(() =>
+      expect(getByTestId("wallet-state").children[0]).toBe("disconnected")
+    );
+
+    await act(async () => {
+      fireEvent.press(getByTestId("connect-btn"));
+    });
+    await waitFor(() => expect(getByTestId("wallet-state").children[0]).toBe("connected"));
+
+    // A second attempt fails after a successful one.
+    mockFreighterApi.requestAccess.mockRejectedValueOnce(new Error("Wallet locked"));
+    await act(async () => {
+      fireEvent.press(getByTestId("connect-btn"));
+    });
+
+    await waitFor(() => expect(getByTestId("wallet-state").children[0]).toBe("error"));
+    expect(getByTestId("wallet-address").children[0]).toBe("null");
+  });
+
+  it("still ends up disconnected when secure storage fails during disconnect", async () => {
+    const { getByTestId } = render(<TestApp />);
+    await waitFor(() =>
+      expect(getByTestId("wallet-state").children[0]).toBe("disconnected")
+    );
+
+    await act(async () => {
+      fireEvent.press(getByTestId("connect-btn"));
+    });
+    await waitFor(() =>
+      expect(getByTestId("wallet-state").children[0]).toBe("connected")
+    );
+
+    // A locked keychain must not strand the user in a session they just ended:
+    // the deletes used to sit outside the catch, so a rejection here meant the
+    // state reset never ran.
+    const originalDelete = mockSecureStore.deleteItemAsync;
+    mockSecureStore.deleteItemAsync = jest.fn().mockRejectedValue(new Error("Keychain locked"));
+    mockWalletKit.disconnect.mockRejectedValue(new Error("remote session gone"));
+
+    await act(async () => {
+      fireEvent.press(getByTestId("disconnect-btn"));
+    });
+
+    expect(getByTestId("wallet-state").children[0]).toBe("disconnected");
+    expect(getByTestId("wallet-address").children[0]).toBe("null");
+
+    mockSecureStore.deleteItemAsync = originalDelete;
   });
 });

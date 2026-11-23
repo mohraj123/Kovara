@@ -123,6 +123,72 @@ export function normalizeAddress(address: string): string {
   return address.trim().toUpperCase();
 }
 
+interface DecimalAmount {
+  whole: string;
+  fraction: string;
+}
+
+function parseDecimalAmount(value: string): DecimalAmount | null {
+  const match = /^((?:\d{1,3}(?:,\d{3})+|\d+))(?:\.(\d+))?$/.exec(value.trim());
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    whole: match[1].replace(/,/g, "").replace(/^0+(?=\d)/, ""),
+    fraction: (match[2] ?? "").replace(/0+$/, ""),
+  };
+}
+
+function compareDecimalAmounts(left: DecimalAmount, right: DecimalAmount): number {
+  if (left.whole.length !== right.whole.length) {
+    return left.whole.length > right.whole.length ? 1 : -1;
+  }
+  if (left.whole !== right.whole) {
+    return left.whole > right.whole ? 1 : -1;
+  }
+
+  const fractionLength = Math.max(left.fraction.length, right.fraction.length);
+  const leftFraction = left.fraction.padEnd(fractionLength, "0");
+  const rightFraction = right.fraction.padEnd(fractionLength, "0");
+  return leftFraction === rightFraction ? 0 : leftFraction > rightFraction ? 1 : -1;
+}
+
+function poolBalanceAmount(balance: string): string | null {
+  const match = /^\s*((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?:[A-Z0-9._-]+)?\s*$/i.exec(
+    balance
+  );
+  return match?.[1] ?? null;
+}
+
+export function getPoolAvailableAmount(pool: Pick<PoolRecord, "balance">): string {
+  return poolBalanceAmount(pool.balance) ?? "unavailable";
+}
+
+export function getPoolWithdrawalAmountError(poolId: string, amount: string): string | null {
+  if (!amount.trim()) {
+    return null;
+  }
+
+  const requested = parseDecimalAmount(amount);
+  if (!requested || compareDecimalAmounts(requested, { whole: "0", fraction: "" }) <= 0) {
+    return "Enter a valid amount greater than zero";
+  }
+
+  const availableText = poolBalanceAmount(ensurePool(poolId).balance);
+  const available = availableText ? parseDecimalAmount(availableText) : null;
+  if (!available) {
+    return "The available pool balance cannot be verified";
+  }
+
+  if (compareDecimalAmounts(requested, available) > 0) {
+    return `Amount exceeds the available balance. Maximum withdrawable: ${availableText}`;
+  }
+
+  return null;
+}
+
 export function addPoolAdmin(poolId: string, address: string): boolean {
   const nextAddress = normalizeAddress(address);
 
@@ -192,7 +258,11 @@ export function recordPoolWithdrawal(
   poolId: string,
   withdrawal: Omit<PoolWithdrawal, "id" | "createdAt">
 ): PoolWithdrawal | null {
-  if (!isValidStellarAddress(withdrawal.recipient)) {
+  if (
+    !isValidStellarAddress(withdrawal.recipient) ||
+    !withdrawal.amount.trim() ||
+    getPoolWithdrawalAmountError(poolId, withdrawal.amount) !== null
+  ) {
     return null;
   }
 

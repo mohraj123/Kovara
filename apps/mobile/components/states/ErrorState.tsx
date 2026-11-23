@@ -34,11 +34,21 @@ function resolveMessage(statusCode?: IndexerErrorCode, fallback?: string): strin
 export interface ErrorStateProps {
   message?: string;
   onRetry: () => void;
-  retryLabel?: string;
-  title?: string;
+  retryLabel?: string; // default "Try again"
+  title?: string; // overrides resolveTitle()
   /** Optional HTTP-like status code from the indexer for contextual messaging. */
   statusCode?: IndexerErrorCode;
   testID?: string;
+  /**
+   * Hide the retry button. Set this for a **terminal** outcome — a 404 that a
+   * retry cannot change (FE-22). Offering "Try again" there invites the user to
+   * tap a button that does nothing; for a transient failure (network, 5xx) the
+   * retry is the point of the screen and stays visible.
+   *
+   * `onRetry` remains required so the call site always has a recovery path
+   * wired up even when this particular outcome hides it.
+   */
+  showRetry?: boolean; // default true
 }
 
 export function ErrorState({
@@ -48,6 +58,7 @@ export function ErrorState({
   title,
   statusCode,
   testID = "error-state",
+  showRetry = true,
 }: ErrorStateProps): JSX.Element {
   const { theme } = useTheme();
 
@@ -148,15 +159,17 @@ export function ErrorState({
       ) : null}
       <Text style={styles.title}>{resolvedTitle}</Text>
       <Text style={styles.message}>{resolvedMessage}</Text>
-      <Pressable
-        style={({ pressed }) => [styles.actionButton, pressed && styles.actionButtonPressed]}
-        onPress={onRetry}
-        accessibilityRole="button"
-        accessibilityLabel={retryLabel}
-        testID={`${testID}-retry`}
-      >
-        <Text style={styles.actionLabel}>{retryLabel}</Text>
-      </Pressable>
+      {showRetry ? (
+        <Pressable
+          style={({ pressed }) => [styles.actionButton, pressed && styles.actionButtonPressed]}
+          onPress={onRetry}
+          accessibilityRole="button"
+          accessibilityLabel={retryLabel}
+          testID={`${testID}-retry`}
+        >
+          <Text style={styles.actionLabel}>{retryLabel}</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }

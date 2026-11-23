@@ -2,28 +2,87 @@
 
 Daily Kōvara Value Index (KVI) records — one per country, per day.
 
-Implements **CT-034** (authorize index updates), **CT-035** (complete daily
-index events), **CT-036** (contract storage versioning) and **CT-037** (admin
-transfer and recovery). The remaining index behaviour belongs to other issues
-and extends what is here.
-
-## What is here, and what is not
+Implements the full **CT-030..CT-037** series for the daily index:
 
 | Issue | Owns | State |
 |---|---|---|
+| CT-030 | Daily storage: one record per country/day, plus `latest` and range queries | **This crate** |
+| CT-031 | KVI rounding rules for `value` | **This crate** |
+| CT-032 | Deterministic aggregation producing `value` | **This crate** |
+| CT-033 | Rejection of duplicate index updates | **This crate** |
 | CT-034 | Who may update, and how many must agree | **This crate** |
 | CT-035 | The `DailyIndexUpdated` event and its fields | **This crate** |
 | CT-036 | Schema versioning and rejection of incompatible data | **This crate** |
 | CT-037 | Admin transfer and recovery | **This crate** |
-| CT-030 | Daily index storage semantics | Not implemented |
-| CT-031 | KVI rounding rules for `value` | Not implemented |
-| CT-032 | Deterministic aggregation producing `value` | Not implemented |
-| CT-033 | Rejection of duplicate index updates | Not implemented |
 
-`set_daily_index` therefore accepts a value some other component computed and
-lets a later write replace an earlier one. Rounding, aggregation and duplicate
-rejection are the named issues above; guessing at their semantics now would
-only have to be undone.
+## Storage and queries (CT-030)
+
+An authorized update stores **one record per country per day** — the record is
+keyed by `(schema_version, country, date)` — and emits the `DailyIndexUpdated`
+event (CT-035). Three query entrypoints read it back:
+
+- `get_daily_index(country, date)` — a single day;
+- `latest_daily_index(country)` — the most recent day, via the per-country
+  latest-date index that CT-033 also uses, so it is one read, not a scan;
+- `daily_index_history(country, from, to)` — the days in `[from, to]`,
+  ascending, bounded by `MAX_HISTORY_WINDOW` (ten years) so a caller cannot
+  turn the query into an unbounded loop. An inverted range is rejected.
+
+## The value (CT-031)
+
+`value` is a signed fixed-point integer in **`KVI_SCALE` = 10,000** units:
+`value / 10,000` is the human-readable index.
+
+- **Scale** — `KVI_SCALE`, one scale everywhere, so two implementations of
+  the aggregation produce numbers a consumer can compare.
+- **Rounding** — the single rounding rule is *half away from zero*
+  (`5 / 2 -> 3`, `-5 / 2 -> -3`). It is applied wherever a division can
+  produce a fractional result (the even-count median average). It is
+  symmetric and never biased toward either direction.
+- **Overflow** — values outside `±KVI_VALUE_MAX` (10^18) are rejected with
+  `ValueOutOfRange` rather than stored. The bound keeps every arithmetic step
+  in the contract far inside `i128`, so nothing can wrap silently.
+- **Missing basket** — a record without a basket (`basket_version == 0`) is
+  rejected, and a day that was never finalized simply reads as `None`: the
+  contract never writes a zero as a stand-in for "no data".
+- **Baseline** — the KVI is normalized so parity with the reference period
+  reads as **`KVI_BASELINE` = 100 * `KVI_SCALE`** (100.0000). The contract
+  stores absolute values and does not re-normalize; the constant pins what
+  "parity with the baseline" means for every consumer.
+
+## Deterministic aggregation (CT-032)
+
+`compute_daily_index(observations)` produces the daily value from raw
+`Observation { value, weight }` pairs as a **weighted, 10%-trimmed median**.
+It is pure and stateless, so any sentinel can call it to verify a submitted
+aggregate, and identical inputs always yield the identical number:
+
+1. **Trim** — drop the lowest and highest `len * 10 / 100` observations
+   (floored), so a single wild value at either end changes nothing.
+2. **Sort** — ascending by value only; equal values are interchangeable, so
+   the result depends on the multiset of `(value, weight)` pairs, never on
+   input order.
+3. **Weighted median** — the first value whose cumulative weight exceeds
+   half the total. When cumulative weight lands **exactly on half**, the two
+   straddling values are averaged and rounded half away from zero (CT-031).
+
+`set_aggregated_index(...)` computes the value with the same function, then
+stores it and emits the event exactly as `set_daily_index` would, returning
+ the computed value. An observation with zero weight is rejected.
+
+## Immutable history (CT-033)
+
+Finalized history is immutable and strictly forward:
+
+- **Duplicates** — a `(country, date)` that already has a record is rejected
+  with `IndexAlreadyFinalized`, so replaying an update (even with a different
+  value) can never overwrite a finalized day.
+- **Out-of-order** — a `date` at or before the country's latest finalized
+  date is rejected with `OutOfOrderUpdate`. History moves forward only; a
+  missed day is simply a day with no index and cannot be backfilled later.
+
+Both checks run in the same write path as the record itself, so the guard and
+ the data cannot diverge. A rejected update emits no event and stores nothing.
 
 ## Storage versioning policy (CT-036)
 
@@ -164,7 +223,7 @@ schemas are briefly live.
 ```bash
 cd packages/contracts
 
-cargo test -p kovara-index                       # 68 tests
+cargo test -p kovara-index                       # 97 tests
 cargo build --target wasm32v1-none --release     # -> target/wasm32v1-none/release/kovara_index.wasm
 ```
 

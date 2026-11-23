@@ -56,6 +56,45 @@ export interface UseFeedReturn {
   refresh: () => void;
 }
 
+/**
+ * How a load treats the posts already on screen.
+ *
+ * `replace` overwrites the feed (first load, refresh) and always reads from
+ * offset zero. `append` adds one page after the current cursor.
+ */
+type LoadMode = "replace" | "append";
+
+/**
+ * Paginated feed with **serialized** requests.
+ *
+ * ## Why requests are serialized
+ *
+ * `loading` is React state, so it does not change until the next render. Two
+ * `loadMore()` calls in the same tick both observe `loading === false` and
+ * both fire. Both read the same cursor, both request the same page, and the
+ * feed ends up showing that page twice.
+ *
+ * Two mechanisms prevent that, and they solve different halves of the problem:
+ *
+ * 1. **A promise chain** (`chainRef`) guarantees only one request is ever in
+ *    flight. Every load is appended to the chain, so ordering is explicit
+ *    rather than implied by whichever `await` happened to resolve first.
+ * 2. **A pending-append flag** (`appendPendingRef`) makes a burst of
+ *    `loadMore()` calls enqueue *one* page request, not N. Without it the
+ *    chain would faithfully serialize three identical appends.
+ *
+ * The cursor is read at **execution** time rather than at call time. A queued
+ * append therefore uses the position the previous page left behind, which is
+ * what makes the chain correct rather than merely ordered.
+ *
+ * ## Why a failed load leaves the feed alone
+ *
+ * `setPosts` is only reached on success. On failure the posts, the cursor and
+ * `hasMore` all keep the values that describe what is on screen, so the feed
+ * stays consistent and the next attempt resumes from a valid position.
+ * `refresh()` always reads from offset zero, so a retry after a failed refresh
+ * starts over from the first page rather than resuming mid-list.
+ */
 export function useFeed(): UseFeedReturn {
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
@@ -63,24 +102,39 @@ export function useFeed(): UseFeedReturn {
   const [errorCode, setErrorCode] = useState<IndexerErrorCode | undefined>(undefined);
   const [hasMore, setHasMore] = useState(true);
 
+  // Cursor: how many records are already displayed. Advanced only by a
+  // successful load, so it always describes the posts currently on screen.
   const offsetRef = useRef(0);
-  const loadingRef = useRef(false);
 
-  const load = useCallback(async (offset: number, replace: boolean) => {
-    if (loadingRef.current) return;
-    loadingRef.current = true;
+  // Tail of the serialized load chain.
+  const chainRef = useRef<Promise<unknown>>(Promise.resolve());
+
+  // Whether an append is queued or in flight, so a burst of `loadMore()`
+  // calls enqueues a single page request.
+  const appendPendingRef = useRef(false);
+
+  const runLoad = useCallback(async (mode: LoadMode) => {
+    // Read the cursor now, not when the request was queued: a serialized
+    // append must start where the previous page finished.
+    const offset = mode === "replace" ? 0 : offsetRef.current;
+
     setLoading(true);
     setError(null);
     setErrorCode(undefined);
 
     try {
       const { posts: fetched, hasMore: more } = await fetchPostsFromIndexer(PAGE_SIZE, offset, {});
-      setPosts((prev) => (replace ? fetched : [...prev, ...fetched]));
-      setHasMore(more);
-      if (fetched.length > 0) {
+      if (mode === "replace") {
+        setPosts(fetched);
+        offsetRef.current = fetched.length;
+      } else {
+        setPosts((prev) => [...prev, ...fetched]);
         offsetRef.current = offset + fetched.length;
       }
+      setHasMore(more);
     } catch (e) {
+      // Deliberately no `setPosts` here: a failed refresh must leave the
+      // current feed on screen, and the cursor must keep describing it.
       if (e instanceof IndexerError) {
         setErrorCode(clampStatusCode(e.statusCode));
         setError(e.message);
@@ -89,13 +143,22 @@ export function useFeed(): UseFeedReturn {
       }
     } finally {
       setLoading(false);
-      loadingRef.current = false;
     }
   }, []);
 
+  const load = useCallback(
+    (mode: LoadMode): Promise<void> => {
+      const run = chainRef.current.then(() => runLoad(mode));
+      // Keep the chain usable after a rejection, so one failed load does not
+      // poison every load that follows it.
+      chainRef.current = run.catch(() => undefined);
+      return run;
+    },
+    [runLoad],
+  );
+
   useEffect(() => {
-    offsetRef.current = 0;
-    void load(0, true);
+    void load("replace");
   }, [load]);
 
   useEffect(() => {
@@ -105,14 +168,18 @@ export function useFeed(): UseFeedReturn {
   }, []);
 
   const loadMore = useCallback(() => {
-    if (!loading && hasMore) {
-      void load(offsetRef.current, false);
-    }
-  }, [loading, hasMore, load]);
+    if (!hasMore) return;
+    // A page request is already queued or in flight; this tap adds nothing.
+    if (appendPendingRef.current) return;
+    appendPendingRef.current = true;
+    void load("append").finally(() => {
+      appendPendingRef.current = false;
+    });
+  }, [hasMore, load]);
 
   const refresh = useCallback(() => {
-    offsetRef.current = 0;
-    void load(0, true);
+    // Queued behind anything already running, and always reads from offset 0.
+    void load("replace");
   }, [load]);
 
   return { posts, loading, error, errorCode, hasMore, loadMore, refresh };

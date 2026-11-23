@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { validateUsername, validateStellarAddress } from '@/lib/validate';
+import { validateBannerUrl, validateUsername, validateStellarAddress } from '@/lib/validate';
+import { sanitizeBannerUrl } from '@/utils/sanitizeUrl';
 import { FieldError } from './FieldError';
 
 export interface ProfileFormValues {
@@ -40,14 +41,12 @@ export function ProfileForm({ onSubmit, initialValues = {}, disabled = false }: 
       if (!addrResult.valid) errs.creatorToken = addrResult.error;
     }
     if (bannerUrl.trim()) {
-      try {
-        const url = new URL(bannerUrl);
-        if (!['http:', 'https:'].includes(url.protocol)) {
-          errs.bannerUrl = 'Banner URL must use http or https.';
-        }
-      } catch {
-        errs.bannerUrl = 'Enter a valid banner URL.';
-      }
+      // FE-28: delegate to the shared validator, which is the same rule the
+      // banner is rendered through. The inline protocol check this replaces
+      // skipped the 2048-character ceiling, so a URL the form accepted was
+      // silently dropped at render time.
+      const bannerResult = validateBannerUrl(bannerUrl);
+      if (!bannerResult.valid) errs.bannerUrl = bannerResult.error;
     }
     return errs;
   }
@@ -61,7 +60,16 @@ export function ProfileForm({ onSubmit, initialValues = {}, disabled = false }: 
     }
     setSubmitting(true);
     try {
-      await onSubmit({ username: username.trim(), creatorToken: creatorToken.trim(), bannerUrl: bannerUrl.trim() });
+      // The submitted banner URL is passed through the same sanitiser the
+      // renderer uses, so what is saved is exactly what will be displayed
+      // (FE-28). Validation above already rejects anything unsafe, so an empty
+      // result here can only mean the field was left blank.
+      const sanitizedBanner = sanitizeBannerUrl(bannerUrl.trim());
+      await onSubmit({
+        username: username.trim(),
+        creatorToken: creatorToken.trim(),
+        bannerUrl: sanitizedBanner,
+      });
     } finally {
       setSubmitting(false);
     }

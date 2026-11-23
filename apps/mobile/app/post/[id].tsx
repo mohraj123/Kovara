@@ -7,12 +7,12 @@ import { useDeletePost } from "../../hooks/useDeletePost";
 import { useWallet } from "../../hooks/useWallet";
 import { useTheme } from "../../theme/useTheme";
 import { getPostById } from "../../utils/indexerClient";
+import { parsePostId } from "../../utils/deepLinks";
 import type { Post } from "../../components/PostCard";
 import { IndexerError } from "../../../packages/sdk/src/errors";
 import { EmptyState } from "../../components/states/EmptyState";
 import { ErrorState } from "../../components/states/ErrorState";
 import type { IndexerErrorCode } from "../../components/states/ErrorState";
-      // onPress={() => router.push("/connect" as Parameters<typeof router.push>[0])}
 
 // Status codes renderable by ErrorState; anything else (e.g. 0 from
 // misconfiguration) collapses to 500 so the cast stays type-safe.
@@ -27,8 +27,10 @@ function clampStatusCode(raw: number | undefined): IndexerErrorCode {
 }
 
 type PostParams = {
-  id: string;
+  id: string | string[];
 };
+
+const FEED_ROUTE = "/(tabs)/feed";
 
 export default function PostDetailScreen() {
   const { theme } = useTheme();
@@ -40,14 +42,18 @@ export default function PostDetailScreen() {
   const [post, setPost] = useState<Post | null | undefined>(undefined);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<IndexerErrorCode | undefined>(undefined);
+  const parsedId = useMemo(() => parsePostId(id), [id]);
+  const postId = parsedId.ok ? parsedId.id : null;
+
+  const goToFeed = () => router.replace(FEED_ROUTE as Parameters<typeof router.replace>[0]);
 
   const refresh = useMemo(
     () => async () => {
-      if (!id) return;
+      if (!postId) return;
       setErrorMessage(null);
       setErrorCode(undefined);
       try {
-        const fetched = await getPostById(String(id));
+        const fetched = await getPostById(postId);
         setPost(fetched);
       } catch (err) {
         if (err instanceof IndexerError) {
@@ -59,7 +65,7 @@ export default function PostDetailScreen() {
         setPost(null);
       }
     },
-    [id]
+    [postId]
   );
 
   useEffect(() => {
@@ -81,19 +87,40 @@ export default function PostDetailScreen() {
         onPress: async () => {
           const deleted = await deletePost({ postId: post.id, author: post.author });
           if (deleted) {
-            router.replace("/(tabs)/feed" as Parameters<typeof router.replace>[0]);
+            goToFeed();
           }
         },
       },
     ]);
   };
 
+  if (!parsedId.ok) {
+    // Malformed or missing ids never reach the indexer; explain the link
+    // instead of spinning forever and give the user a way back.
+    return (
+      <View style={[styles.container, styles.content]}>
+        <EmptyState
+          icon="🔗"
+          title={parsedId.reason === "missing" ? "Missing post link" : "Unsupported post link"}
+          subtitle={
+            parsedId.reason === "missing"
+              ? "This link doesn't include a post ID, so there's nothing to open."
+              : "This link doesn't point to a valid post. It may be mistyped or from an older version of Kovara."
+          }
+          actionLabel="Go to feed"
+          onAction={goToFeed}
+          testID="post-link-unsupported"
+        />
+      </View>
+    );
+  }
+
   if (post === undefined) {
     // Still fetching from the indexer; show a brief placeholder.
     return (
       <View style={[styles.container, styles.content]}>
         <Text style={styles.label}>Post</Text>
-        <Text style={styles.id}>#{id}</Text>
+        <Text style={styles.id}>#{postId}</Text>
         <Text style={styles.placeholder}>Loading…</Text>
       </View>
     );
@@ -111,11 +138,14 @@ export default function PostDetailScreen() {
     return (
       <View style={[styles.container, styles.content]}>
         <Text style={styles.label}>Post</Text>
-        <Text style={styles.id}>#{id}</Text>
+        <Text style={styles.id}>#{postId}</Text>
         <EmptyState
           icon="🔍"
           title="Post not found"
           subtitle="This post may have been deleted by its author."
+          actionLabel="Go to feed"
+          onAction={goToFeed}
+          testID="post-not-found"
         />
       </View>
     );

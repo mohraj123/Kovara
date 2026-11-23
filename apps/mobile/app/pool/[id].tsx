@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useCallback } from "react";
 import {
   Text,
   StyleSheet,
@@ -20,18 +20,7 @@ type PoolParams = {
 export default function PoolDetailScreen(): JSX.Element {
   const { id } = useLocalSearchParams<PoolParams>();
   const { wallet } = useWallet();
-  const { pool, loading, error, errorCode, isAdmin, refresh } = usePool(id || "");
-
-  if (!id) {
-    return (
-      <ErrorState
-        message="Pool ID is missing from the route."
-        statusCode={404}
-        onRetry={refresh}
-        title="Not found"
-      />
-    );
-  }
+  const { pool, loading, error, errorCode, refreshing, isAdmin, refresh } = usePool(id || "");
 
   if (loading) {
     return (
@@ -44,16 +33,31 @@ export default function PoolDetailScreen(): JSX.Element {
   if (error || !pool) {
     // Typed API errors (network → 503, auth → 401/403, not-found → 404)
     // are normalized by usePool into errorCode for consistent ErrorState UI.
+    //
+    // A 404 is **terminal**: the pool is gone, and no amount of retrying brings
+    // it back, so the retry button is hidden rather than inviting a tap that
+    // cannot do anything (FE-22). Everything else — network, 5xx, auth — is
+    // transient, and the retry is the whole point of the screen.
+    const isTerminal = (errorCode ?? 404) === 404;
     return (
       <ErrorState
         message={error ?? "Pool not found"}
         statusCode={errorCode ?? 404}
         onRetry={refresh}
+        showRetry={!isTerminal}
+        retryLabel={isTerminal ? undefined : "Try again"}
       />
     );
   }
 
   const isCurrentUserAdmin = wallet.address ? isAdmin(wallet.address) : false;
+
+  // `refresh` is awaited by the deposit form's onSuccess, so a confirmed
+  // transaction re-reads the balance here. `refreshing` says so without hiding
+  // the figure that is already on screen (FE-21).
+  const handleRefresh = useCallback(async () => {
+    await refresh();
+  }, [refresh]);
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -68,6 +72,11 @@ export default function PoolDetailScreen(): JSX.Element {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Balance</Text>
         <Text style={styles.sectionValue}>{pool.balance.toString()}</Text>
+        {refreshing ? (
+          <Text style={styles.refreshing} accessibilityLiveRegion="polite">
+            Updating balance…
+          </Text>
+        ) : null}
       </View>
 
       <View style={styles.section}>
@@ -86,8 +95,12 @@ export default function PoolDetailScreen(): JSX.Element {
         <Text style={styles.sectionValue}>{pool.threshold}</Text>
       </View>
 
-      <PoolDepositForm poolId={pool.pool_id} token={pool.token} tokenDecimals={pool.token_decimals} />
-      <PoolDepositForm poolId={pool.pool_id} token={pool.token} onSuccess={refresh} />
+      <PoolDepositForm
+        poolId={pool.pool_id}
+        token={pool.token}
+        tokenDecimals={pool.token_decimals}
+        onSuccess={handleRefresh}
+      />
 
       {isCurrentUserAdmin && (
         <View style={styles.adminSection}>
@@ -234,6 +247,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#cbd5e1",
     fontWeight: "500",
+  },
+  refreshing: {
+    marginTop: 4,
+    fontSize: 12,
+    color: "#94a3b8",
   },
   adminItem: {
     paddingVertical: 8,

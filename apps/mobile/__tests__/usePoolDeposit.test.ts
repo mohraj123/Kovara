@@ -1,6 +1,7 @@
 import {
   parseAmountToUnits,
   DEFAULT_TOKEN_DECIMALS,
+  usePoolDeposit,
 } from '../hooks/usePoolDeposit';
 
 describe('parseAmountToUnits', () => {
@@ -57,3 +58,25 @@ describe('parseAmountToUnits', () => {
     expect(parseAmountToUnits('01.50', 2)).toEqual({ ok: true, units: '150' });
   });
 });
+
+describe('usePoolDeposit', () => {
+  it('preserves the entered amount and exposes a retryable error on failure', async () => {
+    const submit = jest.fn().mockRejectedValue(new Error('network down'));
+    const { result } = renderHook(() =>
+      usePoolDeposit({ submit, decimals: DEFAULT_TOKEN_DECIMALS }),
+    );
+
+    act(() => {
+      result.current.setAmount('1.5');
+    });
+
+    await act(async () => {
+      await result.current.deposit();
+    });
+
+    expect(result.current.amount).toBe('1.5');
+    expect(result.current.error).toBeTruthy();
+    expect(result.current.canRetry).toBe(true);
+  });
+});
+           

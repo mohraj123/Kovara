@@ -2,19 +2,30 @@ import React, { useMemo } from "react";
 import { ActivityIndicator, FlatList, StyleSheet, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
+import ProfileHeader from "../../components/ProfileHeader";
+import { PostCard } from "../../components/PostCard";
+import { ErrorState } from "../../components/states/ErrorState";
+import { useFeed } from "../../hooks/useFeed";
+import { useProfile } from "../../hooks/useProfile";
+import { useWallet } from "../../hooks/useWallet";
+import { useTheme } from "../../theme/useTheme";
+
 type ProfileParams = {
-  address: string;
+  address: string | string[];
 };
 
 export default function ProfileDetailScreen() {
   const router = useRouter();
   const { theme } = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
-  const { address } = useLocalSearchParams<ProfileParams>();
+  const params = useLocalSearchParams<ProfileParams>();
+  const address = (Array.isArray(params.address) ? params.address[0] : params.address) ?? "";
   const { address: me } = useWallet();
 
+  // useProfile discards responses for any address other than the current one,
+  // so navigating between profiles never flashes the previous user's data.
   const { profile, loading, error, errorCode, followerCount, followingCount, isFollowing, toggleFollow, refresh } =
-    useProfile(address ?? "");
+    useProfile(address);
 
   const { posts, loading: postsLoading, refresh: refreshPosts } = useFeed();
 
@@ -34,7 +45,7 @@ export default function ProfileDetailScreen() {
 
   return (
     <View style={styles.container}>
-      {profile && (
+      {profile && profile.address === address && (
         <ProfileHeader
           profile={profile}
           followerCount={followerCount}
@@ -43,7 +54,7 @@ export default function ProfileDetailScreen() {
           isOwnProfile={me === address}
           onFollowersPress={() => router.push(`/profile/followers?address=${address}` as Parameters<typeof router.push>[0])}
           onFollowingPress={() => router.push(`/profile/following?address=${address}` as Parameters<typeof router.push>[0])}
-          onEditPress={() => router.push("/settings" as Parameters<typeof router.push>[0])}
+          onEditPress={() => router.push("/profile/edit" as Parameters<typeof router.push>[0])}
           onToggleFollow={toggleFollow}
         />
       )}

@@ -1,6 +1,7 @@
 import request from "supertest";
 import { createApp } from "../index";
 import { Database } from "../../db";
+import { getRequestId, runWithRequestId, withRequestId } from "../../request-context";
 
 function makeMockDb(): jest.Mocked<Database> {
   return {
@@ -85,6 +86,24 @@ describe("Smoke Tests", () => {
     });
   });
 
+  describe("API versioning", () => {
+    it("serves version 1 routes under /api/v1", async () => {
+      const res = await request(app).get("/api/v1/profiles/test");
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ code: "INVALID_ADDRESS" });
+    });
+
+    it("keeps unversioned routes compatible and marks them deprecated", async () => {
+      const res = await request(app).get("/api/profiles/test");
+
+      expect(res.status).toBe(400);
+      expect(res.headers.deprecation).toBe("true");
+      expect(res.headers.link).toContain("/api/v1/profiles/test");
+      expect(res.headers.link).toContain('rel="successor-version"');
+    });
+  });
+
   describe("Server startup", () => {
     it("creates an app without throwing", () => {
       expect(() => createApp(db)).not.toThrow();
@@ -114,6 +133,50 @@ describe("Smoke Tests", () => {
     it("returns application/json for error responses", async () => {
       const res = await request(app).get("/api/nonexistent");
       expect(res.headers["content-type"]).toMatch(/application\/json/);
+    });
+  });
+
+  describe("Error responses", () => {
+    it("uses the shared error shape and omits internal database details", async () => {
+      db.getProfile.mockRejectedValueOnce(
+        new Error("database unavailable: private connection string")
+      );
+
+      const res = await request(app)
+        .get(`/api/v1/profiles/${"G"}${"A".repeat(55)}`)
+        .set("X-Request-Id", "smoke-request-123");
+
+      expect(res.status).toBe(503);
+      expect(res.body).toEqual({
+        error: "Database unavailable",
+        code: "DATABASE_UNAVAILABLE",
+        requestId: "smoke-request-123",
+      });
+      expect(JSON.stringify(res.body)).not.toContain("private connection string");
+      expect(res.headers["x-request-id"]).toBe("smoke-request-123");
+      expect(res.headers["x-correlation-id"]).toBe("smoke-request-123");
+    });
+
+    it("uses the same error shape for unknown API routes", async () => {
+      const res = await request(app).get("/api/v1/nonexistent");
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({
+        error: "Route not found",
+        code: "NOT_FOUND",
+        requestId: res.headers["x-request-id"],
+      });
+    });
+
+    it("adds an active request ID but leaves errors unchanged without request context", () => {
+      const error = { error: "failed", code: "INTERNAL_ERROR" };
+
+      expect(getRequestId()).toBeUndefined();
+      expect(withRequestId(error)).toBe(error);
+      expect(runWithRequestId("req-test-123", () => withRequestId(error))).toEqual({
+        ...error,
+        requestId: "req-test-123",
+      });
     });
   });
 });

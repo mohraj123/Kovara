@@ -31,11 +31,14 @@ pub enum StorageKey {
     PriceStake(Address), // persistent: contributor -> locked stake
     Proposal(u64),              // persistent: proposal_id -> Proposal
     RewardBalance(RewardRole, Address, Address), // persistent: (role, user, token) -> i128
-    RewardLiability(Address),     // persistent: token -> total unclaimed rewards
+    RewardLiability(Address),  // persistent: token -> total unclaimed rewards
+    RewardAssets,              // persistent: configured XLM + USDC reward asset addresses
+    Admin,                     // persistent or instance admin reference
     Verifier(Address),          // persistent: registered verifier marker
-  // persistent: (verifier, token) -> i128
-    VoteRound(u64),                            // persistent: submission_id -> VoteRound
-    HasVoted(u64, Address),                    // persistent: (submission_id, verifier) -> bool
+    VerifierStake(Address, Address), // persistent: (verifier, token) -> i128
+    VoteRound(u64),                  // persistent: submission_id -> VoteRound
+    HasVoted(u64, Address),          // persistent: (submission_id, verifier) -> bool
+    QuorumConfig,                    // instance: quorum configuration parameters
 }
 
 // ── Error Codes ────────────────────────────────────────────────────────────────
@@ -43,6 +46,7 @@ pub enum StorageKey {
 #[contracterror]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContractError {
+    // ── Core / initialization ─────────────────────────────────────────────────
     AlreadyInitialized = 1,
     InvalidFee = 2,
     InvalidUsername = 3,
@@ -76,8 +80,10 @@ pub enum ContractError {
     TreasuryNotSet = 31,
     FeeCalculationOverflow = 32,
     TipTotalOverflow = 33,
+    // ── Pool balance (CT-022) ─────────────────────────────────────────────────
     PoolBalanceOverflow = 34,
     PoolBalanceUnderflow = 35,
+    // ── Post / profile ────────────────────────────────────────────────────────
     PostNotFound = 36,
     UsernameTooShort = 37,
     UsernameTooLong = 38,
@@ -87,29 +93,36 @@ pub enum ContractError {
     ContentTooLong = 42,
     TreasuryCannotBeContract = 43,
     NoOpFeeUpdate = 44,
-    InvalidWasmHash = 43,
+    // ── Reward / asset ────────────────────────────────────────────────────────
     InvalidRewardAsset = 45,
     RewardFundsReserved = 46,
     RewardFundsUnavailable = 47,
-    VerifierAlreadyRegistered = 45,
-    VerifierNotRegistered = 46,
-    StakeAmountMustBePositive = 47,
-    StakeBalanceOverflow = 48,
-    Paused = 45,
-    InvalidWasmHash = 45,
-    RoundAlreadyExists = 46,
-    RoundNotFound = 47,
-    RoundClosed = 48,
-    RoundAlreadyFinalized = 49,
-    AlreadyVoted = 50,
-    RoundStillOpen = 51,
+    // ── Verifier / stake (CT-022) ─────────────────────────────────────────────
+    VerifierAlreadyRegistered = 54,
+    VerifierNotRegistered = 55,
+    StakeAmountMustBePositive = 56,
+    // CT-022: StakeBalanceOverflow fires on deposit_stake checked_add failure.
+    StakeBalanceOverflow = 57,
+    MinimumVerifierStakeMustBePositive = 58,
+    InsufficientVerifierStake = 59,
+    // ── Contract state ────────────────────────────────────────────────────────
+    Paused = 60,
+    InvalidWasmHash = 61,
+    CannotLikeOwnPost = 62,
+    // ── Vote round ────────────────────────────────────────────────────────────
+    RoundAlreadyExists = 63,
+    RoundNotFound = 64,
+    RoundClosed = 65,
+    RoundAlreadyFinalized = 66,
+    AlreadyVoted = 67,
+    RoundStillOpen = 68,
 }
 
 // ── Instance-storage key constants (small scalars, not contracttype) ──────────
 
 const POST_CT: Symbol = symbol_short!("POST_CT");
 const PROFILE_CREATED_CT: Symbol = symbol_short!("PROF_CT");
-const ADMIN: Symbol = symbol_short!("ADMIN");
+pub(crate) const ADMIN: Symbol = symbol_short!("ADMIN");
 const TREASURY: Symbol = symbol_short!("TREASURY");
 const FEE_BPS: Symbol = symbol_short!("FEE_BPS");
 const INITIALIZED: Symbol = symbol_short!("INIT");
@@ -121,6 +134,8 @@ const PRICE_MIN_STAKE: i128 = 1;
 const PRICE_DEPOSIT: i128 = 1;
 const PRICE_EVENT_VERSION: Symbol = symbol_short!("v1");
 const PROPOSAL_CT: Symbol = symbol_short!("PROP_CT");
+pub(crate) const MIN_VERIFIER_STAKE: Symbol = symbol_short!("MIN_V_STK");
+pub(crate) const VERIFIER_COUNT: Symbol = symbol_short!("VFR_CNT");
 const PAUSED: Symbol = symbol_short!("PAUSED");
 
 // ── TTL Constants ─────────────────────────────────────────────────────────────
@@ -181,6 +196,15 @@ pub struct Pool {
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RewardAssetConfig {
+    /// Stellar XLM asset identifier for the active network.
+    pub xlm: Address,
+    /// Stellar USDC asset identifier for the active network.
+    pub usdc: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProposalStatus {
     Pending,
     Executed,
@@ -196,6 +220,13 @@ pub struct Proposal {
     pub recipient: Address,
     pub signers: Vec<Address>,
     pub status: ProposalStatus,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuorumConfig {
+    pub min_quorum_size: u32,
+    pub approval_threshold_percent: u32,
 }
 
 // ── Events ────────────────────────────────────────────────────────────────────
@@ -421,6 +452,16 @@ pub struct PauseEvent {
 pub struct UnpauseEvent {
     pub admin: Address,
 }
+
+#[contractevent]
+#[derive(Clone)]
+pub struct QuorumConfigUpdatedEvent {
+    #[topic]
+    pub name: Symbol,
+    pub min_quorum_size: u32,
+    pub approval_threshold_percent: u32,
+}
+
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -1115,7 +1156,12 @@ impl KovaraContract {
         let token_client = token::Client::new(&env, &asset);
         token_client.transfer(&submitter, &env.current_contract_address(), &stake);
         token_client.transfer(&submitter, &env.current_contract_address(), &PRICE_DEPOSIT);
-        env.storage().persistent().set(&stake_key, &(current_stake + stake));
+        // CT-022: use checked_add so a price-stake overflow produces a named
+        // StakeBalanceOverflow error rather than a generic host trap.
+        let new_stake = current_stake
+            .checked_add(stake)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::StakeBalanceOverflow));
+        env.storage().persistent().set(&stake_key, &new_stake);
         env.storage().persistent().set(&observation_key, &amount);
         env.storage().persistent().set(&StorageKey::PriceRate(submitter.clone()), &env.ledger().sequence());
         Self::bump(&env, &stake_key);
@@ -1822,6 +1868,61 @@ impl KovaraContract {
         env.storage().instance().get(&PAUSED).unwrap_or(false)
     }
 
+    // ── Quorum Configuration ──────────────────────────────────────────────────
+
+    /// Set the quorum configuration parameters. Admin-only.
+    ///
+    /// `min_quorum_size` must be > 0 and `approval_threshold_percent` must be
+    /// > 0 and <= 100. Emits a `QuorumConfigUpdatedEvent`.
+    ///
+    /// # Panics
+    /// - `InvalidThreshold` if either parameter is out of range.
+    pub fn set_quorum_config(
+        env: Env,
+        min_quorum_size: u32,
+        approval_threshold_percent: u32,
+    ) {
+        Self::require_initialized(&env);
+        Self::bump_instance(&env);
+        Self::require_admin(&env);
+
+        if min_quorum_size == 0 {
+            panic_with_error!(&env, ContractError::InvalidThreshold);
+        }
+        if approval_threshold_percent == 0 || approval_threshold_percent > 100 {
+            panic_with_error!(&env, ContractError::InvalidThreshold);
+        }
+
+        let config = QuorumConfig {
+            min_quorum_size,
+            approval_threshold_percent,
+        };
+
+        env.storage()
+            .instance()
+            .set(&StorageKey::QuorumConfig, &config);
+
+        QuorumConfigUpdatedEvent {
+            name: symbol_short!("quorum"),
+            min_quorum_size,
+            approval_threshold_percent,
+        }
+        .publish(&env);
+    }
+
+    /// Return the current quorum configuration, or a default (1, 51) if none
+    /// has been set.
+    pub fn get_quorum_config(env: Env) -> QuorumConfig {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&StorageKey::QuorumConfig)
+            .unwrap_or(QuorumConfig {
+                min_quorum_size: 1,
+                approval_threshold_percent: 51,
+            })
+    }
+
     pub(crate) fn require_not_paused(env: &Env) {
         if env.storage().instance().get(&PAUSED).unwrap_or(false) {
             panic_with_error!(env, ContractError::Paused);
@@ -1829,6 +1930,7 @@ impl KovaraContract {
     }
 }
 
+#[cfg(test)]
 mod test;
 pub mod flow_rewards;
 pub mod sentinel_pool;

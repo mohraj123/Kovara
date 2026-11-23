@@ -1,125 +1,110 @@
-import { useState, useEffect, useCallback } from "react";
-import type { Pool } from "../utils/indexerClient";
-import { getPoolById } from "../utils/indexerClient";
-import { useState, useEffect, useCallback, useRef } from "react";
-import type { Pool } from "../../../packages/sdk/src/types";
-import { IndexerError } from "../../../packages/sdk/src/errors";
+import { useCallback, useEffect, useRef, useState } from "react";
+
 import type { IndexerErrorCode } from "../components/states/ErrorState";
 import { mapIndexerError } from "../utils/mapIndexerError";
-
-const RENDERABLE_ERROR_CODES: ReadonlySet<IndexerErrorCode> = new Set([
-  400, 401, 403, 404, 429, 500, 502, 503, 504,
-]);
-
-function clampStatusCode(raw: number | undefined): IndexerErrorCode {
-  if (typeof raw === "number" && RENDERABLE_ERROR_CODES.has(raw as IndexerErrorCode)) {
-    return raw as IndexerErrorCode;
-  }
-  return 500;
-}
-
-/** Simulated single-pool fetch that respects AbortSignal (MO-002). */
-function fetchPoolMock(poolId: string, signal?: AbortSignal): Promise<Pool | null> {
-  return new Promise<Pool | null>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new IndexerError("Indexer request was aborted or timed out", 0));
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      if (signal?.aborted) {
-        reject(new IndexerError("Indexer request was aborted or timed out", 0));
-        return;
-      }
-      resolve(MOCK_POOLS[poolId] ?? null);
-    }, 300);
-
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new IndexerError("Indexer request was aborted or timed out", 0));
-    };
-
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
+import { getPoolById, type Pool } from "../utils/indexerClient";
 
 export interface UsePoolReturn {
   pool: Pool | null;
   loading: boolean;
   error: string | null;
   errorCode: IndexerErrorCode | undefined;
+  /** True while a post-transaction refresh is in flight (the screen keeps showing data). */
+  refreshing: boolean;
   isAdmin: (address: string) => boolean;
-  refresh: () => void;
+  /** Re-reads the pool. Resolves when the new values are in state. */
+  refresh: () => Promise<void>;
 }
 
 /**
- * Load a single pool from the configured indexer backend.
- * Missing / empty IDs surface a 404 without hitting the network.
+ * Load a single pool's details from the configured indexer backend
+ * (EXPO_PUBLIC_INDEXER_URL). No mock data is used: missing / empty route IDs
+ * and indexer 404s surface as a typed 404 for ErrorState without a network
+ * call, and all other failures map through mapIndexerError for stable
+ * message + status-code rendering.
  */
 export function usePool(poolId: string): UsePoolReturn {
   const [pool, setPool] = useState<Pool | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<IndexerErrorCode | undefined>(undefined);
+  const [refreshing, setRefreshing] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  const loadPool = useCallback(async () => {
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
+  // Read inside `loadPool` so the "do I already have data?" decision sees the
+  // current pool without making the callback depend on it (which would tear
+  // down and re-run the load effect on every successful fetch).
+  const poolRef = useRef<Pool | null>(null);
+  poolRef.current = pool;
 
-    setLoading(true);
-    setError(null);
-    setErrorCode(undefined);
+  /**
+   * @param options.silent keep the current pool on screen instead of showing the
+   *   loading spinner. Used after a confirmed deposit/withdrawal: the balance is
+   *   stale by one transaction and the user should watch it update, not stare at
+   *   a spinner that blanks the whole screen (FE-21).
+   */
+  const loadPool = useCallback(
+    async (options: { silent?: boolean } = {}): Promise<void> => {
+      const silent = options.silent ?? false;
+      // A refresh after a confirmed transaction is silent only while there is
+      // something to keep showing.
+      const keepData = silent && poolRef.current !== null;
 
-    const id = String(poolId ?? "").trim();
-    if (!id) {
-      setPool(null);
-      setErrorCode(404);
-      setError("Pool not found");
-      setLoading(false);
-      return;
-    }
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
 
-    try {
-      const foundPool = await getPoolById(id);
-      if (!foundPool) {
-        setPool(null);
-        setErrorCode(404);
-        setError("Pool not found");
-      const foundPool = await fetchPoolMock(poolId, controller.signal);
-      if (controller.signal.aborted) return;
-
-      if (!foundPool) {
-        // Typed not-found → ErrorState "Not found" + retry (MO-004).
-        setErrorCode(404);
-        setError("Pool not found");
-        setPool(null);
-        return;
-      }
-      setPool(foundPool);
-    } catch (err) {
-      setPool(null);
-      if (err instanceof IndexerError) {
-        setErrorCode(clampStatusCode(err.statusCode));
-        setError(err.message);
+      if (keepData) {
+        setRefreshing(true);
       } else {
-        setError("Failed to load pool. Please try again.");
-        setErrorCode(500);
-      if (controller.signal.aborted) return;
-      if (err instanceof IndexerError && err.statusCode === 0 && /abort/i.test(err.message)) {
+        setLoading(true);
+      }
+      setError(null);
+      setErrorCode(undefined);
+
+      const id = String(poolId ?? "").trim();
+      if (!id) {
+        // Missing / empty route param → "Not found" without hitting the network.
+        setPool(null);
+        setErrorCode(404);
+        setError("Pool not found");
+        setLoading(false);
+        setRefreshing(false);
         return;
       }
-      const mapped = mapIndexerError(err, "Failed to load pool. Please try again.");
-      setErrorCode(mapped.statusCode);
-      setError(mapped.message);
-      setPool(null);
-    } finally {
-      if (!controller.signal.aborted) {
-        setLoading(false);
+
+      try {
+        const foundPool = await getPoolById(id, { signal: controller.signal });
+
+        if (controller.signal.aborted) return;
+
+        if (!foundPool) {
+          // Indexer reported 404 (or a soft-deleted row) → ErrorState "Not found".
+          setPool(null);
+          setErrorCode(404);
+          setError("Pool not found");
+          return;
+        }
+
+        setPool(foundPool);
+        setError(null);
+        setErrorCode(undefined);
+      } catch (err) {
+        if (controller.signal.aborted) return;
+
+        const mapped = mapIndexerError(err, "Failed to load pool. Please try again.");
+        setPool(null);
+        setErrorCode(mapped.statusCode);
+        setError(mapped.message);
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
-    }
-  }, [poolId]);
+    },
+    [poolId]
+  );
 
   useEffect(() => {
     void loadPool();
@@ -130,15 +115,14 @@ export function usePool(poolId: string): UsePoolReturn {
   }, [loadPool]);
 
   const isAdmin = useCallback(
-    (address: string) => {
-      return pool?.admins.includes(address) ?? false;
-    },
+    (address: string) => pool?.admins.includes(address) ?? false,
     [pool]
   );
 
-  const refresh = useCallback(() => {
-    void loadPool();
-  }, [loadPool]);
+  // Returns the promise rather than discarding it (FE-21): a caller that needs
+  // to know when the new balance is on screen — to clear a "deposited" banner,
+  // say — could not before.
+  const refresh = useCallback(() => loadPool({ silent: true }), [loadPool]);
 
-  return { pool, loading, error, errorCode, isAdmin, refresh };
+  return { pool, loading, error, errorCode, refreshing, isAdmin, refresh };
 }

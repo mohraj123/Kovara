@@ -12,30 +12,131 @@
  * Idempotent: if the follow already exists the handler returns immediately
  * without issuing a database write.
  */
-import { Pool } from "pg";
+import { Pool, PoolClient } from "pg";
+import {
+  DatabasePoolConfig,
+  DEFAULT_DB_POOL_CONNECTION_TIMEOUT_MS,
+  DEFAULT_DB_POOL_IDLE_TIMEOUT_MS,
+  DEFAULT_DB_POOL_MAX,
+  DEFAULT_DB_STATEMENT_TIMEOUT_MS,
+  parseDatabasePoolConfig,
+} from "./config";
 
-/** Default query timeout in milliseconds (30s). */
-const DEFAULT_QUERY_TIMEOUT = 30_000;
+/** Default query timeout in milliseconds (30s). @deprecated Use DEFAULT_DB_STATEMENT_TIMEOUT_MS */
+const DEFAULT_QUERY_TIMEOUT = DEFAULT_DB_STATEMENT_TIMEOUT_MS;
+
+/**
+ * PostgreSQL pool defaults — re-exported here so callers that only import
+ * from `db.ts` can discover tuning knobs without importing `config.ts`.
+ *
+ * All values are configurable via environment variables (see `config.ts` and
+ * `.env.example`):
+ *  - `DB_POOL_MAX` (default 10) — maximum clients in the pool
+ *  - `DB_POOL_CONNECTION_TIMEOUT_MS` (default 5000) — connection timeout
+ *  - `DB_POOL_IDLE_TIMEOUT_MS` (default 30000) — idle timeout
+ *  - `DB_STATEMENT_TIMEOUT_MS` / `QUERY_TIMEOUT_MS` (default 30000) — per-query timeout
+ */
+export const DEFAULT_POOL_MAX = DEFAULT_DB_POOL_MAX;
+export const DEFAULT_POOL_CONNECTION_TIMEOUT_MS = DEFAULT_DB_POOL_CONNECTION_TIMEOUT_MS;
+export const DEFAULT_POOL_IDLE_TIMEOUT_MS = DEFAULT_DB_POOL_IDLE_TIMEOUT_MS;
+export const DEFAULT_STATEMENT_TIMEOUT_MS = DEFAULT_DB_STATEMENT_TIMEOUT_MS;
+
+/** Options accepted by {@link createPool} / {@link buildPoolConfig}. */
+export interface PoolConfig extends DatabasePoolConfig {
+  connectionString: string;
+}
+
+/**
+ * Build a `pg.Pool` config from env vars with documented defaults.
+ * Pool size, connection timeout, idle timeout, and statement timeout are all
+ * configurable without code changes, enabling tuning for small vs large deployments.
+ */
+export function buildPoolConfig(
+  connectionString: string,
+  env: Record<string, string | undefined> = process.env
+): PoolConfig {
+  const pool = parseDatabasePoolConfig(env);
+  return { connectionString, ...pool };
+}
+
+/**
+ * Create a `pg.Pool` with env-configurable size and timeouts.
+ * Prefer this over `new Pool({ connectionString })` so deployments can tune
+ * the pool without a rebuild.
+ */
+export function createPool(
+  connectionString: string,
+  env: Record<string, string | undefined> = process.env
+): Pool {
+  const cfg = buildPoolConfig(connectionString, env);
+  return new Pool({
+    connectionString: cfg.connectionString,
+    max: cfg.max,
+    connectionTimeoutMillis: cfg.connectionTimeoutMillis,
+    idleTimeoutMillis: cfg.idleTimeoutMillis,
+    statement_timeout: cfg.statementTimeoutMillis,
+  });
+}
+
+// BA-028: Convert a value to bigint without silently losing precision.
+//
+// PostgreSQL BIGINT holds integers up to 2^63-1, but a JavaScript `number`
+// only represents integers losslessly within [-Number.MAX_SAFE_INTEGER,
+// Number.MAX_SAFE_INTEGER] (2^53-1). Converting an unsafe number to BigInt
+// would silently corrupt large counts such as like totals and tip totals.
+//
+// Rules:
+//   - native bigint  → returned as-is
+//   - number         → must be an integer and a safe integer, else throw
+//   - integer string → parsed exactly (leading +/- allowed)
+//   - anything else  → throws
+export function toSafeBigInt(value: unknown): bigint {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value)) {
+      throw new Error(
+        `Unsafe bigint conversion: ${value} is not a safe integer (|value| > 2^53-1)`,
+      );
+    }
+    return BigInt(value);
+  }
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (s === "") throw new Error(`Cannot convert empty string to bigint`);
+    if (!/^[+-]?\d+$/.test(s)) {
+      throw new Error(`Cannot convert non-integer string to bigint: "${value}"`);
+    }
+    return BigInt(s);
+  }
+  throw new Error(`Unsupported bigint value: ${String(value)}`);
+}
 
 // ── Simple TTL cache for frequently-accessed records ────────────────────────
 
 class TTLCache<T> {
-  private readonly store = new Map<string, { value: T; expiresAt: number }>();
+  private readonly store = new Map<
+    string,
+    { value: T; expiresAt: number; epoch: number }
+  >();
 
   constructor(private readonly ttlMs: number) {}
 
-  get(key: string): T | undefined {
+  getEntry(key: string): { value: T; epoch: number } | undefined {
     const entry = this.store.get(key);
     if (!entry) return undefined;
     if (Date.now() > entry.expiresAt) {
       this.store.delete(key);
       return undefined;
     }
-    return entry.value;
+    return { value: entry.value, epoch: entry.epoch };
   }
 
-  set(key: string, value: T): void {
-    this.store.set(key, { value, expiresAt: Date.now() + this.ttlMs });
+  get(key: string): T | undefined {
+    return this.getEntry(key)?.value;
+  }
+
+  set(key: string, value: T, epoch: number): void {
+    this.store.set(key, { value, expiresAt: Date.now() + this.ttlMs, epoch });
   }
 
   delete(key: string): void {
@@ -149,6 +250,12 @@ export interface Database {
     author?: string;
     limit: number;
     offset: number;
+    /**
+     * Keyset boundary (BE-01). When present the query resumes strictly after
+     * `(created_at, id)` and `offset` is ignored, so a page does not shift when
+     * a post is created between two requests.
+     */
+    cursor?: { created_at: string; id: string };
   }): Promise<{ posts: Post[]; total: number }>;
   searchPosts(filters: {
     query: string;
@@ -194,25 +301,155 @@ export class PostgresDatabase implements Database {
   // In-memory caches for frequently-queryable records (BE-18).
   // Short TTL balances read performance with eventual consistency.
   //
-  // Cache invalidation strategy (BE-33): Every write method that mutates a
-  // cached entity deletes the corresponding cache entry *before* issuing the
-  // SQL statement. This ensures that any subsequent read will fetch the latest
-  // committed state from Postgres rather than returning a stale cached value.
+  // Cache invalidation strategy (BE-33): Every successful write method that
+  // mutates a cached entity deletes the corresponding cache entry after the
+  // SQL statement completes. Failed writes preserve the valid cached value.
   // The TTL acts as a safety net for entries that were not explicitly invalidated.
+  //
+  // Cross-replica coordination (BA-026): a process-local cache alone can serve
+  // stale records to a *different* indexer instance that shares the same
+  // Postgres backend. To coordinate replicas we maintain a shared, monotonically
+  // increasing `cache_epoch` in Postgres. Every writer bumps the epoch; each
+  // cache entry records the epoch at insertion time; and a reader revalidates a
+  // cache hit by comparing the entry's epoch against the latest shared epoch.
+  // We poll the shared epoch with a short in-process window so reads stay cheap.
+  //
+  // Documented consistency bound: a mutation performed by another replica
+  // becomes visible here no later than `sharedEpochRefreshMs` (poll window)
+  // after it commits, and never after the entry TTL expires regardless of the
+  // poll window — so stale reads are bounded even if polling is delayed.
   private readonly profileCache = new TTLCache<Profile>(30_000); // 30 seconds
   private readonly postCache = new TTLCache<Post>(30_000);
 
+  private static readonly SHARED_EPOCH_REFRESH_MS = 500;
+  private static readonly SHARED_EPOCH_KEY = "global";
+  private sharedEpoch = 0;
+  private sharedEpochFetchedAt = 0;
+  private cacheCoordinationReady = false;
+  private cacheCoordinationChecked = false;
+
   constructor(private readonly pool: Pool) {}
+
+  /** Creates the shared `cache_epoch` table if it does not already exist. */
+  private async ensureCacheCoordination(): Promise<void> {
+    if (this.cacheCoordinationChecked) return;
+    this.cacheCoordinationChecked = true;
+    try {
+      await this.runQuery(`
+        CREATE TABLE IF NOT EXISTS cache_epoch (
+          key TEXT PRIMARY KEY,
+          epoch BIGINT NOT NULL
+        )
+      `);
+      this.cacheCoordinationReady = true;
+    } catch {
+      // Table unavailable (e.g. missing DDL permission). Coordination degrades
+      // to the documented TTL consistency bound, which the read path handles.
+      this.cacheCoordinationReady = false;
+    }
+  }
+
+  /** Returns the latest shared epoch, refreshing from Postgres at most every
+   *  `SHARED_EPOCH_REFRESH_MS`. Falls back to the local snapshot on error. */
+  private async readSharedEpoch(): Promise<number> {
+    await this.ensureCacheCoordination();
+    const now = Date.now();
+    if (now - this.sharedEpochFetchedAt < PostgresDatabase.SHARED_EPOCH_REFRESH_MS) {
+      return this.sharedEpoch;
+    }
+    if (this.cacheCoordinationReady) {
+      try {
+        const result = await this.runQuery(
+          `SELECT COALESCE(MAX(epoch), 0)::BIGINT AS epoch FROM cache_epoch`
+        );
+        this.sharedEpoch = Number(result.rows[0]?.epoch ?? 0);
+        this.sharedEpochFetchedAt = now;
+      } catch {
+        this.sharedEpochFetchedAt = now; // avoid hammering a failing table
+      }
+    } else {
+      this.sharedEpochFetchedAt = now;
+    }
+    return this.sharedEpoch;
+  }
+
+  /** Bumps the shared epoch so every replica revalidates its cached entities. */
+  private async bumpSharedEpoch(): Promise<void> {
+    await this.ensureCacheCoordination();
+    if (!this.cacheCoordinationReady) return;
+    try {
+      await this.runQuery(
+        `INSERT INTO cache_epoch (key, epoch) VALUES ($1, 1)
+         ON CONFLICT (key) DO UPDATE SET epoch = cache_epoch.epoch + 1`,
+        [PostgresDatabase.SHARED_EPOCH_KEY]
+      );
+      // Reflect the bump immediately in the local snapshot.
+      this.sharedEpoch += 1;
+      this.sharedEpochFetchedAt = Date.now();
+    } catch {
+      // Best-effort; the TTL bound still protects correctness locally.
+    }
+  }
+
+  /** Cached value is valid only if its epoch is not older than the shared one. */
+  private async isCacheCurrent(entryEpoch: number): Promise<boolean> {
+    if (entryEpoch === 0) return true; // entries recorded before coordination
+    const shared = await this.readSharedEpoch();
+    return entryEpoch >= shared;
+  }
+
+  /** Revalidates a raw cached entry against the shared epoch, returning its
+   *  value only when it is still current. */
+  private async revalidate<T>(entry: { value: T; epoch: number } | undefined) {
+    if (!entry) return undefined;
+    if (await this.isCacheCurrent(entry.epoch)) return entry.value;
+    return undefined;
+  }
 
   private async runQuery(queryText: string, params?: unknown[]) {
     return this.pool.query(queryText, params);
   }
 
+  /**
+   * Run `fn` as one transaction on a dedicated connection (BE-53).
+   *
+   * Every statement `fn` issues through the supplied client commits together or
+   * not at all: if `fn` (or the commit) throws, the transaction is rolled back
+   * explicitly, so no partial write is left behind, and the original error is
+   * rethrown. The client is always returned to the pool; if the rollback itself
+   * fails the connection is destroyed instead of being reused in an unknown
+   * state. The shared cache epoch is bumped only after a successful commit, so
+   * a failed transaction never invalidates caches or signals other replicas.
+   *
+   * Use the client passed to `fn` for every statement in the unit of work;
+   * queries sent through the pool would run outside the transaction.
+   */
+  async withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    let destroyClient = false;
+    let result!: T;
+    try {
+      await client.query("BEGIN");
+      result = await fn(client);
+      await client.query("COMMIT");
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        destroyClient = true;
+      }
+      throw err;
+    } finally {
+      client.release(destroyClient ? true : undefined);
+    }
+    await this.bumpSharedEpoch();
+    return result;
+  }
+
+  // BA-028: never convert lossy numeric values into bigints silently.
+  // See the exported `toSafeBigInt` helper for the boundary rules.
   private toBigInt(value: unknown): bigint {
-    if (typeof value === "bigint") return value;
-    if (typeof value === "number") return BigInt(value);
-    if (typeof value === "string") return BigInt(value);
-    throw new Error(`Unsupported bigint value: ${String(value)}`);
+    return toSafeBigInt(value);
   }
 
   private mapPost(row: Record<string, unknown>): Post {
@@ -244,9 +481,6 @@ export class PostgresDatabase implements Database {
   }
 
   async upsertProfile(profile: Profile): Promise<void> {
-    // Invalidates any cached version of this profile so the next read
-    // fetches fresh data (BE-18).
-    this.profileCache.delete(profile.address);
     await this.runQuery(
       `
       INSERT INTO profiles (address, username, creator_token, updated_ledger)
@@ -258,6 +492,9 @@ export class PostgresDatabase implements Database {
       `,
       [profile.address, profile.username, profile.creator_token, profile.updated_ledger]
     );
+    // BA-026: tell every replica sharing this Postgres that caches changed.
+    await this.bumpSharedEpoch();
+    this.profileCache.delete(profile.address);
   }
 
   async getFollow(follower: string, followee: string): Promise<Follow | null> {
@@ -293,11 +530,10 @@ export class PostgresDatabase implements Database {
   }
 
   async insertPost(post: Post): Promise<void> {
-    this.postCache.delete(post.id.toString());
     await this.runQuery(
       `
-      INSERT INTO posts (id, author, content, tip_total, like_count, created_at)
-      VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))
+      INSERT INTO posts (id, author, content, tip_total, like_count, created_ledger, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()))
       ON CONFLICT (id) DO NOTHING
       `,
       [
@@ -306,12 +542,15 @@ export class PostgresDatabase implements Database {
         post.content,
         post.tip_total.toString(),
         post.like_count.toString(),
+        post.created_ledger,
+        post.created_at ?? null,
       ]
     );
+    await this.bumpSharedEpoch();
+    this.postCache.delete(post.id.toString());
   }
 
   async markPostDeleted(post_id: bigint, deleted_ledger: number, deleted_at?: Date): Promise<void> {
-    this.postCache.delete(post_id.toString());
     await this.runQuery(
       `
       UPDATE posts
@@ -320,34 +559,38 @@ export class PostgresDatabase implements Database {
       `,
       [post_id.toString(), deleted_ledger, deleted_at ?? null]
     );
+    await this.bumpSharedEpoch();
+    this.postCache.delete(post_id.toString());
   }
 
   async incrementPostLikeCount(post_id: bigint): Promise<void> {
-    this.postCache.delete(post_id.toString());
     await this.runQuery(`UPDATE posts SET like_count = like_count + 1 WHERE id = $1`, [
       post_id.toString(),
     ]);
+    await this.bumpSharedEpoch();
+    this.postCache.delete(post_id.toString());
   }
 
   async addPostTipTotal(post_id: bigint, net_amount: bigint): Promise<void> {
-    this.postCache.delete(post_id.toString());
     await this.runQuery(`UPDATE posts SET tip_total = tip_total + $2 WHERE id = $1`, [
       post_id.toString(),
       net_amount.toString(),
     ]);
+    await this.bumpSharedEpoch();
+    this.postCache.delete(post_id.toString());
   }
 
   async getPost(post_id: bigint): Promise<Post | null> {
     const key = post_id.toString();
-    // Check cache first (BE-18).
-    const cached = this.postCache.get(key);
+    // Check cache first (BE-18), revalidating it against the shared epoch (BA-026).
+    const cached = await this.revalidate(this.postCache.getEntry(key));
     if (cached) return cached;
 
     const result = await this.runQuery(`SELECT * FROM posts WHERE id = $1`, [key]);
     const post = result.rowCount ? this.mapPost(result.rows[0]) : null;
 
-    // Cache for subsequent reads.
-    if (post) this.postCache.set(key, post);
+    // Cache for subsequent reads, tagged with the current shared epoch.
+    if (post) this.postCache.set(key, post, await this.readSharedEpoch());
     return post;
   }
 
@@ -509,15 +752,15 @@ export class PostgresDatabase implements Database {
   }
 
   async getProfile(address: string): Promise<Profile | null> {
-    // Check cache first (BE-18).
-    const cached = this.profileCache.get(address);
+    // Check cache first (BE-18), revalidating it against the shared epoch (BA-026).
+    const cached = await this.revalidate(this.profileCache.getEntry(address));
     if (cached) return cached;
 
     const result = await this.pool.query(`SELECT * FROM profiles WHERE address = $1`, [address]);
     const profile = result.rowCount ? (result.rows[0] as Profile) : null;
 
-    // Cache for subsequent reads.
-    if (profile) this.profileCache.set(address, profile);
+    // Cache for subsequent reads, tagged with the current shared epoch.
+    if (profile) this.profileCache.set(address, profile, await this.readSharedEpoch());
     return profile;
   }
 
@@ -543,12 +786,28 @@ export class PostgresDatabase implements Database {
     };
   }
 
+  /**
+   * Lists posts, newest first.
+   *
+   * Two pagination styles (BE-01):
+   *
+   *   - **Offset** (`cursor` absent) — the original `LIMIT/OFFSET` behaviour,
+   *     unchanged.
+   *   - **Keyset** (`cursor` present) — resumes strictly after the boundary row
+   *     encoded by the caller. Offset cannot express this: a post created
+   *     *between* two page requests shifts every later row by one, so the client
+   *     sees the row it already read and misses another. The comparison is on
+   *     the `(created_at, id)` pair rather than `created_at` alone, because many
+   *     posts share a ledger timestamp and a `created_at`-only comparison would
+   *     drop or repeat all of them.
+   */
   async listPosts(filters: {
     author?: string;
     limit: number;
     offset: number;
+    cursor?: { created_at: string; id: string };
   }): Promise<{ posts: Post[]; total: number }> {
-    const { author, limit, offset } = filters;
+    const { author, limit, offset, cursor } = filters;
     const values: unknown[] = [];
     let whereClause = "WHERE deleted_at IS NULL";
 
@@ -557,12 +816,37 @@ export class PostgresDatabase implements Database {
       whereClause += ` AND author = $${values.length}`;
     }
 
+    // `total` stays the count of everything matching the filter (not of the
+    // remaining suffix), so a client paging by cursor sees a stable total
+    // rather than one that shrinks on every page.
     const countResult = await this.pool.query(
       `SELECT COUNT(*)::int AS total FROM posts ${whereClause}`,
       values
     );
+
+    if (cursor) {
+      values.push(cursor.created_at, cursor.id);
+      const createdAtParam = values.length - 1;
+      const idParam = values.length;
+      const result = await this.pool.query(
+        `
+        SELECT * FROM posts
+        ${whereClause}
+          AND (created_at, id) < ($${createdAtParam}::timestamp, $${idParam}::bigint)
+        ORDER BY created_at DESC, id DESC
+        LIMIT $${values.length + 1}
+        `,
+        values
+      );
+
+      return {
+        posts: result.rows.map((row) => this.mapPost(row)),
+        total: Number(countResult.rows[0]?.total ?? 0),
+      };
+    }
+
     const result = await this.pool.query(
-      `SELECT * FROM posts ${whereClause} ORDER BY created_at DESC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+      `SELECT * FROM posts ${whereClause} ORDER BY created_at DESC, id DESC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
       [...values, limit, offset]
     );
 
@@ -576,9 +860,22 @@ export class PostgresDatabase implements Database {
     query: string;
     limit: number;
     offset: number;
-  }): Promise<{ posts: Post[]; total: number }> {
-    const { query, limit, offset } = filters;
-    const normalizedQuery = query.trim().replace(/\s+/g, " ");
+  }): Promise<{ posts: Post[]; total: number }>;
+  async searchPosts(query: string, limit: number, offset: number): Promise<{
+    posts: SearchedPost[];
+    total: number;
+  }>;
+  async searchPosts(
+    filtersOrQuery: { query: string; limit: number; offset: number } | string,
+    limit?: number,
+    offset?: number
+  ): Promise<{ posts: Post[]; total: number } | { posts: SearchedPost[]; total: number }> {
+    const filters =
+      typeof filtersOrQuery === "string"
+        ? { query: filtersOrQuery, limit: limit!, offset: offset! }
+        : filtersOrQuery;
+    const { query: q, limit: lim, offset: off } = filters as { query: string; limit: number; offset: number };
+    const normalizedQuery = q.trim().replace(/\s+/g, " ");
 
     if (normalizedQuery === "") {
       return { posts: [], total: 0 };
@@ -609,7 +906,7 @@ export class PostgresDatabase implements Database {
       ORDER BY created_at DESC
       LIMIT $2 OFFSET $3
       `,
-      [normalizedQuery, limit, offset]
+      [normalizedQuery, lim, off]
     );
 
     return {

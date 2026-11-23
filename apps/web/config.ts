@@ -52,6 +52,52 @@ function requireEnv(key: string): string {
       ? "https://soroban-rpc.stellar.org"
       : "https://soroban-testnet.stellar.org"
   );
+
+  /** Explicit reward asset identifiers used by FlowRewards on the active network. */
+  export type RewardAssetConfig = {
+    code: "XLM" | "USDC";
+    issuer?: string | null;
+    network: "testnet" | "mainnet";
+  };
+
+  export const SUPPORTED_REWARD_ASSETS: Record<"XLM" | "USDC", RewardAssetConfig> = {
+    XLM: {
+      code: "XLM",
+      issuer: null,
+      network: STELLAR_NETWORK,
+    },
+    USDC: {
+      code: "USDC",
+      issuer: optionalEnv(
+        "NEXT_PUBLIC_STELLAR_USDC_ISSUER",
+        STELLAR_NETWORK === "mainnet"
+          ? "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+          : "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+      ),
+      network: STELLAR_NETWORK,
+    },
+  };
+
+  export function validateRewardAsset(asset: RewardAssetConfig): RewardAssetConfig {
+    const supported = SUPPORTED_REWARD_ASSETS[asset.code];
+    if (!supported) {
+      throw new Error(`Unsupported reward asset: ${asset.code}`);
+    }
+
+    if (supported.network !== asset.network) {
+      throw new Error(
+        `Reward asset network mismatch for ${asset.code}: expected ${supported.network}, received ${asset.network}.`
+      );
+    }
+
+    if (supported.issuer !== asset.issuer) {
+      throw new Error(
+        `Reward asset issuer mismatch for ${asset.code}: expected ${supported.issuer ?? "native XLM"}, received ${asset.issuer ?? "native XLM"}.`
+      );
+    }
+
+    return asset;
+  }
   
   // ---------------------------------------------------------------------------
   // Kovara smart-contract addresses

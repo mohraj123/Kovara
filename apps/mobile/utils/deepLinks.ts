@@ -79,3 +79,33 @@ export function parseDeepLink(value: string): DeepLinkRoute | null {
 export function isValidDeepLink(value: string): boolean {
   return parseDeepLink(value) !== null;
 }
+
+export type PostIdParseResult =
+  | { ok: true; id: string }
+  | { ok: false; reason: "missing" | "malformed" };
+
+/**
+ * Normalises the `id` route param of the post detail screen. Expo Router may
+ * hand us `undefined`, an empty string, or an array (repeated segments), and
+ * an externally crafted deep link can contain anything, so the screen must be
+ * able to tell "no id" apart from "unsupported id" without hitting the indexer.
+ */
+export function parsePostId(raw: string | string[] | null | undefined): PostIdParseResult {
+  if (Array.isArray(raw)) {
+    if (raw.length !== 1) {
+      return raw.length === 0 ? { ok: false, reason: "missing" } : { ok: false, reason: "malformed" };
+    }
+    return parsePostId(raw[0]);
+  }
+
+  if (typeof raw !== "string" || !raw.trim()) {
+    return { ok: false, reason: "missing" };
+  }
+
+  const decoded = safeDecode(raw.trim());
+  if (decoded === null || !isValidId(decoded)) {
+    return { ok: false, reason: "malformed" };
+  }
+
+  return { ok: true, id: decoded };
+}

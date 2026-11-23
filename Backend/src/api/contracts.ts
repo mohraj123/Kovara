@@ -1,3 +1,68 @@
+import type { Post, Profile, PoolRecord } from "../db";
+
+// ── Shared response types ────────────────────────────────────────────────────
+
+/** Standard error response body returned for all 4xx / 5xx responses. */
+export interface ApiErrorResponse {
+  error: string;
+  code: string;
+}
+
+/** Shared pagination envelope included in list responses. */
+export interface PaginationResponse {
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+// ── Resource response types ──────────────────────────────────────────────────
+
+export interface ProfileResponse extends Profile {}
+
+export interface PostResponse extends Post {}
+
+export interface PostListResponse extends PaginationResponse {
+  posts: Post[];
+  total: number;
+}
+
+export interface FollowersResponse extends PaginationResponse {
+  address: string;
+  followers: string[];
+  total: number;
+  next_offset: number | null;
+  prev_offset: number | null;
+}
+
+export interface FollowingResponse extends PaginationResponse {
+  address: string;
+  following: string[];
+  total: number;
+  next_offset: number | null;
+  prev_offset: number | null;
+}
+
+export interface PoolResponse extends PoolRecord {}
+
+export interface PoolListResponse extends PaginationResponse {
+  pools: PoolRecord[];
+  total: number;
+}
+
+// ── Debug snapshot (BE-29) ───────────────────────────────────────────────────
+
+export interface DebugSnapshot {
+  posts: Post[];
+  profiles: Profile[];
+  pools: PoolRecord[];
+  generated_at: string;
+  post_count: number;
+  profile_count: number;
+  pool_count: number;
+}
+
+// ── Pool validation helpers ──────────────────────────────────────────────────
+
 export interface PoolValidationResult { valid: boolean; errors: string[]; }
 
 export function validatePoolAdmins(admins: unknown): PoolValidationResult {

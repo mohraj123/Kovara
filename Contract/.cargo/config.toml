@@ -1,0 +1,14 @@
+# Soroban builds need a WebAssembly target. The correct target depends on the
+# Rust toolchain:
+#   - Rust 1.82+  -> wasm32v1-none  (required by the Soroban environment)
+#   - Rust 1.81-  -> wasm32-unknown-unknown
+#
+# Rather than hard-code one target (which would break the other toolchain), the
+# build commands in the README pass the matching target explicitly so the
+# workspace builds reproducibly on both generations of Rust.
+
+[target.wasm32v1-none]
+rustflags = [
+  "-C", "link-arg=--import-memory",
+  "-C", "link-arg=--export-memory",
+]

@@ -20,6 +20,13 @@ export function useExploreSearch({ query, limit = 20 }: SearchParams) {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
+    // Invalidate every in-flight response (FE-23). Aborting is not enough on its
+    // own: once `fetch` has resolved, the remaining work is the `.json()` parse,
+    // which an abort does not cancel. Without bumping the sequence here, a
+    // response issued for the *previous* query still passes the
+    // `currentRequestId !== requestIdRef.current` guard in `loadMore` and
+    // appends the old query's rows to the new query's list.
+    requestIdRef.current += 1;
     setItems([]);
     setCursor(null);
     setHasMore(true);

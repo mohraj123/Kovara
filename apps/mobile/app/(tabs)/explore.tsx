@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 
@@ -10,6 +10,7 @@ import { ErrorState } from "../../components/states/ErrorState";
 import { PoolCardSkeleton } from "../../components/skeletons/PoolCardSkeleton";
 import { ProfileCardSkeleton } from "../../components/skeletons/ProfileCardSkeleton";
 import { useTheme } from "../../theme/useTheme";
+import { shouldApplySearchResult } from "../../utils/searchSequencing";
 
 const DEBOUNCE_MS = 300;
 
@@ -104,6 +105,15 @@ export default function ExploreScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchNonce, setSearchNonce] = useState(0);
+  // Monotonic id of the most recently *started* search. A response is applied
+  // only when it belongs to that search (FE-23).
+  //
+  // A per-effect `cancelled` boolean is not enough: it says "this run was
+  // cleaned up", which is true for a run superseded by a newer query *and* for
+  // one abandoned at unmount — but it cannot distinguish "this response is for
+  // the query the user is looking at right now" from "this response is for the
+  // one before it". Binding the id to the run that issued the request does.
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -114,34 +124,38 @@ export default function ExploreScreen() {
   }, [query]);
 
   useEffect(() => {
-    let cancelled = false;
+    // Claim an id for this run before awaiting anything.
+    const requestId = ++requestIdRef.current;
+    const issuedQuery = debouncedQuery;
+    const isCurrent = () =>
+      shouldApplySearchResult({ query: issuedQuery, requestId }, requestIdRef.current, debouncedQuery);
 
     async function runSearch() {
       setLoading(true);
       setError(null);
 
       try {
-        const nextResults = await searchCatalog(debouncedQuery);
-        if (!cancelled) {
-          setResults(nextResults);
-        }
+        const nextResults = await searchCatalog(issuedQuery);
+        // Ignore a response for an older query string: a newer search has
+        // already started, and replacing its results with these would show the
+        // wrong rows under the current query.
+        if (!isCurrent()) return;
+        setResults(nextResults);
       } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Search failed");
-          setResults({ profiles: [], pools: [] });
-        }
+        if (!isCurrent()) return;
+        setError(err instanceof Error ? err.message : "Search failed");
+        setResults({ profiles: [], pools: [] });
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        // Only the newest run settles the spinner. Gating this on the same
+        // rule means an abandoned run can never leave `loading` stuck on.
+        if (isCurrent()) setLoading(false);
       }
     }
 
+    // Drop the previous query's rows up front, so nothing from an older search
+    // is ever on screen under the new query while the request is in flight.
+    setResults({ profiles: [], pools: [] });
     runSearch();
-
-    return () => {
-      cancelled = true;
-    };
   }, [debouncedQuery, searchNonce]);
 
   const hasQuery = debouncedQuery.trim().length > 0;

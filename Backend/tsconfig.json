@@ -15,5 +15,12 @@
     "sourceMap": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "**/__tests__/**"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/__tests__/**",
+    // Frontend components live in the web app; a stray .tsx here has no React
+    // dependency to compile against and is not part of the Node service build.
+    "src/**/*.tsx"
+  ]
 }

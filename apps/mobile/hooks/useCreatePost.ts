@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { useNetwork } from "./useNetwork";
 import { useWallet } from "./useWallet";
@@ -75,11 +75,16 @@ export function useCreatePost(): UseCreatePostReturn {
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const submissionRef = useRef<Promise<SubmitPostResult> | null>(null);
 
   const clearError = useCallback(() => setError(null), []);
 
   const submit = useCallback(
     async ({ content }: SubmitPostInput): Promise<SubmitPostResult> => {
+      if (submissionRef.current) {
+        return submissionRef.current;
+      }
+
       setError(null);
 
       const trimmed = content.trim();
@@ -105,23 +110,28 @@ export function useCreatePost(): UseCreatePostReturn {
       }
 
       setSubmitting(true);
-      try {
-        const txHash = await createPostOnChain({
-          contractId,
-          rpcUrl,
-          author: address,
-          content: trimmed,
-        });
+      const submission = (async (): Promise<SubmitPostResult> => {
+        try {
+          const txHash = await createPostOnChain({
+            contractId,
+            rpcUrl,
+            author: address,
+            content: trimmed,
+          });
 
-        const postId = txHash ? txHash.slice(0, 16) : String(Date.now());
-        return { ok: true, txHash, postId };
-      } catch (cause) {
-        const resolved = resolvePostSubmitError(cause);
-        setError(resolved.message);
-        return { ok: false, message: resolved.message, code: resolved.code, cause };
-      } finally {
-        setSubmitting(false);
-      }
+          const postId = txHash ? txHash.slice(0, 16) : String(Date.now());
+          return { ok: true, txHash, postId };
+        } catch (cause) {
+          const resolved = resolvePostSubmitError(cause);
+          setError(resolved.message);
+          return { ok: false, message: resolved.message, code: resolved.code, cause };
+        } finally {
+          setSubmitting(false);
+          submissionRef.current = null;
+        }
+      })();
+      submissionRef.current = submission;
+      return submission;
     },
     [address, connected, contractId, rpcUrl, wallet]
   );

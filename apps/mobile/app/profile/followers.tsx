@@ -2,7 +2,7 @@ import React, { useMemo } from "react";
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
-import { UserListItem } from "../../components/UserListItem";
+import { UserListItem, UserListItemSkeleton } from "../../components/UserListItem";
 import { useFollowers, type FollowUser } from "../../hooks/useFollowers";
 import { useTheme } from "../../theme/useTheme";
 
@@ -27,13 +27,19 @@ export default function FollowersScreen() {
 
   if (loading && users.length === 0) {
     return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={theme.colors.brand.primary} />
+      <View
+        style={styles.loading}
+        accessibilityRole="progressbar"
+        accessibilityLabel="Loading followers"
+      >
+        {Array.from({ length: 8 }, (_, i) => (
+          <UserListItemSkeleton key={i} />
+        ))}
       </View>
     );
   }
 
-  if (error) {
+  if (error && users.length === 0) {
     return (
       <View style={styles.centered}>
         <Text style={styles.errorText}>{error}</Text>
@@ -70,7 +76,17 @@ export default function FollowersScreen() {
       onRefresh={refresh}
       refreshing={loading}
       ListFooterComponent={
-        hasMore && loading ? (
+        error ? (
+          <Pressable
+            style={styles.footerError}
+            onPress={loadMore}
+            accessibilityRole="button"
+            accessibilityLabel="Retry loading more followers"
+          >
+            <Text style={styles.errorText}>{error}</Text>
+            <Text style={styles.retryLink}>Tap to retry</Text>
+          </Pressable>
+        ) : hasMore && loading ? (
           <ActivityIndicator
             size="small"
             color={theme.colors.brand.primary}
@@ -122,8 +138,23 @@ function createStyles(theme: ReturnType<typeof useTheme>["theme"]) {
       fontSize: 14,
       textAlign: "center",
     },
+    loading: {
+      flex: 1,
+      backgroundColor: theme.colors.surface.background,
+    },
     footer: {
       paddingVertical: 16,
+    },
+    footerError: {
+      alignItems: "center",
+      paddingHorizontal: 24,
+      paddingVertical: 16,
+      gap: 4,
+    },
+    retryLink: {
+      color: theme.colors.brand.primary,
+      fontSize: 14,
+      fontWeight: "700",
     },
   });
 }

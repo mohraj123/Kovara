@@ -1,0 +1,74 @@
+# BA-040: PostgreSQL integration coverage.
+#
+# Runs the indexer backend against a real PostgreSQL instance to verify that:
+#   1. the full migration set applies cleanly,
+#   2. representative raw events can be ingested,
+#   3. the resulting API records can be persisted and queried through the REST
+#      API — catching schema/query mismatches that unit tests (which mock the
+#      database) cannot see.
+#
+# Triggered on push/PR to the backend, and dispatchable manually.
+
+name: Backend PostgreSQL Integration
+
+on:
+  push:
+    paths:
+      - "Backend/**"
+  pull_request:
+    paths:
+      - "Backend/**"
+  workflow_dispatch:
+
+jobs:
+  postgres-integration:
+    name: Backend integration (PostgreSQL)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: kovara
+          POSTGRES_PASSWORD: kovara
+          POSTGRES_DB: kovara
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kovara"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    defaults:
+      run:
+        working-directory: Backend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install backend dependencies
+        run: npm ci
+
+      - name: Wait for PostgreSQL to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 -U kovara > /dev/null 2>&1; then
+              echo "PostgreSQL is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "PostgreSQL did not become ready in time" >&2
+          exit 1
+
+      - name: Run migrations and PostgreSQL integration tests
+        run: npm test -- --runInBand postgres.integration
+        env:
+          DATABASE_URL: postgresql://kovara:kovara@127.0.0.1:5432/kovara

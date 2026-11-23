@@ -7,6 +7,7 @@ import { useFollowers } from "./useFollowers";
 import { useFollowing } from "./useFollowing";
 import { useWallet } from "./useWallet";
 import { useToast } from "../context/ToastContext";
+import { submitProfileTransaction } from "./profileContract";
 import type { IndexerErrorCode } from "../components/states/ErrorState";
 
 export interface Profile {
@@ -16,6 +17,14 @@ export interface Profile {
   bannerUrl?: string | null;
 }
 
+interface ProfileState {
+  address: string;
+  profile: Profile | null;
+  loading: boolean;
+  error: string | null;
+  errorCode: IndexerErrorCode | undefined;
+}
+
 export function useProfile(address: string) {
   const { rpcUrl, contractId } = useNetwork();
   const { address: me } = useWallet();
@@ -23,10 +32,17 @@ export function useProfile(address: string) {
   const clientRef = useRef<KovaraClient | null>(null);
   clientRef.current = clientRef.current ?? new KovaraClient({ contractId, rpcUrl });
 
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [loading, setLoading] = useState<boolean>(!!address);
-  const [error, setError] = useState<string | null>(null);
-  const [errorCode, setErrorCode] = useState<IndexerErrorCode | undefined>(undefined);
+  // Every result is tagged with the address it was fetched for so a response
+  // that resolves after the route address changed can never be shown for the
+  // new address.
+  const [state, setState] = useState<ProfileState>(() => ({
+    address,
+    profile: null,
+    loading: !!address,
+    error: null,
+    errorCode: undefined,
+  }));
+  const latestRequestRef = useRef(0);
 
   const followers = useFollowers(address ?? "");
   const following = useFollowing(address ?? "");
@@ -42,15 +58,28 @@ export function useProfile(address: string) {
   }, [me, myFollowing.users, address]);
 
   const fetchProfile = useCallback(async () => {
-    if (!address) return;
-    setLoading(true);
-    setError(null);
-    setErrorCode(undefined);
+    const requestId = ++latestRequestRef.current;
+    if (!address) {
+      setState({ address, profile: null, loading: false, error: null, errorCode: undefined });
+      return;
+    }
+    setState((prev) => ({
+      address,
+      // Keep the current profile while refreshing the same address, but never
+      // carry one over from a different address.
+      profile: prev.address === address ? prev.profile : null,
+      loading: true,
+      error: null,
+      errorCode: undefined,
+    }));
+    const isStale = () => requestId !== latestRequestRef.current;
     try {
       const client = clientRef.current as KovaraClient;
       const p = await client.getProfile(address);
-      setProfile(
-        p
+      if (isStale()) return;
+      setState({
+        address,
+        profile: p
           ? {
               address,
               username: p.username ?? null,
@@ -63,25 +92,41 @@ export function useProfile(address: string) {
                 (p.cover_image as string | undefined) ??
                 null,
             }
-          : null
-      );
+          : null,
+        loading: false,
+        error: null,
+        errorCode: undefined,
+      });
     } catch (e) {
+      if (isStale()) return;
       // eslint-disable-next-line no-console
       console.warn("Failed to load profile", e);
-      if (e instanceof IndexerError) {
-        setErrorCode(e.statusCode as IndexerErrorCode);
-        setError(e.message);
-      } else {
-        setError("Failed to load profile.");
-      }
-    } finally {
-      setLoading(false);
+      setState({
+        address,
+        profile: null,
+        loading: false,
+        error: e instanceof IndexerError ? e.message : "Failed to load profile.",
+        errorCode: e instanceof IndexerError ? (e.statusCode as IndexerErrorCode) : undefined,
+      });
     }
   }, [address]);
 
   useEffect(() => {
     fetchProfile();
+    return () => {
+      // Invalidate any in-flight request when the address changes or the
+      // screen unmounts.
+      latestRequestRef.current++;
+    };
   }, [fetchProfile]);
+
+  // Between an address change and the effect above firing, `state` still
+  // describes the previous address; report that render as loading.
+  const isCurrent = state.address === address;
+  const profile = isCurrent ? state.profile : null;
+  const loading = isCurrent ? state.loading : !!address;
+  const error = isCurrent ? state.error : null;
+  const errorCode = isCurrent ? state.errorCode : undefined;
 
   const { showPending, showSuccess, showError } = useToast();
 
@@ -172,4 +217,119 @@ export function useProfile(address: string) {
     toggleFollow,
     refresh,
   } as const;
+}
+
+export interface ProfileUpdateInput {
+  username: string;
+  creatorToken: string;
+  bannerUrl: string;
+}
+
+export type ProfileSaveErrorField = "username" | "creatorToken";
+
+export interface ProfileSaveError {
+  /** Friendly summary safe to show as a heading. */
+  message: string;
+  /** Raw failure reported by the wallet / network, kept for the user to inspect. */
+  detail: string | null;
+  /** Form field the failure is attributable to, when known. */
+  field?: ProfileSaveErrorField;
+}
+
+// Contract error codes from `ContractError` in linkora-contracts/src/lib.rs
+// that `set_profile` can raise.
+const PROFILE_CONTRACT_ERRORS: Record<number, Omit<ProfileSaveError, "detail">> = {
+  3: { message: "The network rejected this username.", field: "username" },
+  4: { message: "The creator token address is not a valid token.", field: "creatorToken" },
+  5: { message: "That username is already taken.", field: "username" },
+  37: { message: "Username is too short.", field: "username" },
+  38: { message: "Username is too long.", field: "username" },
+  39: { message: "Username contains characters that aren't allowed.", field: "username" },
+  40: { message: "The creator token can't be the Kovara contract itself.", field: "creatorToken" },
+};
+
+const CONTRACT_ERROR_RE = /Error\(Contract,\s*#(\d+)\)/i;
+
+/**
+ * Turns whatever the profile transaction pipeline threw into a message the
+ * edit screen can keep on screen, without discarding the underlying failure.
+ */
+export function resolveProfileSaveError(err: unknown): ProfileSaveError {
+  const detail =
+    err instanceof Error ? err.message || null : typeof err === "string" ? err || null : null;
+  const lower = (detail ?? "").toLowerCase();
+
+  const contractMatch = detail?.match(CONTRACT_ERROR_RE);
+  if (contractMatch) {
+    const known = PROFILE_CONTRACT_ERRORS[Number(contractMatch[1])];
+    if (known) return { ...known, detail };
+  }
+
+  if (/user (rejected|declined|cancell?ed)|rejected by user|denied by the user/.test(lower)) {
+    return { message: "You canceled the transaction.", detail };
+  }
+  if (/network|timeout|timed out|failed to fetch|fetch failed|econn/.test(lower)) {
+    return { message: "Network error. Check your connection and try again.", detail };
+  }
+  if (lower.includes("not confirmed")) {
+    return { message: "The transaction was submitted but not confirmed.", detail };
+  }
+  if (lower.includes("signing not available") || lower.includes("did not return signed")) {
+    return { message: "Your wallet couldn't sign this transaction.", detail };
+  }
+
+  return { message: "Failed to update profile.", detail };
+}
+
+/**
+ * Submits a profile update. Failures are kept in `saveError` (rather than only
+ * flashed in a toast) so the edit form can show them next to the user's
+ * unsaved edits until they retry or change the offending field.
+ */
+export function useUpdateProfile() {
+  const { rpcUrl, contractId } = useNetwork();
+  const { address, connected } = useWallet();
+  const { showPending, showSuccess, showError } = useToast();
+
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<ProfileSaveError | null>(null);
+
+  const clearSaveError = useCallback(() => setSaveError(null), []);
+
+  const saveProfile = useCallback(
+    async (input: ProfileUpdateInput): Promise<string | null> => {
+      if (!connected || !address) {
+        const error = { message: "Connect your wallet to edit your profile.", detail: null };
+        setSaveError(error);
+        showError(error.message);
+        return null;
+      }
+
+      setSaving(true);
+      setSaveError(null);
+      showPending();
+      try {
+        const txHash = await submitProfileTransaction(
+          address,
+          input.username.trim(),
+          input.creatorToken.trim(),
+          input.bannerUrl.trim(),
+          rpcUrl,
+          contractId
+        );
+        showSuccess(txHash);
+        return txHash;
+      } catch (err) {
+        const error = resolveProfileSaveError(err);
+        setSaveError(error);
+        showError(error.message, "Profile not saved");
+        return null;
+      } finally {
+        setSaving(false);
+      }
+    },
+    [address, connected, contractId, rpcUrl, showError, showPending, showSuccess]
+  );
+
+  return { saving, saveError, saveProfile, clearSaveError } as const;
 }

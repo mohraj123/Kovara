@@ -148,6 +148,7 @@ Before opening a PR:
 - [ ] Branch is up to date with `main`
 - [ ] PR is focused — one concern per PR
 - [ ] PR description fills out the template and references the issue (`Closes #N`)
+- [ ] If backend behaviour changed, the matching page under [`docs/backend/`](docs/backend/README.md) is updated
 
 ---
 
@@ -186,6 +187,19 @@ Before opening a PR:
 
 ---
 
+## Keeping the Backend Documentation Current
+
+The backend reference docs live in [`docs/backend/`](docs/backend/README.md):
+
+- `architecture.md` — runtime flow, event pipeline and dispatch, persistence, observability
+- `api-contracts.md` — endpoints, request/response shapes, error codes
+- `runbook.md` — deployment, configuration, migrations, recovery, and triage
+
+If a PR changes backend behaviour — a route, an environment variable, a command, the
+event handling or persistence model — update the matching page in the same PR.
+
+---
+
 ## Issue Triage and Labels
 
 When opening or triaging an issue, apply the most relevant label(s) from the table below. Correct labelling helps maintainers prioritise work and helps new contributors find good entry points.
@@ -219,3 +233,4 @@ If you are unsure which label fits, open the issue without one and ask in [Teleg
 ## Security
 
 Do not open public issues for security vulnerabilities. Follow the process in [SECURITY.md](SECURITY.md).
+

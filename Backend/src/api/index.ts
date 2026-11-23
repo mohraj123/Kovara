@@ -2,12 +2,28 @@ import "express-async-errors";
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import rateLimit, { RateLimitRequestHandler } from "express-rate-limit";
-import crypto from "crypto";
 import { Database } from "../db";
 import { ApiErrorResponse, DebugSnapshot } from "./contracts";
+import { sendError, sendNotFound } from "./response";
+import { logger } from "../logger";
+import { requestIdMiddleware } from "../request-context";
 import pkg from "../../package.json";
+import {
+  addressRateLimiter,
+  setAddressRateLimit,
+} from "../middleware/address-rate-limit";
+import {
+  abuseDetection,
+  AbuseDetector,
+} from "../middleware/abuse-detection";
+import { tieredRateLimits } from "../middleware/rate-limit-tiers";
+import { createSearchRouter } from "./search-router";
+import { PostgresSearchStore } from "../search/store";
+import { Pool } from "pg";
 
 const VERSION = pkg.version;
+const API_V1_PREFIX = "/api/v1";
+const LEGACY_API_PREFIX = "/api";
 
 // Configurable rate-limiter override for tests (see rate-limit.test.ts).
 let rateLimitWindowMs = 60_000;
@@ -57,6 +73,29 @@ import { createProfilesRouter } from "./routes/profiles";
 import { createPostsRouter } from "./routes/posts";
 import { createFollowsRouter } from "./routes/follows";
 import { createPoolsRouter } from "./routes/pools";
+import { createFeedRouter } from "../feed/routes";
+import { createSubmissionsRouter } from "./routes/submissions";
+import { createRewardsRouter } from "../rewards/routes";
+import { RewardStore } from "../rewards/store";
+import { createAuditRouter } from "../audit/routes";
+import { AuditStore } from "../audit/store";
+import { PostgresSubmissionFeed } from "../submissions/feed";
+import { createIndexRouter } from "../analytics/routes";
+import { PostgresAnalyticsStore } from "../analytics/store";
+import { createModerationRouter } from "./routes/moderation";
+import { ModerationStore } from "../verification/moderation";
+import { createActivityRouter } from "./routes/activity";
+import { createReconciliationRouter } from "../reconciliation/routes";
+import type { ReconciliationQueryStore } from "../reconciliation/stores";
+import {
+  createMetricsMiddleware,
+  jsonMetricsHandler,
+  metrics,
+  metricsTokenGuard,
+  MetricsRegistry,
+  prometheusHandler,
+} from "../metrics";
+import { parseStellarAddress, sendValidationError } from "./validation";
 
 // ── Auth middleware (BE-25) ───────────────────────────────────────────────────
 
@@ -98,6 +137,71 @@ export interface AppOptions {
    * deployments are unaffected.
    */
   authMiddleware?: AuthMiddleware;
+  /**
+   * A live Postgres pool. Enables the ranked search routes (#660) and the
+   * response cache that backs them (#662).
+   *
+   * Optional on purpose: `createApp` is called in tests with a stub `Database`
+   * and no pool at all, so search must be additive rather than required. When
+   * absent, `/search` is not mounted and the old `/search/posts` endpoint
+   * remains the only search surface.
+   */
+  pool?: Pool;
+  /** Injected in tests. Defaults to a store over `options.pool`. */
+  searchStore?: PostgresSearchStore;
+  /**
+   * Injected in tests. The same instance is shared with the `/abuse` operator
+   * endpoint, so the endpoint reports live state rather than an empty set.
+   */
+  abuseDetector?: AbuseDetector;
+
+  /**
+   * #679: the process-wide metrics registry. Injected in tests so assertions
+   * read an isolated registry rather than the shared default.
+   */
+  metricsRegistry?: MetricsRegistry;
+
+  /**
+   * #657: reward status, claim history, and the claim endpoint.
+   *
+   * Supplied by the caller rather than built from `db`, because these stores
+   * need a `pg.Pool` and issue transactional SQL that the `Database`
+   * repository interface has no reason to expose. When a store is omitted its
+   * routes are simply not mounted, so existing deployments and tests are
+   * unaffected.
+   */
+  rewardStore?: RewardStore;
+
+  /**
+   * #658: audit log reads plus whole-stream chain verification.
+   */
+  auditStore?: AuditStore;
+
+  /**
+   * #659: the paginated, filtered submission feed.
+  */
+  submissionFeed?: PostgresSubmissionFeed;
+  /** Activity feed store, mounted when supplied. */
+  activityFeed?: import("../submissions/activity").PostgresActivityFeed;
+
+  /**
+   * #654/#655: Analytics store backing the historical index series, the country
+   * leaderboard, and the filter-decision log.
+   *
+   * Supplied by the caller rather than constructed from `db` because these
+   * endpoints issue analytical SQL (windowing, ranking, partial indexes) that the
+   * `Database` repository interface has no reason to expose. When it is
+   * omitted, `/index` is not mounted and every other route behaves exactly as
+   * before, so existing deployments and tests need no change.
+   */
+  analyticsStore?: PostgresAnalyticsStore;
+
+  /**
+   * #669: the run history and discrepancies behind the daily reconciliation
+   * job. Optional like the other stores; omitting it leaves `/reconciliation`
+   * unmounted and every other route unchanged.
+   */
+  reconciliationStore?: ReconciliationQueryStore;
 }
 
 // ── Runtime configuration (all values are env-overridable) ─────────────────
@@ -117,6 +221,20 @@ const _PORT = parseEnvNumber("PORT", 3000);
 const TRUST_PROXY = process.env.TRUST_PROXY ?? "0";
 const RATE_LIMIT_WINDOW_MS = parseEnvNumber("RATE_LIMIT_WINDOW_MS", 60000);
 const RATE_LIMIT_MAX = parseEnvNumber("RATE_LIMIT_MAX", 100);
+
+// ── Address rate-limit configuration (Issue #616) ──────────────────────────
+// These are read once at startup so the middleware factory uses them by default.
+// Tests can override via setAddressRateLimit() before calling createApp().
+const ADDRESS_RATE_LIMIT_WINDOW_MS = parseEnvNumber(
+  "ADDRESS_RATE_LIMIT_WINDOW_MS",
+  60_000
+);
+const ADDRESS_RATE_LIMIT_MAX = parseEnvNumber("ADDRESS_RATE_LIMIT_MAX", 100);
+setAddressRateLimit(ADDRESS_RATE_LIMIT_WINDOW_MS, ADDRESS_RATE_LIMIT_MAX);
+
+// Re-export so tests (and callers) can adjust address limits without importing
+// the middleware module directly.
+export { setAddressRateLimit } from "../middleware/address-rate-limit";
 
 // ── Database error detection ───────────────────────────────────────────────
 
@@ -143,20 +261,11 @@ export function isDatabaseError(err: unknown): boolean {
   return false;
 }
 
-// ── Request correlation ID ─────────────────────────────────────────────────
-
-declare global {
-  namespace Express {
-    interface Request {
-      correlationId?: string;
-    }
-  }
-}
-
 // ── App factory ───────────────────────────────────────────────────────────────
 
 export function createApp(db: Database, options: AppOptions = {}): express.Application {
   const app = express();
+  const apiRouter = express.Router();
 
   // ── CORS ──────────────────────────────────────────────────────────────────────
   app.use(cors());
@@ -182,20 +291,32 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
     app.set("trust proxy", TRUST_PROXY);
   }
 
-  // ── Correlation ID middleware ────────────────────────────────────────────────
-  app.use((req: Request, _res: Response, next: NextFunction): void => {
-    const id = (req.headers["x-correlation-id"] as string) || crypto.randomUUID();
-    req.correlationId = id;
-    next();
-  });
+  // ── Request ID middleware (#684) ─────────────────────────────────────────────
+  // Resolves or generates the request id, exposes it to handlers and logs, and
+  // echoes it on every response — replacing the per-route X-Correlation-Id
+  // echoes that only covered a subset of routes.
+  app.use(requestIdMiddleware);
+
+  // ── Metrics collection (#679) ───────────────────────────────────────────────
+  // Every request is recorded into one registry — latency, throughput and
+  // errors — so `/metrics` and `/api/v1/metrics` report live traffic rather
+  // than requiring an operator to grep logs. Scrape paths are skipped by the
+  // middleware itself so reading the metrics does not change them.
+  const metricsRegistry: MetricsRegistry = options.metricsRegistry ?? metrics;
+  app.use(createMetricsMiddleware({ registry: metricsRegistry }));
 
   // ── Health check (unlimited) ────────────────────────────────────────────────
   app.get("/health", async (_req: Request, res: Response): Promise<void> => {
     let dbStatus = "ok";
+    const probeStartedAt = Date.now();
     try {
       await db.getProfile("__health_check_probe__");
     } catch {
       dbStatus = "unavailable";
+    }
+    if (metricsRegistry.has("db_probe_duration_ms")) {
+      metricsRegistry.observe("db_probe_duration_ms", Date.now() - probeStartedAt);
+      metricsRegistry.setGauge("service_up", dbStatus === "ok" ? 1 : 0);
     }
 
     const status = dbStatus === "ok" ? "ok" : "degraded";
@@ -205,6 +326,11 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
       db: dbStatus,
     });
   });
+
+  // ── Prometheus metrics (unlimited, no auth unless METRICS_TOKEN is set) ──────
+  // Registered before the rate limiter, like `/health`: a scraper that gets
+  // throttled stops reporting exactly when the service is under load.
+  app.get("/metrics", metricsTokenGuard(), prometheusHandler(metricsRegistry));
 
   // ── Version metadata (unlimited, no auth required) ──────────────────────────
   app.get("/version", (_req: Request, res: Response): void => {
@@ -216,11 +342,23 @@ export function createApp(db: Database, options: AppOptions = {}): express.Appli
     });
   });
 
-// Apply rate limiting to all /api routes if enabled
-if (process.env.ENABLE_RATE_LIMITING !== "false") {
-  const apiLimiter = createLimiter();
-  app.use("/api", apiLimiter);
-}
+  // Apply rate limiting to both the canonical and legacy API paths.
+  if (process.env.ENABLE_RATE_LIMITING !== "false") {
+    const apiLimiter = createLimiter();
+    app.use(LEGACY_API_PREFIX, apiLimiter);
+  }
+
+  // ── Abuse detection (#661) ──────────────────────────────────────────────────
+  // Runs after the flat limiter so a client that exceeds the shared budget is
+  // refused by the cheap counter first; this layer only has to reason about the
+  // clients the counter considers acceptable.
+  //
+  // The detector instance is held here and handed to the /abuse endpoint below,
+  // so the operator view reports the same state the middleware is enforcing.
+  const abuse = options.abuseDetector ?? new AbuseDetector();
+  if (process.env.ENABLE_ABUSE_DETECTION !== "false") {
+    app.use(LEGACY_API_PREFIX, abuseDetection({ detector: abuse }));
+  }
 
 // BE-25: Apply the auth middleware to all /api routes after rate limiting.
 // Routes registered below this line are covered; the health check above is
@@ -231,14 +369,119 @@ if (process.env.ENABLE_RATE_LIMITING !== "false") {
 // happens in the options passed to createApp.
 // app.use("/api", authMiddleware);
 
-app.use("/api/profiles", createProfilesRouter(db));
-app.use("/api/posts", createPostsRouter(db));
-app.use("/api/follows", createFollowsRouter(db));
+  // ── Security-sensitive header guard (issue #665) ────────────────────────────
+  // `x-stellar-address` is a client-supplied identity hint that the address
+  // rate limiter keys on (see middleware/address-rate-limit.ts). A malformed
+  // value is silently ignored there and falls back to IP limiting, which means
+  // a client can quietly avoid per-address accounting by sending garbage. The
+  // header is an explicitly treated, security-sensitive field, so it is
+  // rejected here — once, for every public endpoint — rather than being
+  // tolerated by one layer and ignored by another.
+  apiRouter.use((req: Request, res: Response, next: NextFunction): void => {
+    const header = req.headers["x-stellar-address"];
+    if (header === undefined) {
+      next();
+      return;
+    }
+    const parsed = parseStellarAddress(header, "x-stellar-address");
+    if (!parsed.ok) {
+      sendValidationError(res, parsed.issue);
+      return;
+    }
+    next();
+  });
+
+  apiRouter.use("/profiles", createProfilesRouter(db));
+  apiRouter.use("/posts", createPostsRouter(db));
+  // #676: ranked / recent / trending content feed.
+  apiRouter.use("/feed", createFeedRouter(db));
+  apiRouter.use("/follows", createFollowsRouter(db));
+
+  // ── Ranked unified search (#660/#662/#663) ──────────────────────────────────
+  // Mounted only when a pool is available. The tiered limiter wraps the search
+  // router specifically rather than being applied app-wide, because a tighter
+  // budget on a whole-path prefix would also capture unrelated endpoints that
+  // merely contain "/index" in their name.
+  if (options.pool) {
+    const searchStore = options.searchStore ?? new PostgresSearchStore(options.pool);
+    const searchLimiter = tieredRateLimits();
+    apiRouter.use(
+      "/search",
+      searchLimiter.search,
+      createSearchRouter({ pool: options.pool, store: searchStore })
+    );
+    // The old POST /search/posts stays mounted below; the new router is GET
+    // /search, so the two coexist and existing clients are unaffected.
+  }
+
+  // ── Abuse operator endpoints (#661) ─────────────────────────────────────────
+  // Read-only view of what the detector has seen. Detection that only writes to
+  // a log is invisible to an on-call engineer without log access, so the
+  // counters are exposed over HTTP.
+  apiRouter.get("/abuse", (_req: Request, res: Response): void => {
+    res.status(200).json(abuse.snapshot());
+  });
+
+  /**
+   * Lift a block early.
+   *
+   * Cooldowns are temporary by design, but a false positive on a shared NAT or
+   * corporate proxy can last up to the max cooldown. This is the escape hatch,
+   * and it is a POST because it mutates state.
+   */
+  apiRouter.post("/abuse/unblock", (req: Request, res: Response): void => {
+    const identity = (req.body as { identity?: unknown } | undefined)?.identity;
+    if (typeof identity !== "string" || identity === "") {
+      res.status(400).json({ error: "identity is required", code: "INVALID_IDENTITY" });
+      return;
+    }
+    const found = abuse.unblock(identity);
+    res.status(found ? 200 : 404).json({
+      unblocked: found,
+      identity,
+      // 404 rather than a silent 200: an operator unblocking a typo'd identity
+      // must be able to tell that nothing happened.
+      ...(found ? {} : { error: "no tracked identity matched", code: "IDENTITY_NOT_FOUND" }),
+    });
+  });
+  // Moderation / fraud review (issue #645). The store is created once per app so
+  // cases and their action logs survive across requests; a per-request store
+  // would make every case unreachable a moment after it was filed.
+  apiRouter.use("/moderation", createModerationRouter(new ModerationStore()));
 
 // Conditionally mount experimental routes
-if (process.env.EXPERIMENTAL_FEATURES === "true") {
-  app.use("/api/pools", createPoolsRouter(db));
-}
+  if (process.env.EXPERIMENTAL_FEATURES === "true") {
+    apiRouter.use("/pools", createPoolsRouter(db));
+  }
+
+  // #659: submission feed with pagination and status/user/date filters.
+  if (options.submissionFeed) {
+    apiRouter.use("/submissions", createSubmissionsRouter(options.submissionFeed));
+  }
+
+  // #657: reward status, claim history, and the claim endpoint.
+  if (options.rewardStore) {
+    apiRouter.use("/rewards", createRewardsRouter(options.rewardStore));
+  }
+
+  // #658: audit reads and chain verification.
+  if (options.auditStore) {
+    apiRouter.use("/audit", createAuditRouter(options.auditStore));
+  }
+
+  // #654/#655: historical index series, country leaderboards, and the filter
+  // decision log. Mounted only when a store is supplied — see AppOptions.
+  if (options.analyticsStore) {
+    apiRouter.use("/index", createIndexRouter(options.analyticsStore));
+  }
+  if (options.activityFeed) {
+    apiRouter.use("/activity", createActivityRouter(options.activityFeed));
+  }
+
+  // #669: reconciliation run history and discrepancies.
+  if (options.reconciliationStore) {
+    apiRouter.use("/reconciliation", createReconciliationRouter(options.reconciliationStore));
+  }
 
   interface SearchQuery {
     query: string;
@@ -251,7 +494,7 @@ if (process.env.EXPERIMENTAL_FEATURES === "true") {
     author: string;
     content: string;
     tip_total: string;
-    like_count: number;
+    like_count: string;
     created_at: string | null;
     deleted: boolean;
   }
@@ -288,13 +531,15 @@ if (process.env.EXPERIMENTAL_FEATURES === "true") {
     author: post.author,
     content: post.content,
     tip_total: post.tip_total.toString(),
-    like_count: Number(post.like_count),
+    // BA-027: like counts are serialized as a string so large counts keep full
+    // precision — Number() would silently round counts beyond 2^53-1.
+    like_count: post.like_count.toString(),
     created_at: post.created_at instanceof Date ? post.created_at.toISOString() : null,
     deleted: post.deleted_at !== undefined && post.deleted_at !== null,
   });
 
-  app.post(
-    "/api/search/posts",
+  apiRouter.post(
+    "/search/posts",
     async (req: Request, res: Response<SearchResponse | ErrorResponse>): Promise<void> => {
       const body = req.body as Partial<SearchQuery>;
       const rawQuery = body.query;
@@ -372,8 +617,8 @@ if (process.env.EXPERIMENTAL_FEATURES === "true") {
   // ── Debug snapshot endpoint (BE-29) ────────────────────────────────────────
   const DEBUG_SNAPSHOT_LIMIT = 1000;
 
-  app.get(
-    "/api/debug/snapshot",
+  apiRouter.get(
+    "/debug/snapshot",
     async (req: Request, res: Response<DebugSnapshot | ApiErrorResponse>): Promise<void> => {
       const debugToken = process.env.DEBUG_TOKEN;
       if (!debugToken) {
@@ -407,13 +652,34 @@ if (process.env.EXPERIMENTAL_FEATURES === "true") {
     }
   );
 
+  // ── Metrics snapshot (#679) ─────────────────────────────────────────────────
+  // The same registry as the Prometheus endpoint, rendered as JSON for an
+  // operator who wants the current latency/throughput/error picture without a
+  // Prometheus stack. `/metrics` is the Prometheus form of this data.
+  apiRouter.get("/metrics", metricsTokenGuard(), jsonMetricsHandler(metricsRegistry));
+
   // ── 404 catch-all for API routes (BE-26) ───────────────────────────────────
   // Returns a consistent JSON error body instead of the default Express HTML.
-  app.use("/api/*", (_req: Request, res: Response): void => {
-    res.status(404).json({ error: "Route not found", code: "NOT_FOUND" });
+  apiRouter.use((_req: Request, res: Response): void => {
+    sendNotFound(res, "Route");
   });
 
+  // Version 1 is the canonical, stable API contract.  The legacy unversioned
+  // path remains available during the migration window so existing clients do
+  // not break immediately.
+  app.use(API_V1_PREFIX, apiRouter);
+  app.use(LEGACY_API_PREFIX, (req: Request, res: Response, next: NextFunction): void => {
+    const successor = req.originalUrl.replace(/^\/api(?=\/|$)/, API_V1_PREFIX);
+    res.set("Deprecation", "true");
+    res.append("Link", `<${successor}>; rel=\"successor-version\"`);
+    next();
+  });
+  app.use(LEGACY_API_PREFIX, apiRouter);
+
   // ── Error handler ─────────────────────────────────────────────────────────────
+  // All branches below emit the same structured ApiError shape (via sendError/
+  // sendNotFound from ./response) so every error response — expected or an
+  // unhandled exception — is a consistent, client-actionable JSON payload (BE-31).
 
   // Catch malformed JSON payloads (BE-19).
   app.use((err: Error, _req: Request, res: Response, next: NextFunction): void => {
@@ -424,10 +690,7 @@ if (process.env.EXPERIMENTAL_FEATURES === "true") {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (err as any).status === 400
     ) {
-      res.status(400).json({
-        error: "Invalid JSON in request body",
-        code: "MALFORMED_JSON",
-      });
+      sendError(res, 400, "Invalid JSON in request body", "MALFORMED_JSON");
       return;
     }
     next(err);
@@ -437,22 +700,30 @@ if (process.env.EXPERIMENTAL_FEATURES === "true") {
   app.use(
     (err: Error, req: Request, res: Response<ApiErrorResponse>, _next: NextFunction): void => {
       const correlationId = req.correlationId;
-      console.error(`[${correlationId}]`, err);
+      const databaseRelated = isDatabaseError(err);
 
-      if (isDatabaseError(err)) {
-        res.status(503).json({
-          error: "Database unavailable",
-          code: "DATABASE_UNAVAILABLE",
-          correlationId,
-        } as ApiErrorResponse & { correlationId?: string });
+      // Report through the structured logger instead of a raw console.error, so
+      // the failure carries redaction, dedup and the correlation id. When
+      // alerting is configured (#683) the logger hook turns this line into an
+      // alert, so database outages page as critical.
+      const log = logger.child({ correlationId, surface: "http" });
+      log.error("unhandled_request_error", {
+        err,
+        method: req.method,
+        path: req.path,
+        databaseRelated,
+        alertSeverity: databaseRelated ? "critical" : "error",
+      });
+
+      if (databaseRelated) {
+        sendError(res, 503, "Database unavailable", "DATABASE_UNAVAILABLE", { correlationId });
         return;
       }
 
-      res.status(500).json({
-        error: "Internal server error",
-        code: "INTERNAL_ERROR",
-        correlationId,
-      } as ApiErrorResponse & { correlationId?: string });
+      // Unhandled exceptions of any other kind are converted to a safe,
+      // generic 500 — the original error is logged above but never leaked
+      // to the client.
+      sendError(res, 500, "Internal server error", "INTERNAL_ERROR", { correlationId });
     }
   );
 

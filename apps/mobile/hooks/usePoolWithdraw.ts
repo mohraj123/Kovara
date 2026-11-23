@@ -3,6 +3,8 @@ import { useMemo, useState } from "react";
 import { useWallet } from "./useWallet";
 import {
   isValidStellarAddress,
+  getPoolAvailableAmount,
+  getPoolWithdrawalAmountError,
   normalizeAddress,
   recordPoolWithdrawal,
   usePoolRecord,
@@ -23,6 +25,8 @@ export interface UsePoolWithdrawReturn {
   approvals: string[];
   canSubmit: boolean;
   recipientError: string | null;
+  amountError: string | null;
+  availableAmount: string;
   thresholdStatus: string;
   toggleSigner: (address: string) => void;
   setRecipient: (value: string) => void;
@@ -59,8 +63,15 @@ export function usePoolWithdraw(poolId: string): UsePoolWithdrawReturn {
       ? null
       : "Enter a valid Stellar address";
 
+  const amountError = getPoolWithdrawalAmountError(poolId, amount);
+  const availableAmount = getPoolAvailableAmount(pool);
+
   const thresholdStatus = `${approvals.length}/${pool.threshold} approvals`;
-  const canSubmit = Boolean(amount.trim()) && recipientError === null && approvals.length >= pool.threshold;
+  const canSubmit =
+    Boolean(amount.trim()) &&
+    amountError === null &&
+    recipientError === null &&
+    approvals.length >= pool.threshold;
 
   const toggleSigner = (address: string) => {
     const signerAddress = normalizeAddress(address);
@@ -110,6 +121,8 @@ export function usePoolWithdraw(poolId: string): UsePoolWithdrawReturn {
     approvals,
     canSubmit,
     recipientError,
+    amountError,
+    availableAmount,
     thresholdStatus,
     toggleSigner,
     setRecipient,

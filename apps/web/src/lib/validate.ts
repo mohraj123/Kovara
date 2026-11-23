@@ -4,6 +4,8 @@
  * client components and server actions.
  */
 
+import { sanitizeBannerUrl } from "../utils/sanitizeUrl";
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 export const POST_MAX_CHARS = 280;
@@ -85,5 +87,33 @@ export function validateSearchQuery(value: string): ValidationResult {
   if (!trimmed) return { valid: false, error: "Please enter a search term." };
   if (trimmed.length > 200)
     return { valid: false, error: "Search query must be 200 characters or fewer." };
+  return { valid: true };
+}
+
+/**
+ * Validate a profile banner URL.
+ *
+ * The rule lives in `sanitizeBannerUrl`, which is what the value is rendered
+ * through, so this is a thin wrapper rather than a second implementation
+ * (FE-28). The form previously re-implemented the protocol check inline, which
+ * drifted in two ways that mattered: it skipped the 2048-character ceiling the
+ * renderer enforces, so a URL the form accepted was silently dropped at render
+ * time, and any fix to one copy did not reach the other.
+ *
+ * Delegating means a value accepted here is exactly a value that will render.
+ */
+export function validateBannerUrl(value: string): ValidationResult {
+  const trimmed = value.trim();
+  // Empty is allowed: the banner is optional, and the form only calls this when
+  // the field is non-empty.
+  if (!trimmed) return { valid: true };
+
+  if (sanitizeBannerUrl(trimmed) === "") {
+    return {
+      valid: false,
+      error: "Banner URL must be a valid http or https URL.",
+    };
+  }
+
   return { valid: true };
 }

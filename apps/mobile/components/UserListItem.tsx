@@ -39,8 +39,37 @@ export function UserListItem({ user, onPress }: UserListItemProps) {
   );
 }
 
+export function UserListItemSkeleton() {
+  const { theme } = useTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
+  return (
+    <View style={styles.row} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+      <View style={[styles.avatar, styles.skeleton]} />
+      <View style={styles.content}>
+        <View style={[styles.skeleton, styles.skeletonTitle]} />
+        <View style={[styles.skeleton, styles.skeletonSubtitle]} />
+      </View>
+    </View>
+  );
+}
+
 function createStyles(theme: ReturnType<typeof useTheme>["theme"]) {
   return StyleSheet.create({
+    skeleton: {
+      backgroundColor: theme.colors.surface.border,
+    },
+    skeletonTitle: {
+      height: 14,
+      width: "40%",
+      borderRadius: 4,
+    },
+    skeletonSubtitle: {
+      height: 10,
+      width: "25%",
+      borderRadius: 4,
+      marginTop: 6,
+    },
     row: {
       minHeight: 68,
       flexDirection: "row",

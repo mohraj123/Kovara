@@ -40,6 +40,8 @@ export function PoolDepositForm({
   }, [success, onSuccess]);
 
   const handleDeposit = useCallback(async () => {
+    if (pending) return;
+    
     if (!poolId?.trim()) {
       Alert.alert('Validation Error', 'Pool ID is required');
       return;
@@ -62,10 +64,13 @@ export function PoolDepositForm({
     try {
       await deposit(poolId, amount, token);
     } catch (err) {
+      // FE-19: the entered amount is kept in state so the user can retry.
+      // The hook surfaces the error via `setError`; avoid duplicating it in an alert.
+      // Only fall back to an alert if the hook did not record an error.
       const message = err instanceof Error ? err.message : 'Deposit failed';
       Alert.alert('Error', message);
     }
-  }, [amount, deposit, poolId, token, decimals]);
+  }, [amount, deposit, poolId, token, decimals, pending]);
 
   const handleReset = useCallback(() => {
     reset();
@@ -130,8 +135,11 @@ export function PoolDepositForm({
       </Text>
 
       {error ? (
-        <View style={styles.errorContainer}>
+        <View style={styles.errorContainer} testID="deposit-error">
           <Text style={styles.errorText}>{error}</Text>
+          <Text style={styles.retryHint}>
+            Your amount has been kept. Tap Deposit to retry.
+          </Text>
         </View>
       ) : null}
 
@@ -140,13 +148,13 @@ export function PoolDepositForm({
         onPress={handleDeposit}
         disabled={pending}
         accessibilityRole="button"
-        accessibilityLabel={pending ? 'Processing deposit' : 'Confirm deposit'}
+        accessibilityLabel={pending ? 'Processing deposit' : error ? 'Retry deposit' : 'Confirm deposit'}
         testID="deposit-button"
       >
         {pending ? (
           <ActivityIndicator color="#fff" />
         ) : (
-          <Text style={styles.buttonText}>Deposit</Text>
+          <Text style={styles.buttonText}>{error ? 'Retry Deposit' : 'Deposit'}</Text>
         )}
       </TouchableOpacity>
     </View>
@@ -162,7 +170,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
   },
   label: {
-    color: '#cbd5e1',
+    color: '#cbd3e1',
     fontSize: 14,
     fontWeight: '600',
     marginBottom: 8,
@@ -256,5 +264,11 @@ const styles = StyleSheet.create({
   errorText: {
     color: '#fca5a5',
     fontSize: 12,
+  },
+  retryHint: {
+    color: '#fecaca',
+    fontSize: 11,
+    marginTop: 4,
+    italic: true,
   },
 });

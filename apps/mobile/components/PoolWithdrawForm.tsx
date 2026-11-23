@@ -25,6 +25,8 @@ export function PoolWithdrawForm({ poolId, onSubmitted }: PoolWithdrawFormProps)
     approvals,
     canSubmit,
     recipientError,
+    amountError,
+    availableAmount,
     thresholdStatus,
     toggleSigner,
     setRecipient,
@@ -91,6 +93,10 @@ export function PoolWithdrawForm({ poolId, onSubmitted }: PoolWithdrawFormProps)
           style={styles.input}
           accessibilityLabel="Withdrawal amount"
         />
+        <Text style={styles.meta}>
+          Available to withdraw: {availableAmount} {pool.token}
+        </Text>
+        {amountError ? <Text style={styles.errorText}>{amountError}</Text> : null}
       </View>
 
       <View style={styles.signersSection}>

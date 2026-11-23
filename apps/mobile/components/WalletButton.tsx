@@ -31,14 +31,19 @@ export function WalletButton({
   const styles = useMemo(() => createStyles(theme), [theme]);
   const isConnecting = state === "connecting";
   const isDisabled = disabled || isConnecting;
+  // FE-29: an errored button looked identical to a disconnected one, so nothing
+  // told the user that retrying was the way out. The hint now says so.
+  const isErrored = state === "error";
 
   const hint =
     accessibilityHint ??
     (isConnecting
       ? "Connecting to wallet, please wait"
-      : provider
-        ? `Connects to ${provider === "freighter" ? "Freighter" : "WalletConnect"}`
-        : "Activates this wallet action");
+      : isErrored
+        ? "The last connection attempt failed. Tap to try again."
+        : provider
+          ? `Connects to ${provider === "freighter" ? "Freighter" : "WalletConnect"}`
+          : "Activates this wallet action");
 
   return (
     <TouchableOpacity
