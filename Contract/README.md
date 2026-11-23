@@ -66,8 +66,35 @@ pages = ceil(grant_count(recipient) / page_size)
 | `DataKey::GrantRecord(grant_id)` | `GrantRecord` | Full record per grant — updated by `claim` and `revoke` |
 | `DataKey::GrantId(grant_id)` | `bool` | Deduplication sentinel |
 | `DataKey::Granted` | `Map<(Address, Address), i128>` | Running total granted per (recipient, asset) |
+| `DataKey::GrantedByRole` | `Map<(Address, Symbol, Address), i128>` | Running total granted per (recipient, role, asset) |
+| `DataKey::GrantRole(grant_id)` | `Symbol` | Role recorded at grant time, used to attribute revocations |
 | `DataKey::Claimed` | `Map<(Address, Address), i128>` | Running total claimed per (recipient, asset) |
 | `DataKey::Treasury` | `Map<Address, i128>` | Available treasury funds per asset |
+
+## FlowRewards role-specific totals (CT-04)
+
+Rewards are attributed to the role supplied when the grant is created
+(`ROLE_SUBMITTER` or `ROLE_VERIFIER`). `grant` and `grant_batch` update the
+existing aggregate `DataKey::Granted` map and the new `DataKey::GrantedByRole`
+map in the same call, so the two views cannot drift apart.
+
+| Call | Meaning |
+| --- | --- |
+| `total_granted(recipient, asset)` | Unchanged aggregate, net of revocations; equals the sum of the role totals |
+| `total_granted_by_role(recipient, asset, role)` | Net granted amount for that one `(recipient, asset, role)` |
+
+The two roles are independent even for the same recipient and asset: granting
+10 as submitter and 25 as verifier gives 10 and 25 in the role views and 35 in
+`total_granted`. An unsupported role is rejected before any write and has no
+total. `total_granted_by_role` returns `0` for a role that was never granted.
+
+`revoke` reads the role stored under `DataKey::GrantRole(grant_id)` and reduces
+that role's total together with the aggregate total and the refunded treasury.
+Grants created before role tracking carry no role marker; revoking one still
+corrects the aggregate without guessing a role. Archival removes the per-grant
+role marker but not the lifetime totals, and claims never change granted
+totals.
+
 ## FlowRewards reward-history retention
 
 FlowRewards keeps detailed `GrantRecord` entries and their `GrantIds` index

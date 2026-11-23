@@ -46,10 +46,17 @@ pub enum Error {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     Granted,
+    /// Lifetime granted per `(recipient, role, asset)`, net of revocations.
+    /// Kept alongside `Granted` so the aggregate view keeps its original
+    /// key layout and meaning: the aggregate is the sum over all roles.
+    GrantedByRole,
     Claimed,
     Treasury,
     GrantId(u64),
     GrantRecord(u64),
+    /// Role attached to a grant at creation time, so a later revocation can
+    /// reduce the same role's total rather than an unrelated one.
+    GrantRole(u64),
     Admin,
     PendingAdmin,
     RecipientIndex(Address),
@@ -90,6 +97,13 @@ pub struct FlowRewards;
 
 fn balances(env: &Env, key: &DataKey) -> Map<(Address, Address), i128> {
     env.storage().instance().get(key).unwrap_or_else(|| Map::new(env))
+}
+
+fn role_balances(env: &Env) -> Map<(Address, Symbol, Address), i128> {
+    env.storage()
+        .instance()
+        .get(&DataKey::GrantedByRole)
+        .unwrap_or_else(|| Map::new(env))
 }
 
 fn treasury(env: &Env) -> Map<Address, i128> {
@@ -313,6 +327,7 @@ impl FlowRewards {
                     env.storage().instance().set(&DataKey::ArchivedTotals, &totals);
                     env.storage().persistent().remove(&key);
                     env.storage().persistent().remove(&DataKey::GrantId(grant_id));
+                    env.storage().persistent().remove(&DataKey::GrantRole(grant_id));
                     archived += 1;
                 }
                 Some(_) => retained.push_back(grant_id),
@@ -376,6 +391,28 @@ impl FlowRewards {
         let updated = current.checked_sub(reclaimable).ok_or(Error::ArithmeticOverflow)?;
         granted.set(balance_key, updated);
 
+        // The role recorded at grant time identifies which role total to
+        // reduce. Grants created before role tracking have no role marker;
+        // their aggregate total is still corrected, and no role total is
+        // guessed at. All arithmetic here precedes any write.
+        let role_totals = match env
+            .storage()
+            .persistent()
+            .get::<_, Symbol>(&DataKey::GrantRole(grant_id))
+        {
+            Some(role) => {
+                let mut by_role = role_balances(&env);
+                let role_key = (record.recipient.clone(), role, record.asset.clone());
+                let role_current = by_role.get(role_key.clone()).unwrap_or(0);
+                let role_updated = role_current
+                    .checked_sub(reclaimable)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                by_role.set(role_key, role_updated);
+                Some(by_role)
+            }
+            None => None,
+        };
+
         let mut funds = treasury(&env);
         let available = funds.get(record.asset.clone()).unwrap_or(0);
         let updated_funds = available.checked_add(reclaimable).ok_or(Error::ArithmeticOverflow)?;
@@ -383,6 +420,9 @@ impl FlowRewards {
         record.revoked = record.revoked.checked_add(reclaimable).ok_or(Error::ArithmeticOverflow)?;
 
         env.storage().instance().set(&DataKey::Granted, &granted);
+        if let Some(by_role) = role_totals {
+            env.storage().instance().set(&DataKey::GrantedByRole, &by_role);
+        }
         env.storage().instance().set(&DataKey::Treasury, &funds);
         env.storage().persistent().set(&key, &record);
         extend_history_ttl(&env, &key);
@@ -392,6 +432,19 @@ impl FlowRewards {
     pub fn total_granted(env: Env, recipient: Address, asset: Address) -> i128 {
         extend_instance_ttl(&env);
         balances(&env, &DataKey::Granted).get((recipient, asset)).unwrap_or(0)
+    }
+
+    /// Granted amount for one `(recipient, asset, role)` triple, net of
+    /// revocations. The aggregate `total_granted` remains the sum of the
+    /// supported roles' totals, so existing callers see unchanged values.
+    pub fn total_granted_by_role(
+        env: Env,
+        recipient: Address,
+        asset: Address,
+        role: Symbol,
+    ) -> i128 {
+        extend_instance_ttl(&env);
+        role_balances(&env).get((recipient, role, asset)).unwrap_or(0)
     }
 
     pub fn total_claimed(env: Env, recipient: Address, asset: Address) -> i128 {
@@ -476,6 +529,14 @@ impl FlowRewards {
     }
 
     fn apply_grant(env: &Env, recipient: Address, asset: Address, role: Symbol, amount: i128, grant_id: u64) -> Result<(), Error> {
+    fn apply_grant(
+        env: &Env,
+        recipient: Address,
+        asset: Address,
+        role: Symbol,
+        amount: i128,
+        grant_id: u64,
+    ) -> Result<(), Error> {
         if Self::is_grant_processed(env.clone(), grant_id) { return Err(Error::DuplicateGrant); }
 
         let last: Option<u64> = env.storage().instance().get(&DataKey::LastGrantId);
@@ -505,10 +566,22 @@ impl FlowRewards {
         let updated = current.checked_add(amount).ok_or(Error::ArithmeticOverflow)?;
         granted.set(balance_key, updated);
 
+        // The role total is additive alongside the aggregate: the aggregate
+        // key layout and `total_granted` semantics stay exactly as before,
+        // while each role can be queried independently.
+        let mut by_role = role_balances(env);
+        let role_key = (recipient.clone(), role.clone(), asset.clone());
+        let role_current = by_role.get(role_key.clone()).unwrap_or(0);
+        let role_updated = role_current
+            .checked_add(amount)
+            .ok_or(Error::ArithmeticOverflow)?;
+        by_role.set(role_key, role_updated);
+
         let updated_funds = available.checked_sub(amount).ok_or(Error::ArithmeticOverflow)?;
         funds.set(asset.clone(), updated_funds);
 
         env.storage().instance().set(&DataKey::Granted, &granted);
+        env.storage().instance().set(&DataKey::GrantedByRole, &by_role);
         env.storage().instance().set(&DataKey::Treasury, &funds);
         env.storage().instance().set(&DataKey::FirstGrantId, &first_id);
         env.storage().instance().set(&DataKey::LastGrantId, &last_id);
@@ -518,8 +591,10 @@ impl FlowRewards {
             recipient: recipient.clone(), asset, amount, claimed: 0, revoked: 0,
         });
         env.storage().persistent().set(&DataKey::GrantId(grant_id), &true);
+        env.storage().persistent().set(&DataKey::GrantRole(grant_id), &role);
         extend_history_ttl(env, &record_key);
         extend_history_ttl(env, &DataKey::GrantId(grant_id));
+        extend_history_ttl(env, &DataKey::GrantRole(grant_id));
         push_recipient_index(env, &recipient, grant_id);
 
         ids.push_back(grant_id);
@@ -552,6 +627,7 @@ impl FlowRewards {
                     env.storage().instance().set(&DataKey::ArchivedTotals, &totals);
                     env.storage().persistent().remove(&key);
                     env.storage().persistent().remove(&DataKey::GrantId(grant_id));
+                    env.storage().persistent().remove(&DataKey::GrantRole(grant_id));
                     archived = true;
                 } else {
                     retained.push_back(grant_id);
