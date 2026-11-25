@@ -1,5 +1,6 @@
 #![no_std]
-//! FlowRewards: grant, claim, revoke, archive, administer, and pause reward grants.
+//! FlowRewards: grant, claim, revoke, reverse, archive, administer, and pause
+//! reward grants.
 // shortcut: legacy Events::publish emits a deprecation warning; migrate to
 // #[contractevent] when the event schemas are revised.
 #![allow(deprecated)]
@@ -44,6 +45,9 @@ pub enum Error {
     Unauthorized = 16,
     GrantsPaused = 17,
     GrantPaused = 18,
+    /// A partial reversal is larger than the grant's remaining unclaimed,
+    /// unrevoked balance.
+    ReversalExceedsGrant = 19,
 }
 
 #[contracttype]
@@ -445,6 +449,104 @@ impl FlowRewards {
         env.storage().persistent().set(&key, &record);
         extend_history_ttl(&env, &key);
         Ok(reclaimable)
+    }
+
+    /// Reverse part of an existing grant. Authorised admin only.
+    ///
+    /// The reversal is keyed to the original `grant_id`, so it can never touch
+    /// an unrelated grant. `amount` must be positive and no larger than the
+    /// grant's remaining unclaimed, unrevoked balance:
+    ///
+    /// * a fully claimed grant is rejected with `Error::GrantAlreadyClaimed`;
+    /// * a fully reversed grant (or any grant with no remaining balance) is
+    ///   rejected with `Error::GrantAlreadyRevoked`, so the same grant cannot
+    ///   be reversed twice beyond its original amount;
+    /// * an `amount` above the remaining balance is rejected with
+    ///   `Error::ReversalExceedsGrant`.
+    ///
+    /// All checks run before any write, so a rejected reversal leaves the
+    /// record, aggregate/role totals and treasury untouched. On success the
+    /// reversed amount is added to `GrantRecord::revoked`, removed from the
+    /// recipient's granted totals and returned to the treasury, and a
+    /// `grants/reversed` event is emitted.
+    pub fn reverse_grant(
+        env: Env,
+        admin: Address,
+        grant_id: u64,
+        amount: i128,
+    ) -> Result<i128, Error> {
+        if amount <= 0 { return Err(Error::InvalidAmount); }
+        admin.require_auth();
+        Self::require_admin_if_configured(&env, &admin)?;
+        extend_instance_ttl(&env);
+
+        let key = DataKey::GrantRecord(grant_id);
+        let mut record: GrantRecord = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::GrantNotFound)?;
+
+        let remaining = record
+            .amount
+            .checked_sub(record.claimed)
+            .and_then(|v| v.checked_sub(record.revoked))
+            .ok_or(Error::ArithmeticOverflow)?;
+
+        if remaining <= 0 {
+            if record.claimed == record.amount { return Err(Error::GrantAlreadyClaimed); }
+            return Err(Error::GrantAlreadyRevoked);
+        }
+        if amount > remaining { return Err(Error::ReversalExceedsGrant); }
+
+        // Compute every derived value before any write so a failure cannot
+        // leave a partial update behind.
+        let mut granted = balances(&env, &DataKey::Granted);
+        let balance_key = (record.recipient.clone(), record.asset.clone());
+        let current = granted.get(balance_key.clone()).unwrap_or(0);
+        let updated = current.checked_sub(amount).ok_or(Error::ArithmeticOverflow)?;
+        granted.set(balance_key, updated);
+
+        // Mirror `revoke`: reduce the role total recorded at grant time. Grants
+        // created before role tracking have no role marker, so their aggregate
+        // total is still corrected and no role total is guessed at.
+        let role_totals = match env
+            .storage()
+            .persistent()
+            .get::<_, Symbol>(&DataKey::GrantRole(grant_id))
+        {
+            Some(role) => {
+                let mut by_role = role_balances(&env);
+                let role_key = (record.recipient.clone(), role, record.asset.clone());
+                let role_current = by_role.get(role_key.clone()).unwrap_or(0);
+                let role_updated = role_current
+                    .checked_sub(amount)
+                    .ok_or(Error::ArithmeticOverflow)?;
+                by_role.set(role_key, role_updated);
+                Some(by_role)
+            }
+            None => None,
+        };
+
+        let mut funds = treasury(&env);
+        let available = funds.get(record.asset.clone()).unwrap_or(0);
+        let updated_funds = available.checked_add(amount).ok_or(Error::ArithmeticOverflow)?;
+        funds.set(record.asset.clone(), updated_funds);
+        record.revoked = record.revoked.checked_add(amount).ok_or(Error::ArithmeticOverflow)?;
+
+        env.storage().instance().set(&DataKey::Granted, &granted);
+        if let Some(by_role) = role_totals {
+            env.storage().instance().set(&DataKey::GrantedByRole, &by_role);
+        }
+        env.storage().instance().set(&DataKey::Treasury, &funds);
+        env.storage().persistent().set(&key, &record);
+        extend_history_ttl(&env, &key);
+
+        env.events().publish(
+            (symbol_short!("grants"), symbol_short!("reversed")),
+            (record.recipient, amount, grant_id),
+        );
+        Ok(amount)
     }
 
     pub fn total_granted(env: Env, recipient: Address, asset: Address) -> i128 {
