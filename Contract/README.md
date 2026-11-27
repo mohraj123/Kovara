@@ -148,6 +148,39 @@ per-recipient balances and archived aggregates remain in instance storage.
 As with other Soroban instance state, totals still depend on the contract
 instance being kept alive. Storage is bounded for per-grant history, not for
 the number of distinct recipient/asset aggregate pairs.
+
+## FlowRewards safe grant reversal (CT-08)
+
+`reverse_grant(admin, grant_id, amount) -> i128` lets the configured admin
+reverse part of an existing reward grant. The reversal is **keyed to the
+original `grant_id`**, so it can only ever adjust the grant it names.
+
+The call is authorized like the other admin entry points: the caller must
+authenticate and, when an admin is configured, must be that admin. The amount
+must be positive and no larger than the grant's remaining unclaimed, unrevoked
+balance.
+
+| Condition | Result |
+| --- | --- |
+| `amount <= 0` | `Error::InvalidAmount` |
+| `grant_id` has no live record | `Error::GrantNotFound` |
+| grant is fully claimed | `Error::GrantAlreadyClaimed` |
+| grant is fully reversed (or has no remaining balance) | `Error::GrantAlreadyRevoked` |
+| `amount > remaining` | `Error::ReversalExceedsGrant` |
+| otherwise | `amount` is reversed and returned |
+
+On success the amount is added to `GrantRecord::revoked`, subtracted from the
+recipient's aggregate and role totals, and returned to the treasury, matching
+the accounting used by `revoke`. A `grants/reversed` event carrying
+`(recipient, amount, grant_id)` is emitted.
+
+Every check runs before any write, so a rejected reversal cannot leave a
+partial update. Reversing the same grant repeatedly is allowed only while the
+total reversed stays within the original amount; once the grant is exhausted,
+further reversals fail with `GrantAlreadyRevoked` (or `GrantAlreadyClaimed` if
+it was fully claimed). `revoke` remains the full-remaining reversal; use
+`reverse_grant` when only part of the grant should be clawed back.
+
 ## FlowRewards admin transfer
 
 `set_admin(new_admin)` configures the initial admin and cannot replace an
