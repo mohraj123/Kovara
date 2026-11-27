@@ -4,9 +4,9 @@ import { ApiErrorResponse, ProfileResponse } from "../contracts";
 import {
   isStellarAddress,
   parseStellarAddress,
+  sendValidationError,
   parseOptionalStellarAddress,
   parseUsername,
-  sendValidationError,
   ValidationResult,
 } from "../validation";
 
