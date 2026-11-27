@@ -70,10 +70,8 @@ export function sendNotFound(res: Response, resource: string): void {
 
 export function sendRateLimitError(res: Response, retryAfterSeconds: number): void {
   const body: ApiError = {
-    success: false,
     error: "Too many requests. Please retry after the indicated delay.",
     code: "RATE_LIMIT_EXCEEDED",
-    timestamp: new Date().toISOString(),
   };
   res.status(429).set("Retry-After", String(retryAfterSeconds)).json(body);
 }

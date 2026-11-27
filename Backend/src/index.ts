@@ -401,13 +401,16 @@ export async function recoverPendingEvents(handler: RawEventHandler): Promise<nu
   );
   let recovered = 0;
   for (const row of result.rows) {
+    const topic = Array.isArray(row.topic) ? row.topic.map(String) : [];
     const event: RawEvent = {
       id: String(row.event_id),
+      type: topic[0] ?? "",
       ledger: Number(row.ledger),
       contractId: String(row.contract_id),
-      topic: Array.isArray(row.topic) ? row.topic.map(String) : [],
+      topic,
       value: String(row.value ?? ""),
       txHash: String(row.tx_hash ?? ""),
+      pagingToken: String(row.paging_token ?? row.event_id),
       ledgerClosedAt: row.closed_at instanceof Date
         ? row.closed_at.toISOString()
         : String(row.closed_at),
@@ -538,18 +541,24 @@ async function dispatchEvent(
   eventType: string,
   db: PostgresDatabase
 ): Promise<void> {
+  const context = {
+    txHash: event.txHash,
+    ledgerSeq: event.ledger,
+    timestamp: new Date(event.ledgerClosedAt),
+  };
+
   switch (eventType) {
     case "profile_set":
       await (await import("./handlers/profile")).handleProfileSet(db, event as never);
       break;
     case "post_created":
-      await (await import("./handlers/post")).handlePostCreated(db, event as never, { pgPool });
+      await (await import("./handlers/post")).handlePostCreated(pgPool, event as never, context);
       break;
     case "post_deleted":
-      await (await import("./handlers/post")).handlePostDeleted(db, event as never);
+      await (await import("./handlers/post")).handlePostDeleted(pgPool, event as never, context);
       break;
     case "like":
-      await (await import("./handlers/like")).handleLike(db, event as never, { pgPool });
+      await (await import("./handlers/like")).handleLike(pgPool, event as never, context);
       break;
     case "follow":
       await (await import("./handlers/follow")).handleFollow(db, event as never);
@@ -558,7 +567,7 @@ async function dispatchEvent(
       await (await import("./handlers/follow")).handleUnfollow(db, event as never);
       break;
     case "tip":
-      await (await import("./handlers/tip")).handleTip(db, event as never, { pgPool });
+      await (await import("./handlers/tip")).handleTip(pgPool, event as never, context);
       break;
     case "pool_created":
       await (await import("./handlers/pool")).handlePoolCreated(db, event as never);
@@ -685,9 +694,6 @@ async function main(): Promise<void> {
       // effects are accounted for even if this process crashes mid-dispatch.
       void event;
     };
-    const eventStore = new EventStore(pgPool);
-    const tracked = trackProcessing(eventStore);
-
     await replayLedgerRange(
       {
         rpcUrl: STELLAR_RPC_URL,
@@ -695,8 +701,9 @@ async function main(): Promise<void> {
         startLedger: replayStart,
         endLedger: replayEnd,
       },
-      (event) => processEvent(event, dispatch),
-      tracked,
+      async (event) => {
+        await processEvent(event, dispatch);
+      },
       signal,
     );
 
@@ -804,7 +811,9 @@ async function main(): Promise<void> {
       deadLetterQueue,
       ...(FILTER_EVENTS ? { eventTypeFilter: FILTER_EVENTS } : {}),
     },
-    (event) => processEvent(event, (e) => handleEvent(e, db)),
+    async (event) => {
+      await processEvent(event, (e) => handleEvent(e, db));
+    },
     abortController.signal,
   ).catch((err) => {
     logger.error("stream_fatal", { err });
@@ -842,8 +851,6 @@ async function main(): Promise<void> {
     activityFeed: new PostgresActivityFeed(pgPool),
     analyticsStore: new PostgresAnalyticsStore(pgPool),
     pool: pgPool,
-    // #654/#655: the analytics store is handed to the app so /index is mounted.
-    analyticsStore: new PostgresAnalyticsStore(pgPool),
     // #669: exposes the reconciliation run history and discrepancies.
     reconciliationStore,
   });
