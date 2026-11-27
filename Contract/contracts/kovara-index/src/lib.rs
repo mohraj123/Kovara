@@ -58,7 +58,7 @@ pub enum Error {
     /// A zero date is reserved and never valid for a daily record.
     InvalidDate = 1,
     /// A daily index value must be strictly positive.
-    NonPositiveValue = 20,
+    NonPositiveValue = 23,
     /// A daily index value exceeds the documented fixed-point ceiling [`KVI_MAX`].
     IndexValueTooHigh = 22,
     /// The supplied window is empty or non-increasing: `valid_until <= valid_from`.
@@ -163,7 +163,15 @@ impl KovaraIndex {
         Self::check_updater(&env, &updater)?;
         updater.require_auth();
         env.storage().persistent().set(&key, &value);
-        Self::push_revision(&env, &key, value, &updater, false);
+        Self::push_revision(
+            &env,
+            &key,
+            value,
+            0,
+            &soroban_sdk::String::from_str(&env, ""),
+            &updater,
+            false,
+        );
         Ok(())
     }
 
@@ -264,7 +272,15 @@ impl KovaraIndex {
             &DataKey::DailyWindow(country, date),
             &(valid_from, valid_until),
         );
-        Self::push_revision(&env, &key, value, &updater, false);
+        Self::push_revision(
+            &env,
+            &key,
+            value,
+            0,
+            &soroban_sdk::String::from_str(&env, ""),
+            &updater,
+            false,
+        );
 
         Ok(())
     }
@@ -391,7 +407,15 @@ impl KovaraIndex {
         Ok(())
     }
 
-    fn push_revision(env: &Env, key: &DataKey, value: i128, who: &Address, correction: bool) {
+    fn push_revision(
+        env: &Env,
+        key: &DataKey,
+        value: i128,
+        old_value: i128,
+        reason: &soroban_sdk::String,
+        who: &Address,
+        correction: bool,
+    ) {
         if let DataKey::DailyIndex(country, date) = key {
             let count_key = DataKey::RevisionCount(country.clone(), *date);
             let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
@@ -403,6 +427,8 @@ impl KovaraIndex {
                     ledger: env.ledger().sequence(),
                     timestamp: env.ledger().timestamp(),
                     correction,
+                    old_value,
+                    reason: reason.clone(),
                 },
             );
             env.storage().persistent().set(&count_key, &(count + 1));
@@ -483,7 +509,15 @@ impl KovaraIndex {
         }
         Self::require_admin(&env, &admin)?;
         env.storage().persistent().set(&key, &value);
-        Self::push_revision(&env, &key, value, &admin, true);
+        Self::push_revision(
+            &env,
+            &key,
+            value,
+            0,
+            &soroban_sdk::String::from_str(&env, ""),
+            &admin,
+            true,
+        );
         Ok(())
     }
 
