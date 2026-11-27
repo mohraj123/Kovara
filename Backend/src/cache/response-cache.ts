@@ -280,6 +280,38 @@ export class ResponseCache {
     return this.entries.delete(key);
   }
 
+  /**
+   * Targeted invalidation by resource: drops only the entries produced by
+   * `cacheKey(namespace, params)` calls whose params include every given
+   * `name: value` pair (an empty `params` drops the whole namespace). Unlike
+   * `invalidateMatching`, it compares whole `name=value` segments, so
+   * invalidating `id=1` cannot also drop `id=10`.
+   */
+  invalidateResource(namespace: string, params: Record<string, unknown> = {}): number {
+    const wanted = Object.keys(params).map((name) => {
+      const value = params[name];
+      const rendered =
+        typeof value === "bigint" ? value.toString() : JSON.stringify(value) ?? "null";
+      return `${name}=${rendered}`;
+    });
+    let dropped = 0;
+    for (const key of [...this.entries.keys()]) {
+      let segments: string[];
+      if (key === namespace) {
+        segments = [];
+      } else if (key.startsWith(`${namespace}:`)) {
+        segments = key.slice(namespace.length + 1).split("&");
+      } else {
+        continue;
+      }
+      if (wanted.every((w) => segments.includes(w))) {
+        this.entries.delete(key);
+        dropped += 1;
+      }
+    }
+    return dropped;
+  }
+
   /** Drop every key whose cache key contains `fragment`. */
   invalidateMatching(fragment: string): number {
     let dropped = 0;

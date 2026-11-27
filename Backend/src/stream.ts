@@ -23,9 +23,10 @@ import {
   withRetry,
   classifyFailure,
   isPermanentError,
+  parseRetryAfterMs,
   DEFAULT_MAX_ATTEMPTS,
 } from "./retry";
-import { buildIdempotencyKey } from "./idempotency";
+import { buildIdempotencyKey, deriveEventId } from "./idempotency";
 import { DeadLetterQueue, DeadLetterReason } from "./dead-letter";
 import { EventStore } from "./event-store";
 
@@ -194,7 +195,19 @@ function validateEventsResult(json: unknown): EventsResult {
     if (typeof e.contractId !== "string" || e.contractId.trim() === "") {
       throw new Error("Invalid RPC result: event `contractId` must be a non-empty string");
     }
-    if (typeof e.id !== "string" || e.id.trim() === "") {
+    // BE-002: a missing RPC id falls back to a derived stable identity; an
+    // event without enough data to derive one is rejected by deriveEventId.
+    let eventId = e.id;
+    if (eventId === undefined || eventId === null || eventId === "") {
+      eventId = deriveEventId({
+        ledger: e.ledger,
+        txHash: e.txHash as string,
+        topic: e.topic as string[],
+        value: e.value as string,
+        pagingToken: typeof e.pagingToken === "string" ? e.pagingToken : undefined,
+      });
+    }
+    if (typeof eventId !== "string" || eventId.trim() === "") {
       throw new Error("Invalid RPC result: event `id` must be a non-empty string");
     }
     if (typeof e.pagingToken !== "string" || e.pagingToken.trim() === "") {
@@ -209,7 +222,7 @@ function validateEventsResult(json: unknown): EventsResult {
     if (typeof e.txHash !== "string") {
       throw new Error("Invalid RPC result: event `txHash` must be a string");
     }
-    parsedEvents.push(rawEvent as RawEvent);
+    parsedEvents.push({ ...(rawEvent as RawEvent), id: eventId });
   }
 
   const latestLedger = validateLedger(
@@ -261,7 +274,15 @@ async function fetchEvents(
   }
 
   if (!response.ok) {
-    throw new Error(`RPC request failed: ${response.status} ${response.statusText}`);
+    // BE-004: carry the status and any Retry-After hint so withRetry can honour
+    // it. The same cursor is re-requested, so no event is skipped or repeated.
+    throw Object.assign(
+      new Error(`RPC request failed: ${response.status} ${response.statusText}`),
+      {
+        status: response.status,
+        retryAfterMs: parseRetryAfterMs(response.headers?.get("retry-after")),
+      }
+    );
   }
 
   const json = (await response.json()) as {
@@ -300,7 +321,10 @@ async function runStream(
   signal: AbortSignal
 ): Promise<void> {
   const pollMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-  const maxCacheSize = config.dedupCacheSize ?? DEFAULT_DEDUP_CACHE_SIZE;
+  // BE-003: clamp to at least 1 so a zero/negative/NaN size cannot evict the
+  // entry just recorded and lose protection at the cursor boundary.
+  const requestedCacheSize = Math.floor(config.dedupCacheSize ?? DEFAULT_DEDUP_CACHE_SIZE);
+  const maxCacheSize = requestedCacheSize >= 1 ? requestedCacheSize : DEFAULT_DEDUP_CACHE_SIZE;
   const deadLetterQueue = config.deadLetterQueue;
   let cursor: string | undefined;
   let startLedger = config.startLedger;
@@ -509,6 +533,17 @@ async function runStream(
           } catch (err) {
             logger.warn("[stream] Could not persist cursor:", err);
           }
+        }
+      }
+
+      // BE-001: events skipped above (invalid, other contract, filtered,
+      // duplicate) advance the in-memory cursor without a save. Once the whole
+      // batch succeeded, persist the final cursor so a restart resumes past them.
+      if (!pageFailed && !signal.aborted && config.store && cursor && cursor !== fetchCursor) {
+        try {
+          await config.store.saveCursor(cursor);
+        } catch (err) {
+          logger.warn("[stream] Could not persist cursor:", err);
         }
       }
 

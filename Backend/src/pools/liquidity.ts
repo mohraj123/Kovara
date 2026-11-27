@@ -120,7 +120,15 @@ export function poolMembership(pool: PoolRecord, address: string): PoolMembershi
 /** Build the liquidity view of one pool. */
 export function poolLiquidity(pool: PoolRecord): PoolLiquidity {
   const adminCount = Array.isArray(pool.admins) ? pool.admins.length : 0;
-  const balance = typeof pool.balance === "bigint" ? pool.balance : BigInt(pool.balance ?? 0);
+  let balance = 0n;
+  try {
+    balance =
+      typeof pool.balance === "bigint"
+        ? pool.balance
+        : BigInt(pool.balance ?? 0);
+  } catch {
+    balance = 0n;
+  }
 
   return {
     pool_id: pool.pool_id,

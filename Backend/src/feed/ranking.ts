@@ -69,6 +69,7 @@ export const DEFAULT_FEED_WEIGHTS: FeedWeights = {
 
 /** Default trending window, in days. */
 export const DEFAULT_TRENDING_WINDOW_DAYS = 7;
+export const MAX_TRENDING_WINDOW_DAYS = 365;
 
 /**
  * Trending gravity. A value of 1 divides engagement by age in days; higher
@@ -101,6 +102,10 @@ export interface FeedEntry {
   /** Whether the post has been soft-deleted. */
   deleted: boolean;
   signals: FeedSignals;
+}
+
+interface SortableFeedEntry extends FeedEntry {
+  sortScore: number;
 }
 
 /** Options for a single feed computation. */
@@ -189,6 +194,27 @@ export function parseFeedOffset(raw: unknown, defaultValue = 0): number {
   return value;
 }
 
+/** Parse and validate the trending window in days. */
+export function parseTrendingWindowDays(
+  raw: unknown,
+  defaultValue = DEFAULT_TRENDING_WINDOW_DAYS
+): number {
+  const value = raw === undefined || raw === null || raw === "" ? defaultValue : Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new FeedValidationError(
+      "trending window_days must be a positive integer",
+      "INVALID_QUERY"
+    );
+  }
+  if (value > MAX_TRENDING_WINDOW_DAYS) {
+    throw new FeedValidationError(
+      `trending window_days cannot exceed ${MAX_TRENDING_WINDOW_DAYS}`,
+      "LIMIT_EXCEEDED"
+    );
+  }
+  return value;
+}
+
 /**
  * Log-scaled engagement in [0, 1].
  *
@@ -260,6 +286,16 @@ export function rankFeed(candidates: FeedCandidate[], options: FeedOptions): Fee
     trendingWindowDays = DEFAULT_TRENDING_WINDOW_DAYS,
   } = options;
 
+  if (mode === "trending") {
+    if (!Number.isInteger(trendingWindowDays) || trendingWindowDays < 1 ||
+        trendingWindowDays > MAX_TRENDING_WINDOW_DAYS) {
+      throw new FeedValidationError(
+        `trending window_days must be between 1 and ${MAX_TRENDING_WINDOW_DAYS}`,
+        "INVALID_QUERY"
+      );
+    }
+  }
+
   const visible = candidates.filter((post) => !isDeleted(post));
 
   // Trending is defined *within* the window: a post older than it is not part
@@ -273,11 +309,15 @@ export function rankFeed(candidates: FeedCandidate[], options: FeedOptions): Fee
         })
       : visible;
 
-  const scored = eligible.map((post) => scoreEntry(post, { mode, now, weights, trendingWindowDays }));
+  const scored: SortableFeedEntry[] = eligible.map((post) =>
+    scoreEntry(post, { mode, now, weights, trendingWindowDays })
+  );
 
   scored.sort(compareEntries());
 
-  const page = scored.slice(offset, offset + limit);
+  const page = scored
+    .slice(offset, offset + limit)
+    .map(({ sortScore: _sortScore, ...entry }) => entry);
 
   return {
     mode,
@@ -303,7 +343,7 @@ function isDeleted(post: FeedCandidate): boolean {
 function scoreEntry(
   post: FeedCandidate,
   ctx: { mode: FeedMode; now: Date; weights: FeedWeights; trendingWindowDays: number }
-): FeedEntry {
+): SortableFeedEntry {
   const age = ageInHours(post.created_at, ctx.now);
   const engagement = engagementScore(post);
   const recency = recencyScore(post.created_at, ctx.now);
@@ -331,7 +371,8 @@ function scoreEntry(
         : post.created_at
           ? new Date(post.created_at).toISOString()
           : null,
-    score: roundScore(score),
+    score: roundScore(Number.isFinite(score) ? score : 0),
+    sortScore: Number.isFinite(score) ? roundScore(score) : Number.NEGATIVE_INFINITY,
     deleted: false,
     signals: {
       engagement: roundScore(engagement),
@@ -366,19 +407,18 @@ function trendingScore(post: FeedCandidate, now: Date, windowDays: number): numb
  * order is *total* and identical requests return identical pages. For `recent`
  * the score is already `-age`, so this also yields newest-first.
  */
-function compareEntries(): (a: FeedEntry, b: FeedEntry) => number {
+function compareEntries(): (a: SortableFeedEntry, b: SortableFeedEntry) => number {
   return (a, b) => {
-    if (b.score !== a.score) {
-      // `-Infinity` entries sort last regardless of sign conventions.
-      if (!Number.isFinite(a.score) && !Number.isFinite(b.score)) return compareId(b, a);
-      if (!Number.isFinite(a.score)) return 1;
-      if (!Number.isFinite(b.score)) return -1;
-      return b.score - a.score;
-    }
-    return compareId(b, a);
+    const aFinite = Number.isFinite(a.sortScore);
+    const bFinite = Number.isFinite(b.sortScore);
+    if (aFinite && !bFinite) return -1;
+    if (!aFinite && bFinite) return 1;
+    if (!aFinite && !bFinite) return compareId(a, b);
+    if (b.sortScore !== a.sortScore) return b.sortScore - a.sortScore;
+    return compareId(a, b);
   };
 }
 
 function compareId(a: FeedEntry, b: FeedEntry): number {
-  return BigInt(a.id) < BigInt(b.id) ? -1 : BigInt(a.id) > BigInt(b.id) ? 1 : 0;
+  return BigInt(a.id) > BigInt(b.id) ? -1 : BigInt(a.id) < BigInt(b.id) ? 1 : 0;
 }

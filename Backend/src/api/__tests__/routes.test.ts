@@ -1,4 +1,6 @@
+import express from "express";
 import request from "supertest";
+import { sendSuccess, sendPaginated } from "../response";
 import { createApp } from "../index";
 import { Database } from "../../db";
 import { isValidStellarAddress } from "../routes/profiles";
@@ -109,6 +111,8 @@ describe("API Routes", () => {
         .set("x-correlation-id", "err-id-456");
       expect(res.status).toBe(500);
       expect(res.body).toMatchObject({ code: "INTERNAL_ERROR" });
+      expect(res.body.requestId).toBe("err-id-456");
+      expect(res.headers["x-correlation-id"]).toBe(res.body.requestId);
     });
   });
 
@@ -1162,5 +1166,32 @@ describe("DELETE /api/posts/:id — response semantics (BE-03)", () => {
     db.getProfile.mockResolvedValueOnce(null);
     const res = await request(app).get(`/api/profiles/${FOLLOW_ADDRESS}`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe("cache-control policy for personalized responses (#1056)", () => {
+  function app() {
+    const a = express();
+    a.get("/me", (_req, res) => sendSuccess(res, { address: "G..." }, 200, { personalized: true }));
+    a.get("/me/list", (_req, res) => sendPaginated(res, [1], 1, 10, 0, { personalized: true }));
+    a.get("/public", (_req, res) => sendSuccess(res, { ok: true }));
+    return a;
+  }
+
+  it("marks personalized responses private and no-store", async () => {
+    const res = await request(app()).get("/me");
+    expect(res.headers["cache-control"]).toBe("private, no-store");
+    expect(res.headers["vary"]).toMatch(/Authorization/i);
+    expect(res.headers["vary"]).toMatch(/X-Wallet-Address/i);
+  });
+
+  it("applies the same policy to personalized paginated responses", async () => {
+    const res = await request(app()).get("/me/list");
+    expect(res.headers["cache-control"]).toBe("private, no-store");
+  });
+
+  it("leaves public responses without a private/no-store directive", async () => {
+    const res = await request(app()).get("/public");
+    expect(res.headers["cache-control"] ?? "").not.toMatch(/private|no-store/);
   });
 });

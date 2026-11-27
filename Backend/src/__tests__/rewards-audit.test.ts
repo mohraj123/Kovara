@@ -26,6 +26,7 @@ import {
   actorKeyOf,
   AuditEntryInput,
 } from "../audit/chain";
+import { RewardStore } from "../rewards/store";
 
 /** A well-formed Stellar address, so address validation is not the subject. */
 const ALICE = `G${"A".repeat(55)}`;
@@ -335,5 +336,70 @@ describe("actorKeyOf", () => {
 
   it("normalises an unknown actor", () => {
     expect(actorKeyOf({ kind: "unknown" })).toBe("unknown");
+  });
+});
+
+describe("RewardStore claim transitions (#657 atomicity)", () => {
+  function mockClient(responses: Array<{ rows: Record<string, unknown>[] }>) {
+    const query = jest.fn();
+    for (const response of responses) query.mockResolvedValueOnce(response);
+    return { query, release: jest.fn() };
+  }
+
+  it("returns an existing claim atomically on idempotent replay", async () => {
+    const existing = {
+      claim_id: "GA:key",
+      address: ALICE,
+      amount: "100",
+      state: "processing",
+      claimed_at: "2026-01-01T00:00:00.000Z",
+      completed_at: null,
+      transaction_hash: null,
+      failure_reason: null,
+      idempotency_key: "key",
+    };
+    const client = mockClient([
+      { rows: [] }, // BEGIN
+      { rows: [existing] }, // idempotency lookup
+      { rows: [] }, // COMMIT
+    ]);
+    const pool = { connect: jest.fn().mockResolvedValue(client) };
+
+    const store = new RewardStore(pool as never);
+    const claim = await store.claim(ALICE, "key");
+
+    expect(claim.claimId).toBe("GA:key");
+    expect(client.query.mock.calls[0][0]).toBe("BEGIN");
+    expect(client.query.mock.calls[1][0]).toContain("FOR UPDATE");
+  });
+
+  it("settles a processing claim once and rolls back the failed transaction", async () => {
+    const client = mockClient([
+      { rows: [] },
+      {
+        rows: [{
+          claim_id: "GA:key",
+          address: ALICE,
+          amount: "100",
+          state: "failed",
+          claimed_at: "2026-01-01T00:00:00.000Z",
+          completed_at: "2026-01-01T00:00:01.000Z",
+          transaction_hash: null,
+          failure_reason: "network",
+          idempotency_key: "key",
+        }],
+      },
+      { rows: [] },
+      { rows: [] },
+    ]);
+    const pool = { connect: jest.fn().mockResolvedValue(client) };
+    const store = new RewardStore(pool as never);
+
+    await store.settleClaim("GA:key", { state: "failed", failureReason: "network" });
+
+    expect(client.query.mock.calls[0][0]).toBe("BEGIN");
+    expect(client.query.mock.calls.some(([sql]) =>
+      String(sql).includes("SET state = 'claimable'")
+    )).toBe(true);
   });
 });

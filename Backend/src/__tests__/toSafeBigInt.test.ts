@@ -1,4 +1,9 @@
 import { toSafeBigInt } from "../db";
+import {
+  MAX_REWARD_AMOUNT,
+  RewardCalculationError,
+  assessSubmission,
+} from "../rewards/rules";
 
 describe("toSafeBigInt (BA-028)", () => {
   it("returns native bigints as-is", () => {
@@ -45,5 +50,27 @@ describe("toSafeBigInt (BA-028)", () => {
     expect(() => toSafeBigInt({})).toThrow(/Unsupported/);
     expect(() => toSafeBigInt([1])).toThrow(/Unsupported/);
     expect(() => toSafeBigInt(true)).toThrow(/Unsupported/);
+  });
+
+  it("rejects reward arithmetic outside the contract amount domain", () => {
+    expect(() =>
+      assessSubmission(
+        {
+          submissionId: "overflow",
+          submitter: `G${"A".repeat(55)}`,
+          status: "verified",
+          corroborations: 0,
+        },
+        [],
+        {
+          baseSubmissionReward: MAX_REWARD_AMOUNT,
+          verificationReward: 0n,
+          rejectionReward: 0n,
+          corroborationBonusBps: 10_001n,
+          corroborationThreshold: 0,
+          pendingReviewBps: 10_000n,
+        }
+      )
+    ).toThrow(RewardCalculationError);
   });
 });

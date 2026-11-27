@@ -80,7 +80,7 @@ describe("handleFollow", () => {
       ledger: 200,
     };
 
-    await expect(handleFollow(db, event)).resolves.toBeUndefined();
+    await expect(handleFollow(db, event)).resolves.toBe("applied");
   });
 
   // ── Idempotency ─────────────────────────────────────────────────────────────
@@ -205,7 +205,7 @@ describe("handleUnfollow", () => {
       ledger: 150,
     };
 
-    await expect(handleUnfollow(db, event)).resolves.toBeUndefined();
+    await expect(handleUnfollow(db, event)).resolves.toBe("applied");
   });
 
   // ── Idempotency ─────────────────────────────────────────────────────────────
@@ -495,5 +495,69 @@ describe("handleFollow � self-follow (BE-13)", () => {
       followee: OTHER,
       ledger: 5,
     });
+  });
+});
+
+describe("follow/unfollow outcomes and stored relationship (BE-026)", () => {
+  /** Stateful fake: the stored edge set the handlers act on. */
+  function statefulDb() {
+    const edges = new Map<string, { follower: string; followee: string; ledger: number }>();
+    const key = (a: string, b: string) => `${a}>${b}`;
+    const db = {
+      getFollow: jest.fn(async (a: string, b: string) => edges.get(key(a, b)) ?? null),
+      insertFollow: jest.fn(async (f: { follower: string; followee: string; ledger: number }) => {
+        edges.set(key(f.follower, f.followee), f);
+      }),
+      deleteFollow: jest.fn(async (a: string, b: string) => void edges.delete(key(a, b))),
+    } as unknown as jest.Mocked<Database>;
+    return { db, edges };
+  }
+
+  const follow: FollowEvent = { follower: "GABC123", followee: "GXYZ789", ledger: 10 };
+  const unfollow: UnfollowEvent = { follower: "GABC123", followee: "GXYZ789", ledger: 11 };
+
+  it("reports applied once, then noop for repeated follows, with one stored edge", async () => {
+    const { db, edges } = statefulDb();
+    expect(await handleFollow(db, follow)).toBe("applied");
+    expect(await handleFollow(db, follow)).toBe("noop");
+    expect(await handleFollow(db, { ...follow, ledger: 99 })).toBe("noop");
+    expect(db.insertFollow).toHaveBeenCalledTimes(1);
+    expect(edges.size).toBe(1);
+    expect(edges.get("GABC123>GXYZ789")?.ledger).toBe(10); // first write wins
+  });
+
+  it("reports applied once, then noop for repeated unfollows, leaving no edge", async () => {
+    const { db, edges } = statefulDb();
+    await handleFollow(db, follow);
+    expect(await handleUnfollow(db, unfollow)).toBe("applied");
+    expect(await handleUnfollow(db, unfollow)).toBe("noop");
+    expect(db.deleteFollow).toHaveBeenCalledTimes(1);
+    expect(edges.size).toBe(0);
+  });
+
+  it("an unfollow of a never-followed account is a noop that writes nothing", async () => {
+    const { db } = statefulDb();
+    expect(await handleUnfollow(db, unfollow)).toBe("noop");
+    expect(db.deleteFollow).not.toHaveBeenCalled();
+  });
+
+  it("follow, unfollow, follow ends with exactly one edge", async () => {
+    const { db, edges } = statefulDb();
+    await handleFollow(db, follow);
+    await handleUnfollow(db, unfollow);
+    expect(await handleFollow(db, { ...follow, ledger: 12 })).toBe("applied");
+    expect(edges.size).toBe(1);
+  });
+
+  it("treats a unique-violation from a racing insert as a noop", async () => {
+    const { db } = statefulDb();
+    (db.insertFollow as jest.Mock).mockRejectedValueOnce(Object.assign(new Error("dup"), { code: "23505" }));
+    expect(await handleFollow(db, follow)).toBe("noop");
+  });
+
+  it("still throws other insert errors", async () => {
+    const { db } = statefulDb();
+    (db.insertFollow as jest.Mock).mockRejectedValueOnce(new Error("connection lost"));
+    await expect(handleFollow(db, follow)).rejects.toThrow("connection lost");
   });
 });

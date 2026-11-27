@@ -20,6 +20,19 @@
 /** Basis-point denominator: 10,000bp = 100%. */
 export const BPS = 10_000n;
 
+/** Largest amount representable by the PriceVault contract's i128 fields. */
+export const MAX_REWARD_AMOUNT = (1n << 127n) - 1n;
+
+/** Error raised when a reward cannot be represented by the contract ABI. */
+export class RewardCalculationError extends Error {
+  readonly code = "REWARD_OVERFLOW";
+
+  constructor(operation: string) {
+    super(`Reward calculation overflow during ${operation}`);
+    this.name = "RewardCalculationError";
+  }
+}
+
 /** The recorded facts about one submission that reward rules depend on. */
 export interface SubmissionRecord {
   submissionId: string;
@@ -139,7 +152,23 @@ export function isValidAddress(value: string): boolean {
  * way, the total stays reproducible.
  */
 function applyBps(amount: bigint, bps: bigint): bigint {
-  return (amount * bps) / BPS;
+  return checkedMultiply(amount, bps, "basis-point multiplication") / BPS;
+}
+
+function checkedMultiply(left: bigint, right: bigint, operation: string): bigint {
+  const result = left * right;
+  if (result > MAX_REWARD_AMOUNT || result < -MAX_REWARD_AMOUNT - 1n) {
+    throw new RewardCalculationError(operation);
+  }
+  return result;
+}
+
+function checkedAdd(left: bigint, right: bigint, operation: string): bigint {
+  const result = left + right;
+  if (result > MAX_REWARD_AMOUNT || result < -MAX_REWARD_AMOUNT - 1n) {
+    throw new RewardCalculationError(operation);
+  }
+  return result;
 }
 
 /**
@@ -208,7 +237,7 @@ function corroborationMultiplier(corroborations: number, rules: RewardRules): bi
   const steps = Math.min(corroborations - rules.corroborationThreshold, 8);
   // Each agreement beyond the threshold adds 1/8 of the base bonus, so the
   // total additional multiplier never exceeds the bonus itself.
-  return BPS + (rules.corroborationBonusBps * BigInt(steps)) / 8n;
+  return BPS + checkedMultiply(rules.corroborationBonusBps, BigInt(steps), "corroboration multiplier") / 8n;
 }
 
 function sortIgnored(
@@ -344,7 +373,10 @@ export function assessSubmission(
   verifierAccruals.sort((a, b) => a.address.localeCompare(b.address));
   accruals.push(...verifierAccruals);
 
-  const total = accruals.reduce((sum, a) => sum + a.amount, 0n);
+  const total = accruals.reduce(
+    (sum, a) => checkedAdd(sum, a.amount, "reward total"),
+    0n
+  );
   return { submissionId: submission.submissionId, accruals, total, ignoredVerifications: sortIgnored(ignored) };
 }
 

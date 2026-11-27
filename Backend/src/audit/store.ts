@@ -314,8 +314,10 @@ export class AuditStore {
     // Clamp rather than trust the caller: `limit`/`offset` often arrive
     // straight from request query params, and an unbounded limit turns one
     // slow request into a full table scan.
-    const limit = Math.min(Math.max(1, Math.trunc(query.limit) || 1), MAX_PAGE_SIZE);
-    const offset = Math.max(0, Math.trunc(query.offset) || 0);
+    const rawLimit = Number.isFinite(query.limit) ? Math.trunc(query.limit) : 1;
+    const rawOffset = Number.isFinite(query.offset) ? Math.trunc(query.offset) : 0;
+    const limit = Math.min(Math.max(1, rawLimit || 1), MAX_PAGE_SIZE);
+    const offset = Math.max(0, rawOffset || 0);
 
     // Independent reads (no snapshot guarantee across the two queries, same
     // as before), but issued concurrently instead of sequentially — halves

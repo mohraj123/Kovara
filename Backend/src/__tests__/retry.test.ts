@@ -3,6 +3,7 @@ import {
   computeBackoffMs,
   isPermanentError,
   isTransientError,
+  parseRetryAfterMs,
   withRetry,
 } from "../retry";
 
@@ -26,6 +27,13 @@ describe("classifyFailure", () => {
     expect(classifyFailure({ code: "40P01" }).kind).toBe("transient");
     expect(classifyFailure({ code: "53300" }).kind).toBe("transient");
     expect(classifyFailure({ code: "57P01" }).kind).toBe("transient");
+  });
+
+  it("classifies a connection reset wrapped as a cause as transient", () => {
+    expect(classifyFailure({ message: "query failed", cause: { code: "ECONNRESET" } }).kind).toBe("transient");
+    expect(classifyFailure({ message: "query failed", cause: { code: "57P01" } }).kind).toBe("transient");
+    expect(classifyFailure({ message: "query failed", cause: { code: "23505" } }).kind).toBe("permanent");
+    expect(classifyFailure({ message: "syntax error", cause: { code: "42601" } }).kind).toBe("permanent");
   });
 
   it("treats integrity violations as permanent", () => {
@@ -190,5 +198,26 @@ describe("withRetry", () => {
       withRetry(fn, { log, signal: controller.signal })
     ).rejects.toThrow(/aborted before attempt 1/);
     expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe("Retry-After handling", () => {
+  it("parses seconds and dates, and caps excessive values", () => {
+    expect(parseRetryAfterMs("2")).toBe(2000);
+    expect(parseRetryAfterMs("999999")).toBe(60_000);
+    expect(parseRetryAfterMs(new Date(10_000).toUTCString(), 4_000)).toBe(6000);
+    expect(parseRetryAfterMs("soon")).toBeUndefined();
+    expect(parseRetryAfterMs(null)).toBeUndefined();
+  });
+
+  it("waits at least the provider hint before retrying a 429", async () => {
+    const sleep = jest.fn().mockResolvedValue(undefined);
+    const err = Object.assign(new Error("RPC request failed: 429"), { status: 429, retryAfterMs: 5000 });
+    const fn = jest.fn().mockRejectedValueOnce(err).mockResolvedValue("ok");
+
+    await expect(
+      withRetry(fn, { sleep, jitter: false, baseDelayMs: 10, log: makeLog() })
+    ).resolves.toBe("ok");
+    expect(sleep).toHaveBeenCalledWith(5000);
   });
 });

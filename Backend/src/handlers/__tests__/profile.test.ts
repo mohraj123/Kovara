@@ -7,7 +7,12 @@
  *  - Database calls mocked with jest.mock
  */
 
-import { handleProfileSet, ProfileSetEvent } from "../profile";
+import {
+  handleProfileSet,
+  ProfileSetEvent,
+  MAX_USERNAME_LENGTH,
+  MAX_CREATOR_TOKEN_LENGTH,
+} from "../profile";
 import { Database } from "../../db";
 
 // Mock the entire db module so no real database is needed.
@@ -383,6 +388,103 @@ describe("handleProfileSet � replay safety (BE-07)", () => {
     });
 
     expect(db.getProfile).toHaveBeenCalledWith("GA");
+    expect(db.upsertProfile).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleProfileSet — length limits and partial updates (BE-030)", () => {
+  const stored = { address: "GABC123", username: "alice", creator_token: "TOKEN-OLD", updated_ledger: 100 };
+  const makeDb = (existing?: typeof stored) =>
+    ({
+      getProfile: jest.fn().mockResolvedValue(existing ?? null),
+      upsertProfile: jest.fn().mockResolvedValue(undefined),
+    }) as unknown as jest.Mocked<Database>;
+
+  it("accepts a username and token exactly at the limits", async () => {
+    const db = makeDb();
+    await handleProfileSet(db, {
+      user: "gabc123",
+      username: "u".repeat(MAX_USERNAME_LENGTH),
+      creator_token: "t".repeat(MAX_CREATOR_TOKEN_LENGTH),
+      ledger: 1,
+    });
+    expect(db.upsertProfile).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a username one character over the limit before any database call", async () => {
+    const db = makeDb();
+    await expect(
+      handleProfileSet(db, { user: "GABC123", username: "u".repeat(MAX_USERNAME_LENGTH + 1), ledger: 1 })
+    ).rejects.toThrow(`username exceeds ${MAX_USERNAME_LENGTH}`);
+    expect(db.getProfile).not.toHaveBeenCalled();
+    expect(db.upsertProfile).not.toHaveBeenCalled();
+  });
+
+  it("rejects a creator_token over the limit", async () => {
+    const db = makeDb();
+    await expect(
+      handleProfileSet(db, {
+        user: "GABC123",
+        username: "alice",
+        creator_token: "t".repeat(MAX_CREATOR_TOKEN_LENGTH + 1),
+        ledger: 1,
+      })
+    ).rejects.toThrow(`creator_token exceeds ${MAX_CREATOR_TOKEN_LENGTH}`);
+    expect(db.upsertProfile).not.toHaveBeenCalled();
+  });
+
+  it("measures length after trimming", async () => {
+    const db = makeDb();
+    await handleProfileSet(db, {
+      user: "GABC123",
+      username: `  ${"u".repeat(MAX_USERNAME_LENGTH)}  `,
+      ledger: 1,
+    });
+    expect(db.upsertProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ username: "u".repeat(MAX_USERNAME_LENGTH) })
+    );
+  });
+
+  it("keeps the stored creator_token when the field is omitted", async () => {
+    const db = makeDb(stored);
+    await handleProfileSet(db, { user: "GABC123", username: "alice2", ledger: 101 });
+    expect(db.upsertProfile).toHaveBeenCalledWith({
+      address: "GABC123",
+      username: "alice2",
+      creator_token: "TOKEN-OLD",
+      updated_ledger: 101,
+    });
+  });
+
+  it("clears the creator_token when it is explicitly empty", async () => {
+    const db = makeDb(stored);
+    await handleProfileSet(db, { user: "GABC123", username: "alice", creator_token: "", ledger: 101 });
+    expect(db.upsertProfile).toHaveBeenCalledWith(expect.objectContaining({ creator_token: "" }));
+  });
+
+  it("keeps the stored username when it is omitted on an update", async () => {
+    const db = makeDb(stored);
+    await handleProfileSet(db, { user: "GABC123", creator_token: "TOKEN-NEW", ledger: 101 });
+    expect(db.upsertProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ username: "alice", creator_token: "TOKEN-NEW" })
+    );
+  });
+
+  it("rejects an explicitly empty username", async () => {
+    const db = makeDb(stored);
+    await expect(handleProfileSet(db, { user: "GABC123", username: "", ledger: 101 })).rejects.toThrow(
+      "missing required field: username"
+    );
+    await expect(handleProfileSet(db, { user: "GABC123", username: "   ", ledger: 101 })).rejects.toThrow(
+      "non-empty after trimming"
+    );
+  });
+
+  it("requires a username when there is no stored profile to keep", async () => {
+    const db = makeDb();
+    await expect(handleProfileSet(db, { user: "GABC123", creator_token: "T", ledger: 1 })).rejects.toThrow(
+      "missing required field: username"
+    );
     expect(db.upsertProfile).not.toHaveBeenCalled();
   });
 });

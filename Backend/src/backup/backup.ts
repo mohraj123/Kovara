@@ -95,7 +95,9 @@ export function buildManifest(input: {
     format: input.format,
     sha256: sha256(input.dump),
     bytes: input.dump.length,
-    tables: [...input.tables].sort((a, b) => a.table.localeCompare(b.table)),
+    tables: [...input.tables]
+      .sort((a, b) => (a.table < b.table ? -1 : a.table > b.table ? 1 : 0))
+      .map((t) => ({ table: t.table, rows: t.rows })),
   };
 }
 
@@ -197,6 +199,20 @@ export function parseManifest(json: string): BackupManifest {
     if (!(key in m)) throw new Error(`manifest is missing required field "${key}"`);
   }
 
+  if (typeof m.manifestVersion !== "number" || !Number.isInteger(m.manifestVersion)) {
+    throw new Error("manifest manifestVersion must be an integer");
+  }
+  if (m.manifestVersion !== MANIFEST_VERSION) {
+    throw new Error(
+      `manifest version ${m.manifestVersion} is not supported (expected ${MANIFEST_VERSION})`
+    );
+  }
+  if (typeof m.createdAt !== "string" || Number.isNaN(Date.parse(m.createdAt))) {
+    throw new Error("manifest createdAt must be a valid ISO-8601 timestamp");
+  }
+  if (typeof m.database !== "string" || m.database.length === 0) {
+    throw new Error("manifest database must be a non-empty string");
+  }
   if (m.format !== "custom" && m.format !== "plain") {
     throw new Error(`manifest format must be "custom" or "plain", got ${JSON.stringify(m.format)}`);
   }
@@ -223,6 +239,14 @@ export function parseManifest(json: string): BackupManifest {
     }
     return { table: t.table, rows: t.rows };
   });
+  const names = new Set<string>();
+  for (const table of tables) {
+    if (names.has(table.table)) {
+      throw new Error(`manifest contains duplicate table "${table.table}"`);
+    }
+    names.add(table.table);
+  }
+  tables.sort((a, b) => (a.table < b.table ? -1 : a.table > b.table ? 1 : 0));
 
   return {
     manifestVersion: Number(m.manifestVersion),

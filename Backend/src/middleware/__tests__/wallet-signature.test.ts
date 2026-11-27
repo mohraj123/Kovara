@@ -6,6 +6,7 @@ import {
   InMemoryNonceRegistry,
   SEP53_PREFIX,
   buildSignableMessage,
+  canonicalRequestPath,
   decodeStellarAddress,
   encodeStellarAddress,
   verifyWalletSignature,
@@ -233,5 +234,120 @@ describe("walletSignatureMiddleware (#670)", () => {
 
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({ code: "WALLET_ADDRESS_INVALID" });
+  });
+});
+
+describe("wallet signatures are bound to the request target (BE-037)", () => {
+  function bindingApp() {
+    const app = express();
+    app.use(express.json());
+    app.use(walletSignatureMiddleware());
+    app.all("/protected", (req, res) => void res.json({ ok: true, method: req.method }));
+    app.all("/other", (_req, res) => void res.json({ ok: true }));
+    const router = express.Router();
+    router.get("/items", (_req, res) => void res.json({ ok: true }));
+    app.use("/api/v1", router);
+    return app;
+  }
+
+  describe("canonicalRequestPath", () => {
+    it("uses the full path including the mount prefix", () => {
+      expect(canonicalRequestPath({ baseUrl: "/api/v1", path: "/items", originalUrl: "/api/v1/items" })).toBe("/api/v1/items");
+      expect(canonicalRequestPath({ baseUrl: "/api/v1", path: "/items" })).toBe("/api/v1/items");
+    });
+
+    it("drops a trailing slash but keeps the root", () => {
+      expect(canonicalRequestPath({ path: "/a/", originalUrl: "/a/" })).toBe("/a");
+      expect(canonicalRequestPath({ path: "/", originalUrl: "/" })).toBe("/");
+    });
+
+    it("sorts query parameters so equivalent requests canonicalize identically", () => {
+      expect(canonicalRequestPath({ path: "/s", originalUrl: "/s?b=2&a=1" })).toBe("/s?a=1&b=2");
+      expect(canonicalRequestPath({ path: "/s", originalUrl: "/s?" })).toBe("/s");
+    });
+  });
+
+  it("accepts a signature for the exact route", async () => {
+    const wallet = makeWallet();
+    const res = await request(bindingApp()).get("/protected").set(proof(wallet, { __path: "/protected" }));
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects a signature for one route replayed against another", async () => {
+    const wallet = makeWallet();
+    const res = await request(bindingApp()).get("/other").set(proof(wallet, { __path: "/protected" }));
+    expect(res.status).toBe(401);
+    expect(res.body).toMatchObject({ code: "WALLET_SIGNATURE_INVALID" });
+  });
+
+  it("rejects a signature for the same method and path replayed with a different method", async () => {
+    const wallet = makeWallet();
+    const res = await request(bindingApp()).post("/protected").set(proof(wallet, { __method: "GET", __path: "/protected" }));
+    expect(res.status).toBe(401);
+    expect(res.body).toMatchObject({ code: "WALLET_SIGNATURE_INVALID" });
+  });
+
+  it("requires the mount prefix to be signed, not just the router-relative path", async () => {
+    const wallet = makeWallet();
+    const relative = await request(bindingApp()).get("/api/v1/items").set(proof(wallet, { __path: "/items" }));
+    expect(relative.status).toBe(401);
+    const full = await request(bindingApp()).get("/api/v1/items").set(proof(wallet, { __path: "/api/v1/items" }));
+    expect(full.status).toBe(200);
+  });
+
+  it("binds the query string: a signature for one query fails on another", async () => {
+    const wallet = makeWallet();
+    const res = await request(bindingApp()).get("/protected?a=2").set(proof(wallet, { __path: "/protected?a=1" }));
+    expect(res.status).toBe(401);
+    expect(res.body).toMatchObject({ code: "WALLET_SIGNATURE_INVALID" });
+  });
+
+  it("accepts the same query in a different parameter order", async () => {
+    const wallet = makeWallet();
+    const res = await request(bindingApp()).get("/protected?b=2&a=1").set(proof(wallet, { __path: "/protected?a=1&b=2" }));
+    expect(res.status).toBe(200);
+describe("wallet proof timestamp boundaries (#1057)", () => {
+  const NOW = 1_700_000_000_000;
+  const WINDOW = 60_000;
+  const SKEW = 5_000;
+  const app = () => makeApp({ now: () => NOW, windowMs: WINDOW, futureSkewMs: SKEW });
+  const at = (wallet: Wallet, ts: number) =>
+    request(app()).get("/protected").set(proof(wallet, { [DEFAULT_WALLET_HEADERS.timestamp]: String(ts) }));
+
+  it("accepts a proof exactly at the back-dated limit", async () => {
+    expect((await at(makeWallet(), NOW - WINDOW)).status).toBe(200);
+  });
+
+  it("rejects a proof one millisecond past the back-dated limit", async () => {
+    const res = await at(makeWallet(), NOW - WINDOW - 1);
+    expect(res.status).toBe(401);
+    expect(res.body).toMatchObject({ code: "WALLET_PROOF_EXPIRED" });
+  });
+
+  it("accepts a future timestamp exactly at the skew limit", async () => {
+    expect((await at(makeWallet(), NOW + SKEW)).status).toBe(200);
+  });
+
+  it("rejects a timestamp one millisecond beyond the future skew limit", async () => {
+    const res = await at(makeWallet(), NOW + SKEW + 1);
+    expect(res.status).toBe(401);
+    expect(res.body).toMatchObject({ code: "WALLET_PROOF_FUTURE" });
+  });
+
+  it("rejects a far-future timestamp the same way as an expired one", async () => {
+    const res = await at(makeWallet(), NOW + 24 * 60 * 60 * 1000);
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe("WALLET_PROOF_FUTURE");
+  });
+
+  it("rejects fractional, negative and non-numeric timestamps as invalid", async () => {
+    const wallet = makeWallet();
+    for (const bad of [String(NOW + 0.5), "-5", "abc"]) {
+      const res = await request(app())
+        .get("/protected")
+        .set(proof(wallet, { [DEFAULT_WALLET_HEADERS.timestamp]: bad }));
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe("WALLET_TIMESTAMP_INVALID");
+    }
   });
 });

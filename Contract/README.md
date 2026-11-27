@@ -9,6 +9,189 @@ The four Kovara Soroban contracts, as a reproducible Rust Cargo workspace:
 | FlowRewards  | `kovara-flow-rewards`  | Releases XLM / Stellar USDC to verified submitters and verifiers           |
 | KovaraIndex  | `kovara-index`         | Aggregates verified prices into the daily `KVI` per country                |
 
+## FlowRewards — paginated reward history (CT-10)
+
+`FlowRewards` releases rewards to verified submitters and verifiers. Every call
+to `grant` or `grant_batch` both updates the aggregate balance **and** appends
+the grant ID to a per-recipient index stored under
+`DataKey::RecipientIndex(recipient)`. The index is a `Vec<u64>` that grows by
+one entry per grant and is never modified in-place, so offset-based pagination
+is deterministic: a new grant appended after a page was handed to a caller
+never shifts earlier entries, and the same offset always addresses the same
+record.
+
+### `reward_history(recipient, offset, limit) → Vec<GrantRecord>`
+
+Returns a bounded page of `GrantRecord`s for `recipient`.
+
+| Parameter | Meaning |
+| --- | --- |
+| `offset` | Zero-based position in the per-recipient index to start from |
+| `limit` | Maximum entries to return; must be `1..=MAX_HISTORY_PAGE_SIZE` (50) |
+
+| Condition | Result |
+| --- | --- |
+| `limit == 0 \|\| limit > 50` | `Error::InvalidPageSize` |
+| `offset >= grant_count(recipient)` | empty `Vec` |
+| otherwise | at most `limit` `GrantRecord` entries starting at `offset` |
+
+`limit` is capped at 50 so a single call cannot force unbounded storage reads
+for a recipient with thousands of grants; exceeding it fails loudly rather than
+being silently truncated.
+
+Each `GrantRecord` holds the full state at read time:
+
+| Field | Meaning |
+| --- | --- |
+| `recipient` | Authorised recipient of the reward |
+| `asset` | The Stellar asset address |
+| `amount` | Total amount originally granted |
+| `claimed` | Amount claimed so far |
+| `revoked` | Amount revoked so far |
+| `granted_at` | Ledger timestamp when the grant was recorded |
+
+### `grant_timestamp(grant_id) → Option<u64>`
+
+Returns the ledger timestamp stored with `grant_id` when it was granted, or
+`None` if no detailed record exists for that ID (never granted, or already
+archived). The timestamp is captured from the ledger at grant time and is not
+changed by later claims or revocations.
+
+### `grant_count(recipient) → u32`
+
+Returns the total number of grants recorded for `recipient`. Callers can use
+this to compute the number of available pages before iterating:
+
+```text
+pages = ceil(grant_count(recipient) / page_size)
+```
+
+### Storage layout
+
+| Key | Stored value | Purpose |
+| --- | --- | --- |
+| `DataKey::RecipientIndex(recipient)` | `Vec<u64>` of grant IDs | Append-only per-recipient index — stable offsets |
+| `DataKey::GrantRecord(grant_id)` | `GrantRecord` | Full record per grant — updated by `claim` and `revoke` |
+| `DataKey::GrantId(grant_id)` | `bool` | Deduplication sentinel |
+| `DataKey::Granted` | `Map<(Address, Address), i128>` | Running total granted per (recipient, asset) |
+| `DataKey::GrantedByRole` | `Map<(Address, Symbol, Address), i128>` | Running total granted per (recipient, role, asset) |
+| `DataKey::GrantRole(grant_id)` | `Symbol` | Role recorded at grant time, used to attribute revocations |
+| `DataKey::Claimed` | `Map<(Address, Address), i128>` | Running total claimed per (recipient, asset) |
+| `DataKey::Treasury` | `Map<Address, i128>` | Available treasury funds per asset |
+
+## FlowRewards role-specific totals (CT-04)
+
+Rewards are attributed to the role supplied when the grant is created. The
+supported symbols are exported as `ROLE_SUBMITTER` and `ROLE_VERIFIER`, and
+collected in `SUPPORTED_ROLES` as the single definition of the accepted set.
+`grant` and `grant_batch` update the existing aggregate `DataKey::Granted` map
+and the new `DataKey::GrantedByRole` map in the same call, so the two views
+cannot drift apart.
+
+An unknown symbol is rejected with `Error::UnsupportedRole` before
+authentication and before any storage change. `grant_batch` validates the
+amount and role of every entry up front, so an invalid entry cannot leave an
+earlier entry partially applied. A rejected role leaves treasury, aggregate
+and per-role totals, grant markers and recipient indexes unchanged, and the
+unused grant ID can be used by a later valid grant.
+
+| Call | Meaning |
+| --- | --- |
+| `total_granted(recipient, asset)` | Unchanged aggregate, net of revocations; equals the sum of the role totals |
+| `total_granted_by_role(recipient, asset, role)` | Net granted amount for that one `(recipient, asset, role)` |
+
+The two roles are independent even for the same recipient and asset: granting
+10 as submitter and 25 as verifier gives 10 and 25 in the role views and 35 in
+`total_granted`. An unsupported role is rejected before any write and has no
+total. `total_granted_by_role` returns `0` for a role that was never granted.
+
+`revoke` reads the role stored under `DataKey::GrantRole(grant_id)` and reduces
+that role's total together with the aggregate total and the refunded treasury.
+Grants created before role tracking carry no role marker; revoking one still
+corrects the aggregate without guessing a role. Archival removes the per-grant
+role marker but not the lifetime totals, and claims never change granted
+totals.
+
+## FlowRewards reward-history retention
+
+FlowRewards keeps detailed `GrantRecord` entries and their `GrantIds` index
+only up to `MAX_GRANT_HISTORY` (100) grants. A record is settled when its
+entire amount is either claimed or revoked. `archive_history(limit)` can
+permissionlessly archive up to 20 settled records per call; when the history
+is full, a new grant automatically archives one settled record to make room.
+Archival removes the detailed record and its index entry. If the history is
+full of unsettled grants, a new grant fails with `HistoryFull` rather than
+discarding claimable rewards or revocation state.
+
+Archival accumulates grant count, original granted amount, claimed amount, and
+revoked amount by `(recipient, asset)` in `ArchivedTotals`. The aggregate
+`total_granted`, `total_claimed`, and `claimable` values are maintained
+independently of detailed records and remain unchanged by archival. Use
+`archived_totals(recipient, asset)` for sums specifically covering archived
+records. The original amount is recorded as granted and revocations are
+reported separately. Per-grant details, including `revoked_amount`, are no
+longer available after that grant is archived.
+
+To keep duplicate protection compact after archived IDs are removed, grant
+IDs may start at any value, but each subsequent grant must use the immediately
+following ID. This also applies to the order of entries in `grant_batch`.
+The ID watermark continues to recognize archived IDs as processed, so replaying
+an ID returns `DuplicateGrant` without changing treasury or granted balances,
+even after its detailed history record has been archived.
+
+Persistent grant records and ID markers have their TTL extended to 500,000
+ledgers on creation or update; the ID index and instance storage TTL are
+renewed on contract calls. A detail record that nevertheless expires or is
+missing is skipped by claims and does not invalidate aggregate balances;
+revocation of a missing detail returns `GrantNotFound`. Lifetime
+per-recipient balances and archived aggregates remain in instance storage.
+As with other Soroban instance state, totals still depend on the contract
+instance being kept alive. Storage is bounded for per-grant history, not for
+the number of distinct recipient/asset aggregate pairs.
+
+## FlowRewards safe grant reversal (CT-08)
+
+`reverse_grant(admin, grant_id, amount) -> i128` lets the configured admin
+reverse part of an existing reward grant. The reversal is **keyed to the
+original `grant_id`**, so it can only ever adjust the grant it names.
+
+The call is authorized like the other admin entry points: the caller must
+authenticate and, when an admin is configured, must be that admin. The amount
+must be positive and no larger than the grant's remaining unclaimed, unrevoked
+balance.
+
+| Condition | Result |
+| --- | --- |
+| `amount <= 0` | `Error::InvalidAmount` |
+| `grant_id` has no live record | `Error::GrantNotFound` |
+| grant is fully claimed | `Error::GrantAlreadyClaimed` |
+| grant is fully reversed (or has no remaining balance) | `Error::GrantAlreadyRevoked` |
+| `amount > remaining` | `Error::ReversalExceedsGrant` |
+| otherwise | `amount` is reversed and returned |
+
+On success the amount is added to `GrantRecord::revoked`, subtracted from the
+recipient's aggregate and role totals, and returned to the treasury, matching
+the accounting used by `revoke`. A `grants/reversed` event carrying
+`(recipient, amount, grant_id)` is emitted.
+
+Every check runs before any write, so a rejected reversal cannot leave a
+partial update. Reversing the same grant repeatedly is allowed only while the
+total reversed stays within the original amount; once the grant is exhausted,
+further reversals fail with `GrantAlreadyRevoked` (or `GrantAlreadyClaimed` if
+it was fully claimed). `revoke` remains the full-remaining reversal; use
+`reverse_grant` when only part of the grant should be clawed back.
+
+## FlowRewards admin transfer
+
+`set_admin(new_admin)` configures the initial admin and cannot replace an
+existing one. To rotate the admin, the current admin calls
+`propose_admin(admin, new_admin)`. This records a pending proposal without
+changing the active admin; only `new_admin` can complete the transfer by
+calling `accept_admin(new_admin)`. Acceptance clears the pending proposal and
+emits the `admin/changed` event. A later proposal replaces an earlier pending
+one, and `admin()` / `pending_admin()` report the current and proposed
+addresses.
+
 ## PriceVault storage layout
 
 `PriceVault` uses typed Soroban keys rather than concatenated strings:
@@ -779,3 +962,28 @@ soroban contract deploy \
 
 Use the `kovara-index` contract address reported by the command as the
 `CONTRACT_ID` for the indexer backend.
+
+## FlowRewards grant pause and resume
+
+The active rewards admin can pause all new grants with `pause_grants(admin)` and
+resume them with `resume_grants(admin)`. `grants_paused()` and `is_paused()` report
+the pause state. While paused, `grant` and `grant_batch` return `Error::GrantsPaused`
+before any treasury or aggregate-balance mutation. Pausing or resuming does not
+change treasury, granted, claimed, claimable, revoked, or archived totals.
+
+`pause`, `resume`, and `unpause` are compatibility aliases for the grant controls.
+Pause and resume operations require the active configured admin; read APIs and
+existing claims/revocations continue to operate independently. If no admin is yet
+configured, the existing initial `set_admin(new_admin)` setup flow applies.
+
+### FlowRewards grant event
+
+A successful `grant` or `grant_batch` entry publishes exactly one event after
+all storage updates complete:
+
+- topics: `(Symbol("grants"), Symbol("granted"))`
+- data: `(recipient: Address, role: Symbol, amount: i128, grant_id: u64)`
+
+The event is therefore sufficient to associate a reward with both its
+recipient and supported role, while `grant_id` provides the grant identity.
+Failed grants do not emit this event.

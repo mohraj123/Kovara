@@ -47,6 +47,10 @@
 //!   content hash. They are stored on the record and republished on
 //!   [`SlashedEvent`], so an off-chain audit consumer never has to infer *why*
 //!   a balance changed.
+//! * **Supplementary appeal evidence.** An appellant may append references
+//!   without mutating the original [`SlashEvidence`]. Each reference is limited
+//!   to [`MAX_APPEAL_EVIDENCE_REF_BYTES`] bytes, with at most
+//!   [`MAX_APPEAL_EVIDENCE_REFS`] references per slash.
 //! * **A bounded appeal window.** A slash records `appeal_deadline =
 //!   slashed_at + appeal_window`. An appeal after that ledger is refused with
 //!   [`Error::AppealWindowClosed`] — the window is what stops an appeal from
@@ -67,7 +71,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, Env, Map,
-    String, Symbol,
+    String, Symbol, Vec,
 };
 
 /// Default appeal window: seven days expressed in ledger sequence numbers.
@@ -85,6 +89,12 @@ pub const DEFAULT_APPEAL_WINDOW_LEDGERS: u64 = 604_800;
 /// be special-cased everywhere. Bounding it keeps the deadline representable for
 /// every reachable `slashed_at`.
 pub const MAX_APPEAL_WINDOW_LEDGERS: u64 = 6_000_000;
+
+/// Maximum UTF-8 byte length of an appended appeal evidence reference.
+pub const MAX_APPEAL_EVIDENCE_REF_BYTES: u32 = 256;
+
+/// Maximum number of supplementary references stored for one appeal.
+pub const MAX_APPEAL_EVIDENCE_REFS: u32 = 16;
 //! # The withdrawal lock is a window, not a counter
 //!
 //! A sentinel's lock is stored as a single ledger — `staked_at` — and the lock
@@ -180,19 +190,34 @@ pub const DEFAULT_CHALLENGE_PERIOD_LEDGERS: u64 = 2_592_000;
 /// `u64`. Bounding the period keeps the deadline representable for every
 /// reachable `deregistered_at`; the arithmetic is still checked at use.
 pub const MAX_CHALLENGE_PERIOD_LEDGERS: u64 = 20_000_000;
-/// Upper bound on the withdrawal lock period, in ledger sequence numbers.
+/// Upper bound on the withdrawal lock period, in ledger sequence numbers
+/// (~69 days at 6-second close time).
 ///
-/// The lock is `unlock_at = staked_at + lock_period`, and `staked_at` is a
-/// ledger sequence number. A lock period large enough to overflow that addition
-/// would never elapse, which is a permanent freeze rather than a slow
-/// withdrawal. Bounding the parameter keeps every reachable unlock ledger
-/// representable, and the arithmetic is still checked at runtime.
-/// The lock is expressed as `ledger.sequence()`, which is a `u32`. A lock that
-/// cannot elapse is worse than a short one: it would permanently freeze every
-/// sentinel's stake with no recovery path. Bounding the parameter at
-/// initialization keeps `staked_at + lock_period` inside the `u32` ledger
-/// sequence space for every reachable `staked_at`.
+/// `unlock_at = staked_at + lock_period`. Because `staked_at` is a `u32`
+/// ledger sequence number stored as `u64`, a `lock_period` large enough to
+/// overflow that addition would produce an `unlock_at` that can never be
+/// reached — a permanent, irrecoverable freeze of every sentinel's stake.
+/// Setting this bound at initialization keeps `unlock_at` representable for
+/// every reachable `staked_at`, and the arithmetic is still checked at
+/// runtime with `checked_add`.
+///
+/// A value of `1_000_000` ledgers ≈ 69 days gives operators ample flexibility
+/// while staying well within the `u32` ceiling (~136 years of ledgers).
 pub const MAX_LOCK_PERIOD: u64 = 1_000_000;
+
+/// Upper bound on the governance-quorum threshold at initialization.
+///
+/// `threshold` is the number of sentinel signatures required for a governance
+/// action to pass. A threshold larger than the realistic sentinel-set size
+/// makes every governance action permanently unachievable — the pool can be
+/// configured but never governed. This constant caps the value at
+/// initialization so that a misconfigured threshold does not silently brick
+/// governance. Operators that grow the sentinel set beyond this limit should
+/// call `set_threshold` to raise the quorum in step with set size.
+///
+/// `65_535` (u16::MAX) is generous: a live sentinel set of that size is
+/// extremely large, and anything above it is almost certainly a misconfiguration.
+pub const MAX_THRESHOLD: u32 = 65_535;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -233,6 +258,10 @@ pub enum Error {
     UnknownProof = 14,
     /// The evidence is missing a proof reference or a URI.
     InvalidEvidence = 15,
+    /// An appeal evidence reference is empty or too long.
+    InvalidAppealEvidence = 16,
+    /// The appeal already has the maximum number of supplementary references.
+    AppealEvidenceLimitReached = 17,
     /// `staked_at + lock_period` is not representable as a `u64`. Append-only
     /// discriminant; see the ABI note in `README.md`.
     InvalidLockPeriod = 9,
@@ -247,6 +276,29 @@ pub enum Error {
     NotInitialized = 9,
     /// `lock_period` is zero or above [`MAX_LOCK_PERIOD`].
     InvalidLockPeriod = 10,
+    /// The governance proposal being accepted is not the current one (#1097).
+    StaleProposal = 16,
+    /// More sentinels were supplied than the caller's cap allows (#1096).
+    TooManySentinels = 17,
+    /// A withdrawal was below the configured minimum withdrawal amount (CT-016).
+    BelowMinimumWithdrawal = 18,
+    /// The minimum withdrawal amount is negative (CT-016).
+    InvalidMinWithdrawal = 19,
+    /// A history page request had a zero or oversized `limit` (CT-015).
+    InvalidPage = 20,
+    /// `threshold` exceeds [`MAX_THRESHOLD`] at initialization.
+    ///
+    /// A threshold larger than the realistic sentinel-set size makes every
+    /// governance action permanently unachievable. Reject it at initialization
+    /// rather than silently bricking governance.
+    ThresholdTooHigh = 21,
+    /// `lock_period` exceeds [`MAX_LOCK_PERIOD`] at initialization.
+    ///
+    /// An oversize lock period can produce an `unlock_at` that overflows or
+    /// can never be reached, permanently freezing all withdrawals. Distinct
+    /// from the runtime [`Error::InvalidLockPeriod`] overflow so callers can
+    /// tell a configuration error from an arithmetic one.
+    LockPeriodTooHigh = 22,
 }
 
 #[contracttype]
@@ -277,6 +329,31 @@ pub enum DataKey {
     ChallengePeriod,
     /// `sentinel` -> [`Deregistration`].
     Deregistrations,
+    /// Admin proposed by the current admin, awaiting acceptance.
+    PendingAdmin,
+    /// Last issued governance proposal id (#1097).
+    ProposalNonce,
+    /// The pending [`GovernanceProposal`], if any (#1097).
+    PendingProposal,
+    /// Proof references in the order their slashes were resolved (#1093).
+    ResolvedSlashes,
+    /// The configured minimum withdrawal amount (CT-016).
+    MinWithdrawal,
+    /// `sentinel` -> append-only stake/withdrawal history entries (CT-015).
+    StakeHistory,
+}
+
+/// Largest page [`SentinelPool::resolved_slashes`] returns (#1093).
+pub const MAX_RESOLVED_PAGE: u32 = 50;
+
+/// A pending governance-address change, bound to a unique id (#1097).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceProposal {
+    pub id: u64,
+    pub governance: Address,
+    /// `proof_ref` -> append-only supplementary appeal evidence references.
+    AppealEvidence,
 }
 
 /// A recorded deregistration.
@@ -438,6 +515,25 @@ pub struct ThresholdUpdatedEvent {
     pub threshold: u32,
 }
 
+/// Emitted when the current admin nominates a successor (SP-009).
+/// The nominated address has no admin powers until it accepts.
+#[contractevent]
+#[derive(Clone)]
+pub struct AdminTransferProposedEvent {
+    #[topic]
+    pub current_admin: Address,
+    pub new_admin: Address,
+}
+
+/// Emitted only after the nominated admin accepts the transfer (SP-009).
+#[contractevent]
+#[derive(Clone)]
+pub struct AdminTransferredEvent {
+    #[topic]
+    pub previous_admin: Address,
+    pub new_admin: Address,
+}
+
 /// Emitted when a slash is applied.
 #[contractevent]
 #[derive(Clone)]
@@ -478,6 +574,21 @@ pub struct SlashAppealedEvent {
     pub appealed_at: u64,
     /// The deadline the appeal was filed against, recorded so a later
     /// `set_appeal_window` cannot be used to argue the window was different.
+    pub appeal_deadline: u64,
+}
+
+/// Emitted when supplementary evidence is appended to an appeal.
+#[contractevent]
+#[derive(Clone)]
+pub struct AppealEvidenceAppendedEvent {
+    #[topic]
+    pub sentinel: Address,
+    #[topic]
+    pub proof_ref: String,
+    /// The appellant who supplied this reference.
+    pub appellant: Address,
+    pub evidence_ref: String,
+    pub appended_at: u64,
     pub appeal_deadline: u64,
 }
 
@@ -577,17 +688,22 @@ impl SentinelPool {
     /// 1. `min_stake > 0` — a non-positive minimum makes every stake
     ///    trivially valid and every sentinel worthless.
     /// 2. `1 <= lock_period <= MAX_LOCK_PERIOD` — a zero lock removes the
-    ///    withdrawal delay entirely, and an unbounded lock could exceed the
-    ///    `u32` ledger sequence space and freeze stake permanently.
-    /// 3. `threshold > 0` — a zero quorum means any single signature governs.
+    ///    withdrawal delay entirely, and a lock period above [`MAX_LOCK_PERIOD`]
+    ///    produces an `unlock_at` that can never be reached, permanently
+    ///    freezing all withdrawals with no recovery path.
+    /// 3. `1 <= threshold <= MAX_THRESHOLD` — a zero quorum means any single
+    ///    signature governs; a threshold above [`MAX_THRESHOLD`] makes every
+    ///    governance action permanently unachievable.
     ///
     /// Only then is `admin.require_auth()` collected, the re-initialization
     /// guard consulted, and storage written.
     ///
     /// # Errors
     /// * [`Error::InvalidStake`] — `min_stake <= 0`.
-    /// * [`Error::InvalidLockPeriod`] — `lock_period` is zero or too large.
+    /// * [`Error::InvalidLockPeriod`] — `lock_period` is zero.
+    /// * [`Error::LockPeriodTooHigh`] — `lock_period` exceeds [`MAX_LOCK_PERIOD`].
     /// * [`Error::InvalidThreshold`] — `threshold == 0`.
+    /// * [`Error::ThresholdTooHigh`] — `threshold` exceeds [`MAX_THRESHOLD`].
     /// * [`Error::Unauthorized`] — the pool is already initialized.
     pub fn initialize(
         env: Env,
@@ -601,11 +717,17 @@ impl SentinelPool {
         if min_stake <= 0 {
             return Err(Error::InvalidStake);
         }
-        if lock_period == 0 || lock_period > MAX_LOCK_PERIOD {
+        if lock_period == 0 {
             return Err(Error::InvalidLockPeriod);
+        }
+        if lock_period > MAX_LOCK_PERIOD {
+            return Err(Error::LockPeriodTooHigh);
         }
         if threshold == 0 {
             return Err(Error::InvalidThreshold);
+        }
+        if threshold > MAX_THRESHOLD {
+            return Err(Error::ThresholdTooHigh);
         }
 
         // 2. Auth comes after every pure check.
@@ -821,6 +943,12 @@ impl SentinelPool {
         env.storage()
             .instance()
             .set(&DataKey::Governance, &governance);
+
+        GovernanceUpdatedEvent {
+            actor: admin,
+            governance,
+        }
+        .publish(&env);
 
         Ok(())
     }
@@ -1095,6 +1223,8 @@ impl SentinelPool {
         }
         .publish(&env);
 
+        Self::record_history(&env, sentinel, HistoryKind::Stake, amount, new_total);
+
         Ok(())
     }
 
@@ -1233,11 +1363,12 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
             .unwrap_or(0)
     }
 
-    pub fn quorum_threshold(env: Env, required: u32) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::Threshold)
-            .unwrap_or(required)
+    /// Return the configured quorum threshold, if one has been stored.
+    ///
+    /// `None` means no threshold is configured. Callers that need a fallback
+    /// must choose it explicitly rather than relying on a default hidden here.
+    pub fn quorum_threshold(env: Env) -> Option<u32> {
+        env.storage().instance().get(&DataKey::Threshold)
     }
 
     /// # Update the governance quorum threshold
@@ -1414,6 +1545,14 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
             return Err(Error::InsufficientBalance);
         }
 
+        // Dust guard (CT-016): a partial withdrawal must clear the configured
+        // minimum. A full exit (`amount == current`) bypasses it — the floor is
+        // against uneconomical partial withdrawals, not against leaving.
+        let min_withdrawal = Self::min_withdrawal(env.clone());
+        if amount != current && amount < min_withdrawal {
+            return Err(Error::BelowMinimumWithdrawal);
+        }
+
         let lock_period: u64 = env
             .storage()
             .instance()
@@ -1509,6 +1648,8 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
             remaining,
         }
         .publish(&env);
+
+        Self::record_history(&env, sentinel, HistoryKind::Withdraw, amount, remaining);
 
         Ok(())
     }
@@ -1918,6 +2059,86 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
         Ok(())
     }
 
+    /// # Append supplementary evidence to an appeal
+    ///
+    /// The slashed sentinel or governance may append a reference while the
+    /// slash is pending and its original appeal deadline is still open. The
+    /// original [`SlashEvidence`] remains unchanged. Each reference and the
+    /// total number stored per slash are bounded.
+    ///
+    /// # Errors
+    /// * [`Error::UnknownProof`] — no record under `proof_ref`.
+    /// * [`Error::NotGovernance`] — `appellant` is neither the sentinel nor
+    ///   governance.
+    /// * [`Error::AlreadyResolved`] — the slash has been resolved.
+    /// * [`Error::AppealWindowClosed`] — the appeal deadline has passed.
+    /// * [`Error::InvalidAppealEvidence`] — the reference is empty or too long.
+    /// * [`Error::AppealEvidenceLimitReached`] — the per-slash reference limit
+    ///   has been reached.
+    pub fn append_appeal_evidence(
+        env: Env,
+        appellant: Address,
+        proof_ref: String,
+        evidence_ref: String,
+    ) -> Result<(), Error> {
+        let records: Map<String, SlashRecord> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SlashProofs)
+            .unwrap_or_else(|| Map::new(&env));
+        let record = records
+            .get(proof_ref.clone())
+            .ok_or(Error::UnknownProof)?;
+
+        appellant.require_auth();
+        if appellant != record.sentinel {
+            Self::require_governance(&env, &appellant)?;
+        }
+
+        if record.outcome != SlashOutcome::Pending {
+            return Err(Error::AlreadyResolved);
+        }
+
+        let now = u64::from(env.ledger().sequence());
+        if record.appeal_window == 0 || now > record.appeal_deadline {
+            return Err(Error::AppealWindowClosed);
+        }
+
+        if evidence_ref.is_empty() || evidence_ref.len() > MAX_APPEAL_EVIDENCE_REF_BYTES {
+            return Err(Error::InvalidAppealEvidence);
+        }
+
+        let mut evidence: Map<String, Vec<String>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AppealEvidence)
+            .unwrap_or_else(|| Map::new(&env));
+        let mut references = evidence
+            .get(proof_ref.clone())
+            .unwrap_or_else(|| Vec::new(&env));
+        if references.len() >= MAX_APPEAL_EVIDENCE_REFS {
+            return Err(Error::AppealEvidenceLimitReached);
+        }
+
+        references.push_back(evidence_ref.clone());
+        evidence.set(proof_ref.clone(), references);
+        env.storage()
+            .instance()
+            .set(&DataKey::AppealEvidence, &evidence);
+
+        AppealEvidenceAppendedEvent {
+            sentinel: record.sentinel,
+            proof_ref,
+            appellant,
+            evidence_ref,
+            appended_at: now,
+            appeal_deadline: record.appeal_deadline,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
     /// # Resolve a slash, upholding or reversing it
     ///
     /// Terminal, and **exactly once**: a second call on the same `proof_ref` is
@@ -1990,6 +2211,15 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
         records.set(proof_ref.clone(), record);
         env.storage().instance().set(&DataKey::SlashProofs, &records);
 
+        // Append-only, so the audit order is the resolution order (#1093).
+        let mut resolved: soroban_sdk::Vec<String> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ResolvedSlashes)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+        resolved.push_back(proof_ref.clone());
+        env.storage().instance().set(&DataKey::ResolvedSlashes, &resolved);
+
         SlashResolvedEvent {
             sentinel,
             proof_ref,
@@ -2014,6 +2244,29 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
     /// outcome, without replaying the event stream.
     pub fn slash_record(env: Env, proof_ref: String) -> Option<SlashRecord> {
         let records: Map<String, SlashRecord> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SlashProofs)
+            .unwrap_or_else(|| Map::new(&env));
+
+        records.get(proof_ref)
+    }
+
+    /// Supplementary references appended to the appeal for `proof_ref`.
+    ///
+    /// Returns an empty list when no references have been added.
+    pub fn appeal_evidence(env: Env, proof_ref: String) -> Vec<String> {
+        let evidence: Map<String, Vec<String>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AppealEvidence)
+            .unwrap_or_else(|| Map::new(&env));
+
+        evidence
+            .get(proof_ref)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
     /// The proof record stored under `proof_id`, if any.
     ///
     /// The counterpart to `slash`'s uniqueness check: an auditor holding an
@@ -2027,8 +2280,368 @@ pub fn unlock_at(env: Env, sentinel: Address) -> Result<Option<u64>, Error> {
             .get(&DataKey::SlashProofs)
             .unwrap_or_else(|| Map::new(&env));
 
-        records.get(proof_ref)
         proofs.get(proof_id)
+    }
+
+    /// Start a two-step admin rotation (SP-009). Only the currently stored
+    /// admin may nominate a successor, and their signature is required.
+    ///
+    /// This does not grant the nominee any permissions until the nominee
+    /// explicitly calls [`Self::accept_admin`]. A later nomination replaces
+    /// an earlier pending one. This method emits an audit event on success.
+    ///
+    /// Lost admin keys cannot initiate a transfer, so admins should rotate
+    /// keys *before* the old signer becomes unavailable.
+    pub fn transfer_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        AdminTransferProposedEvent {
+            current_admin: admin,
+            new_admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Backwards-compatible name for the first stage of admin rotation.
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        Self::transfer_admin(env, admin, new_admin)
+    }
+
+    /// Finish a pending transfer. Only the nominated admin may accept, with
+    /// their own signature. Pending state is cleared and an event is emitted.
+    /// Once accepted, the former admin immediately loses admin permissions.
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        new_admin.require_auth();
+        let pending: Option<Address> = env.storage().instance().get(&DataKey::PendingAdmin);
+        match pending {
+            Some(pending) if pending == new_admin => {
+                let previous_admin: Address = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::Admin)
+                    .ok_or(Error::Unauthorized)?;
+                env.storage().instance().set(&DataKey::Admin, &new_admin);
+                env.storage().instance().remove(&DataKey::PendingAdmin);
+                AdminTransferredEvent {
+                    previous_admin,
+                    new_admin,
+                }
+                .publish(&env);
+                Ok(())
+            }
+            _ => Err(Error::Unauthorized),
+        }
+    }
+
+    /// The admin awaiting acceptance, if any.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+}
+
+#[contractimpl]
+impl SentinelPool {
+    /// # Resolved slash history
+    ///
+    /// Returns up to `limit` resolved slash records starting at `cursor`, in
+    /// resolution order. `limit` is capped at [`MAX_RESOLVED_PAGE`]; pass
+    /// `cursor + returned_len` to fetch the next page (#1093).
+    pub fn resolved_slashes(env: Env, cursor: u32, limit: u32) -> soroban_sdk::Vec<SlashRecord> {
+        let ids: soroban_sdk::Vec<String> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ResolvedSlashes)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+        let records: Map<String, SlashRecord> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SlashProofs)
+            .unwrap_or_else(|| Map::new(&env));
+
+        let end = cursor
+            .saturating_add(limit.min(MAX_RESOLVED_PAGE))
+            .min(ids.len());
+        let mut page = soroban_sdk::Vec::new(&env);
+        let mut i = cursor;
+        while i < end {
+            if let Some(record) = ids.get(i).and_then(|id| records.get(id)) {
+                page.push_back(record);
+            }
+            i += 1;
+        }
+        page
+    }
+
+    /// # Aggregate eligible stake
+    ///
+    /// Sums the balances of the supplied sentinels that are eligible at
+    /// `at_ledger`. Refuses more than `max` sentinels so the call stays bounded,
+    /// and uses checked arithmetic so an overflow is an error (#1096).
+    pub fn eligible_stake(
+        env: Env,
+        sentinels: soroban_sdk::Vec<Address>,
+        at_ledger: u32,
+        max: u32,
+    ) -> Result<i128, Error> {
+        if sentinels.len() > max {
+            return Err(Error::TooManySentinels);
+        }
+
+        let mut total: i128 = 0;
+        for sentinel in sentinels.iter() {
+            if Self::is_eligible(env.clone(), sentinel.clone(), at_ledger) {
+                total = total
+                    .checked_add(Self::balance(env.clone(), sentinel))
+                    .ok_or(Error::InvalidAmount)?;
+            }
+        }
+        Ok(total)
+    }
+
+    /// # Propose a governance change
+    ///
+    /// Admin-only. Each proposal gets the next id from a monotonically
+    /// increasing nonce and replaces any pending one, so an acceptance for an
+    /// older proposal can no longer apply (#1097).
+    pub fn propose_governance(env: Env, admin: Address, governance: Address) -> Result<u64, Error> {
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        let id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProposalNonce)
+            .unwrap_or(0u64)
+            .checked_add(1)
+            .ok_or(Error::InvalidAmount)?;
+        env.storage().instance().set(&DataKey::ProposalNonce, &id);
+        env.storage().instance().set(
+            &DataKey::PendingProposal,
+            &GovernanceProposal { id, governance },
+        );
+        Ok(id)
+    }
+
+    /// # Accept a governance change
+    ///
+    /// The proposed address accepts by id. A stale id, or a second acceptance
+    /// of the same proposal, is refused with [`Error::StaleProposal`] (#1097).
+    pub fn accept_governance(env: Env, governance: Address, proposal_id: u64) -> Result<(), Error> {
+        governance.require_auth();
+
+        let pending: GovernanceProposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingProposal)
+            .ok_or(Error::StaleProposal)?;
+        if pending.id != proposal_id || pending.governance != governance {
+            return Err(Error::StaleProposal);
+        }
+
+        env.storage().instance().remove(&DataKey::PendingProposal);
+        env.storage()
+            .instance()
+            .set(&DataKey::Governance, &governance);
+
+        GovernanceUpdatedEvent {
+            actor: governance.clone(),
+            governance,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+}
+
+/// What a stake-history entry records (CT-015).
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum HistoryKind {
+    Stake = 0,
+    Withdraw = 1,
+}
+
+/// One lifecycle entry in a sentinel's stake/withdrawal history (CT-015).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StakeHistoryEntry {
+    /// Ledger sequence number the entry was recorded on.
+    pub ledger: u64,
+    /// Whether this entry is a deposit or a withdrawal.
+    pub kind: HistoryKind,
+    /// The amount moved by this entry.
+    pub amount: i128,
+    /// The sentinel's balance immediately after this entry.
+    pub balance_after: i128,
+}
+
+/// Largest page [`SentinelPool::stake_history`] returns (CT-015).
+pub const MAX_HISTORY_PAGE: u32 = 50;
+
+/// Why a sentinel is ineligible, mirroring the checks in
+/// [`SentinelPool::is_eligible`] (CT-014).
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum IneligibleReason {
+    /// The balance is under the configured `min_stake`.
+    BelowMinStake = 0,
+    /// The withdrawal lock has not elapsed at the queried ledger.
+    LockPeriodActive = 1,
+    /// The address has deregistered.
+    Deregistered = 2,
+}
+
+/// The typed result of [`SentinelPool::eligibility_reason`] (CT-014).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EligibilityStatus {
+    Eligible,
+    Ineligible(IneligibleReason),
+}
+
+#[contractimpl]
+impl SentinelPool {
+    /// # Minimum withdrawal amount (CT-016)
+    ///
+    /// Admin-only. Guards against uneconomical dust withdrawals without
+    /// touching the `min_stake` floor already enforced by [`Self::withdraw`]:
+    /// a partial withdrawal must now also clear `min_withdrawal`, but a full
+    /// exit (withdrawing the entire balance, including the end of the
+    /// deregistration lifecycle) is exempt — it is leaving, not a dust
+    /// withdrawal.
+    ///
+    /// # Errors
+    /// * [`Error::InvalidMinWithdrawal`] — `min_withdrawal < 0`.
+    /// * [`Error::Unauthorized`] — `admin` is not the configured admin.
+    pub fn set_min_withdrawal(env: Env, admin: Address, min_withdrawal: i128) -> Result<(), Error> {
+        if min_withdrawal < 0 {
+            return Err(Error::InvalidMinWithdrawal);
+        }
+
+        admin.require_auth();
+        Self::require_admin(&env, &admin)?;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MinWithdrawal, &min_withdrawal);
+
+        Ok(())
+    }
+
+    /// The minimum withdrawal amount in force. `0` (no floor) until configured.
+    pub fn min_withdrawal(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinWithdrawal)
+            .unwrap_or(0)
+    }
+
+    /// Append one history entry for `sentinel` (CT-015). Called by `stake` and
+    /// `withdraw`; not an entry point itself.
+    fn record_history(
+        env: &Env,
+        sentinel: Address,
+        kind: HistoryKind,
+        amount: i128,
+        balance_after: i128,
+    ) {
+        let mut history: Map<Address, soroban_sdk::Vec<StakeHistoryEntry>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::StakeHistory)
+            .unwrap_or_else(|| Map::new(env));
+        let mut entries = history
+            .get(sentinel.clone())
+            .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+
+        entries.push_back(StakeHistoryEntry {
+            ledger: u64::from(env.ledger().sequence()),
+            kind,
+            amount,
+            balance_after,
+        });
+
+        history.set(sentinel, entries);
+        env.storage().instance().set(&DataKey::StakeHistory, &history);
+    }
+
+    /// # Paginated stake/withdrawal history (CT-015)
+    ///
+    /// Returns up to `limit` entries for `sentinel` starting at `cursor`, in
+    /// the order they were recorded. `limit` is capped at
+    /// [`MAX_HISTORY_PAGE`] so a reader cannot force an unbounded storage
+    /// read; pass `cursor + returned_len` to fetch the next page.
+    ///
+    /// # Errors
+    /// * [`Error::InvalidPage`] — `limit == 0` or `limit > MAX_HISTORY_PAGE`.
+    pub fn stake_history(
+        env: Env,
+        sentinel: Address,
+        cursor: u32,
+        limit: u32,
+    ) -> Result<soroban_sdk::Vec<StakeHistoryEntry>, Error> {
+        if limit == 0 || limit > MAX_HISTORY_PAGE {
+            return Err(Error::InvalidPage);
+        }
+
+        let history: Map<Address, soroban_sdk::Vec<StakeHistoryEntry>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::StakeHistory)
+            .unwrap_or_else(|| Map::new(&env));
+        let entries = history
+            .get(sentinel)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+
+        let end = cursor.saturating_add(limit).min(entries.len());
+        let mut page = soroban_sdk::Vec::new(&env);
+        let mut i = cursor;
+        while i < end {
+            if let Some(entry) = entries.get(i) {
+                page.push_back(entry);
+            }
+            i += 1;
+        }
+        Ok(page)
+    }
+
+    /// # Why a sentinel is, or is not, eligible (CT-014)
+    ///
+    /// Same three checks as [`Self::is_eligible`], in the same order, but
+    /// reports which one failed instead of collapsing the answer to a bool.
+    /// [`Self::is_eligible`] is unchanged and keeps returning the boolean
+    /// view for callers that only need a yes/no answer.
+    pub fn eligibility_reason(env: Env, sentinel: Address, at_ledger: u32) -> EligibilityStatus {
+        if Self::deregistered_at(env.clone(), sentinel.clone()).is_some() {
+            return EligibilityStatus::Ineligible(IneligibleReason::Deregistered);
+        }
+
+        let balance = Self::balance(env.clone(), sentinel.clone());
+        if balance < Self::min_stake(env.clone()) {
+            return EligibilityStatus::Ineligible(IneligibleReason::BelowMinStake);
+        }
+
+        let lock_period: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LockPeriod)
+            .unwrap_or(0);
+        let staked_at: Map<Address, u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::StakedAt)
+            .unwrap_or_else(|| Map::new(&env));
+        let last_staked = staked_at.get(sentinel).unwrap_or(0);
+        let elapsed = u64::from(at_ledger).saturating_sub(last_staked);
+
+        if elapsed < lock_period {
+            return EligibilityStatus::Ineligible(IneligibleReason::LockPeriodActive);
+        }
+
+        EligibilityStatus::Eligible
     }
 }
 
@@ -2090,6 +2703,24 @@ mod tests {
         client.set_threshold(&admin, &4);
 
         assert_eq!(client.threshold(), 4);
+    }
+
+    #[test]
+    fn quorum_threshold_reports_only_an_explicitly_stored_value() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, SentinelPool);
+        let client = SentinelPoolClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let governance = Address::generate(&env);
+
+        assert_eq!(client.quorum_threshold(), None);
+
+        env.mock_all_auths();
+        client.initialize(&admin, &governance, &100, &10, &2);
+        assert_eq!(client.quorum_threshold(), Some(2));
+
+        client.set_threshold(&admin, &4);
+        assert_eq!(client.quorum_threshold(), Some(4));
     }
 
     #[test]
